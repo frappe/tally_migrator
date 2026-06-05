@@ -1,0 +1,3 @@
+# Patches run in order on every bench migrate.
+# Format: fully_qualified.module.function
+# tally_migrator.patches.v1_0.example_patch

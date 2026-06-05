@@ -1,0 +1,3 @@
+include *.md *.txt *.json *.py
+recursive-include tally_migrator *.css *.csv *.html *.ico *.js *.json *.md *.png *.svg *.py *.txt
+recursive-exclude tally_migrator *.pyc

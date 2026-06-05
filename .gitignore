@@ -1,0 +1,25 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+dist/
+build/
+.venv/
+
+# Node / Frontend
+node_modules/
+frontend/node_modules/
+frontend/dist/
+tally_migrator/public/js/tally_migrator.bundle.js
+tally_migrator/public/js/tally_migrator.bundle.css
+
+# Editors
+.vscode/
+.idea/
+*.swp
+
+# macOS
+.DS_Store
+
+# Frappe
+*.pyc

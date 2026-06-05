@@ -1,0 +1,115 @@
+{
+  "name": "Tally Migration Log",
+  "doctype": "DocType",
+  "module": "Tally Migration",
+  "custom": 0,
+  "is_submittable": 0,
+  "is_single": 0,
+  "is_child_table": 0,
+  "naming_rule": "Expression",
+  "autoname": "TML-.YYYY.-.#####",
+  "track_changes": 1,
+  "search_fields": "company,tally_company,status",
+  "title_field": "company",
+  "fields": [
+    {
+      "fieldname": "company",
+      "fieldtype": "Link",
+      "label": "ERPNext Company",
+      "options": "Company",
+      "reqd": 1,
+      "in_list_view": 1,
+      "in_standard_filter": 1
+    },
+    {
+      "fieldname": "tally_company",
+      "fieldtype": "Data",
+      "label": "Tally Company",
+      "reqd": 1,
+      "in_list_view": 1
+    },
+    {
+      "fieldname": "col_break_1",
+      "fieldtype": "Column Break"
+    },
+    {
+      "fieldname": "migration_type",
+      "fieldtype": "Select",
+      "label": "Migration Type",
+      "options": "Masters\nTransactions",
+      "reqd": 1,
+      "default": "Masters",
+      "in_list_view": 1
+    },
+    {
+      "fieldname": "status",
+      "fieldtype": "Select",
+      "label": "Status",
+      "options": "\nRunning\nCompleted\nCompleted with Errors\nFailed",
+      "default": "Running",
+      "in_list_view": 1,
+      "in_standard_filter": 1
+    },
+    {
+      "fieldname": "migration_date",
+      "fieldtype": "Datetime",
+      "label": "Migration Date",
+      "default": "Now",
+      "read_only": 1,
+      "in_list_view": 1
+    },
+    {
+      "fieldname": "section_counts",
+      "fieldtype": "Section Break",
+      "label": "Extraction Counts"
+    },
+    {
+      "fieldname": "extracted_counts",
+      "fieldtype": "Code",
+      "label": "Extracted Counts",
+      "options": "JSON",
+      "read_only": 1
+    },
+    {
+      "fieldname": "section_summary",
+      "fieldtype": "Section Break",
+      "label": "Import Summary"
+    },
+    {
+      "fieldname": "import_summary",
+      "fieldtype": "Code",
+      "label": "Import Summary",
+      "options": "JSON",
+      "read_only": 1
+    },
+    {
+      "fieldname": "section_errors",
+      "fieldtype": "Section Break",
+      "label": "Errors",
+      "depends_on": "eval:doc.status == 'Completed with Errors' || doc.status == 'Failed'"
+    },
+    {
+      "fieldname": "error_log",
+      "fieldtype": "Long Text",
+      "label": "Error Log",
+      "read_only": 1
+    }
+  ],
+  "permissions": [
+    {
+      "role": "System Manager",
+      "read": 1,
+      "write": 1,
+      "create": 1,
+      "delete": 1,
+      "export": 1
+    },
+    {
+      "role": "Tally Migration Manager",
+      "read": 1,
+      "write": 1,
+      "create": 1,
+      "export": 1
+    }
+  ]
+}

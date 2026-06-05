@@ -1,0 +1,45 @@
+{
+  "doctype": "Workspace",
+  "name": "Tally Migration",
+  "label": "Tally Migration",
+  "module": "Tally Migration",
+  "category": "Modules",
+  "is_hidden": 0,
+  "title": "Tally Migration",
+  "icon": "octicon octicon-git-compare",
+  "color": "#7B68EE",
+  "charts": [],
+  "shortcuts": [
+    {
+      "label": "Run Migration",
+      "link_to": "tally-migrator",
+      "type": "Page",
+      "icon": "octicon octicon-rocket"
+    },
+    {
+      "label": "Migration Logs",
+      "link_to": "Tally Migration Log",
+      "type": "DocType",
+      "icon": "octicon octicon-list-ordered"
+    }
+  ],
+  "links": [
+    {
+      "label": "Migration",
+      "type": "Card Break",
+      "icon": null
+    },
+    {
+      "label": "Run Tally Migration",
+      "link_to": "tally-migrator",
+      "type": "Page",
+      "onboard": 1
+    },
+    {
+      "label": "Tally Migration Log",
+      "link_to": "Tally Migration Log",
+      "type": "DocType",
+      "onboard": 1
+    }
+  ]
+}

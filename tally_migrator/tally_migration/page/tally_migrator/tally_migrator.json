@@ -1,0 +1,12 @@
+{
+  "doctype": "Page",
+  "name": "tally-migrator",
+  "page_name": "tally-migrator",
+  "title": "Tally Migrator",
+  "module": "Tally Migration",
+  "standard": "Yes",
+  "roles": [
+    { "role": "System Manager" },
+    { "role": "Tally Migration Manager" }
+  ]
+}

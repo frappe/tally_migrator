@@ -1,0 +1,16 @@
+[project]
+name = "tally_migrator"
+version = "1.0.0"
+authors = [{ name = "Your Company", email = "dev@yourcompany.com" }]
+description = "Migrate masters and transactions from Tally to ERPNext"
+requires-python = ">=3.10"
+readme = "README.md"
+# frappe and erpnext are bench apps, NOT PyPI packages — never list them here.
+dependencies = []
+
+[build-system]
+requires = ["setuptools>=61.0", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+include = ["tally_migrator*"]
