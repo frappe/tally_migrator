@@ -1,6 +1,7 @@
 import frappe
 
 from tally_migrator.tally.client import TallyClient, TallyConfig
+from tally_migrator.tally.file_source import FileTallySource
 from tally_migrator.migration.master_migrator import MasterMigrator
 
 
@@ -55,3 +56,28 @@ def run_masters_migration(
     config = _make_config(tally_host, tally_port, tally_company, erpnext_company)
     summary = MasterMigrator(config).run()
     return summary.as_dict()
+
+
+@frappe.whitelist()
+def run_masters_migration_from_file(file_url, erpnext_company=""):
+    """Run the masters migration from an uploaded Tally masters XML export.
+
+    Offline counterpart to ``run_masters_migration`` — same pipeline, but the
+    data source is a file the user exported from Tally rather than a live
+    HTTP connection. ``file_url`` is the URL of a File attached via the
+    standard Frappe uploader.
+    """
+    frappe.only_for(["System Manager", "Tally Migration Manager"])
+    xml_text = _read_uploaded_file(file_url)
+    config = _make_config(erpnext_company=erpnext_company)
+    summary = MasterMigrator(config, source=FileTallySource(xml_text)).run()
+    return summary.as_dict()
+
+
+def _read_uploaded_file(file_url: str) -> str:
+    """Resolve a File doc by URL and return its decoded text content."""
+    file_doc = frappe.get_doc("File", {"file_url": file_url})
+    content = file_doc.get_content()
+    if isinstance(content, bytes):
+        content = content.decode("utf-8", errors="replace")
+    return content

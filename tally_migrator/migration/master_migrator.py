@@ -62,9 +62,15 @@ class MasterMigrator:
         100: "Migration complete.",
     }
 
-    def __init__(self, config: TallyConfig):
+    def __init__(self, config: TallyConfig, source=None):
+        """``source`` is any object exposing ``ping()`` + ``get_collection``.
+
+        Defaults to a live :class:`TallyClient`. Pass a
+        :class:`FileTallySource` to run the same pipeline against an uploaded
+        Tally masters XML export instead of a live connection.
+        """
         self.config = config
-        self.client = TallyClient(config)
+        self.client = source or TallyClient(config)
         self.extractor = TallyExtractor(self.client)
         self.importer = ERPNextImporter(config.erpnext_company)
         self.log = None
