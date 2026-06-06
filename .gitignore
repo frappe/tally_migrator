@@ -23,3 +23,6 @@ tally_migrator/public/js/tally_migrator.bundle.css
 
 # Frappe
 *.pyc
+
+# Claude local config
+.claude/
