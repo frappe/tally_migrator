@@ -47,6 +47,21 @@ class TestERPNextImporter(unittest.TestCase):
         self.assertEqual(result.skipped, 1)
         self.assertEqual(result.created, 0)
 
+    def test_reimport_does_not_duplicate_address(self):
+        """Re-running must skip the existing party and NOT add a second address."""
+        customer = {
+            "_name": "_TMTest Customer Addr",
+            "Address": "12 Test Street",
+            "LedgerState": "Maharashtra",
+            "PinCode": "400001",
+        }
+        self.importer.import_customers([customer])
+        self.importer.import_customers([customer])  # re-run
+        addresses = frappe.get_all(
+            "Address", filters={"address_title": "_TMTest Customer Addr"}
+        )
+        self.assertEqual(len(addresses), 1, msg="re-run duplicated the address")
+
     # ── Supplier ──────────────────────────────────────────────────────────────
 
     def test_import_supplier_creates_record(self):

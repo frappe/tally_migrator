@@ -87,8 +87,11 @@ class BaseImporter:
         result = ImportResult(self.doctype)
         self.before_run(records, result)
         for record in self.iter_records(records):
-            name = self._upsert(result, self.build_doc(record))
-            if name:
+            name, created = self._upsert(result, self.build_doc(record))
+            # after_insert (e.g. address creation) must run ONLY for newly
+            # created records — otherwise a re-run duplicates side effects for
+            # records that were skipped because they already exist.
+            if name and created:
                 self.after_insert(name, record)
         return result
 
@@ -106,26 +109,33 @@ class BaseImporter:
         pass
 
     # ── Shared upsert ─────────────────────────────────────────────────────────
-    def _upsert(self, result: ImportResult, data: dict) -> str | None:
+    def _upsert(self, result: ImportResult, data: dict) -> tuple[str | None, bool]:
         """
         Insert ``data`` unless a record with the same ``key_field`` exists.
-        Returns the document name on success/skip, ``None`` on failure.
+
+        Returns ``(name, created)``:
+        - ``(existing_name, False)`` when skipped (already present),
+        - ``(new_name, True)``      when newly inserted,
+        - ``(None, False)``         when the insert failed.
+
+        The ``created`` flag lets ``run`` fire ``after_insert`` side effects
+        only for genuinely new records (idempotent re-runs).
         """
         key_value = data.get(self.key_field, "")
         try:
             existing = frappe.db.get_value(self.doctype, {self.key_field: key_value}, "name")
             if existing:
                 result.skipped += 1
-                return existing
+                return existing, False
             doc = frappe.get_doc(data)
             doc.insert(ignore_permissions=True)
             frappe.db.commit()
             result.created += 1
-            return doc.name
+            return doc.name, True
         except Exception as exc:
             result.add_error(key_value, exc)
             frappe.db.rollback()
-            return None
+            return None, False
 
     # ── Utilities ─────────────────────────────────────────────────────────────
     @staticmethod

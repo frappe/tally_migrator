@@ -68,16 +68,20 @@ def run_masters_migration_from_file(file_url, erpnext_company=""):
     standard Frappe uploader.
     """
     frappe.only_for(["System Manager", "Tally Migration Manager"])
-    xml_text = _read_uploaded_file(file_url)
-    config = _make_config(erpnext_company=erpnext_company)
+    file_doc = frappe.get_doc("File", {"file_url": file_url})
+    xml_text = _decode(file_doc.get_content())
+    # The migration log requires a Tally company label; for the offline path
+    # there is no live company name, so record the source file instead.
+    config = _make_config(
+        erpnext_company=erpnext_company,
+        tally_company=f"File: {file_doc.file_name or file_url}",
+    )
     summary = MasterMigrator(config, source=FileTallySource(xml_text)).run()
     return summary.as_dict()
 
 
-def _read_uploaded_file(file_url: str) -> str:
-    """Resolve a File doc by URL and return its decoded text content."""
-    file_doc = frappe.get_doc("File", {"file_url": file_url})
-    content = file_doc.get_content()
+def _decode(content) -> str:
+    """Decode File.get_content() bytes/str to text."""
     if isinstance(content, bytes):
-        content = content.decode("utf-8", errors="replace")
+        return content.decode("utf-8", errors="replace")
     return content

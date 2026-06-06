@@ -29,6 +29,15 @@ class MigrationSummary:
     def has_errors(self) -> bool:
         return any(result.failed > 0 for _, result in self._pairs())
 
+    def error_lines(self) -> str:
+        """Flat, human-readable list of per-record failures for the log."""
+        lines = [
+            f"[{label}] {e['name']}: {e['reason']}"
+            for label, result in self._pairs()
+            for e in result.errors
+        ]
+        return "\n".join(lines)
+
 
 class MasterMigrator:
     """
@@ -145,6 +154,8 @@ class MasterMigrator:
             self.log.status = "Completed with Errors" if summary.has_errors else "Completed"
             self.log.extracted_counts = frappe.as_json(masters.summary)
             self.log.import_summary = frappe.as_json(summary.as_dict())
+            if summary.has_errors:
+                self.log.error_log = summary.error_lines()
             self.log.save(ignore_permissions=True)
             frappe.db.commit()
         except Exception as exc:

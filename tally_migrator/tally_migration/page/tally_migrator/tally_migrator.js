@@ -244,12 +244,20 @@ class TallyMigratorPage {
 
 		// Start over
 		$("#btn-restart").on("click", () => {
+			// Reset live-connection state
 			$("#conn-status").html("");
 			$("#company-section").hide();
+			// Reset file-upload state
+			this.fileUrl = null;
+			$("#file-status").html("");
+			$("#btn-next-file").prop("disabled", true);
+			// Reset run/results state
 			$("#progress-section").hide();
 			$("#results-section").hide();
 			$("#error-section").hide();
 			$("#progress-bar").css("width", "0%").text("0%");
+			$("#btn-run").show().prop("disabled", false);
+			$("#btn-back-3").show().prop("disabled", false);
 			this.show("section-source");
 		});
 	}
@@ -433,8 +441,20 @@ class TallyMigratorPage {
 				frappe.realtime.off("progress");
 				$("#btn-run").prop("disabled", false);
 				$("#btn-back-3").prop("disabled", false);
-				const msg = err?.message || "An unexpected error occurred.";
-				$("#error-section").text("Migration failed: " + msg).show();
+				const detail =
+					(err && (err.message || err._error_message)) ||
+					"See the error dialog above for details.";
+				$("#error-section")
+					.html(
+						`<strong>Migration failed.</strong> ${frappe.utils.escape_html(detail)}` +
+							`<br><span style="font-size:12px;">Nothing was left half-done — already-imported records are kept and safe to re-run. ` +
+							`Open <a href="#" class="err-logs-link">Migration Logs</a> to see exactly what failed.</span>`
+					)
+					.show();
+				$(".err-logs-link").on("click", (e) => {
+					e.preventDefault();
+					frappe.set_route("List", "Tally Migration Log");
+				});
 			},
 		});
 	}
