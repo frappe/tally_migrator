@@ -10,13 +10,12 @@ class FileTallySource:
     ``get_collection(obj_type, fields)`` — so it drops into the existing
     extraction pipeline with no change to ``TallyExtractor`` or the importers.
 
-    Why this exists
-    ---------------
-    The live :class:`TallyClient` requires Tally to be open with its HTTP
-    server reachable on port 9000. That is brittle for demos and impossible on
-    hosted ERPNext where Tally lives on the customer's LAN. A masters XML file
+    Why a file
+    ----------
+    Hosted ERPNext (e.g. Frappe Cloud) cannot reach a Tally instance on the
+    customer's LAN, so a live connection is impossible. A masters XML file
     exported once from Tally (Gateway → Import/Export → Export → Masters, XML
-    format) is portable and lets the entire masters migration run offline.
+    format) is portable and lets the entire masters migration run anywhere.
 
     The on-disk export wraps each record in a ``<TALLYMESSAGE>`` containing a
     ``<LEDGER>`` / ``<GROUP>`` / ``<STOCKITEM>`` / ``<GODOWN>`` element. The
@@ -31,7 +30,7 @@ class FileTallySource:
         except ET.ParseError as e:
             frappe.throw(f"Uploaded file is not valid Tally XML: {e}")
 
-    # Mirrors TallyClient.get_collection so the extractor can't tell them apart.
+    # The single method TallyExtractor depends on.
     def get_collection(self, obj_type: str, fields: list[str]) -> list[dict]:
         tag = obj_type.upper().replace(" ", "")
         records: list[dict] = []
@@ -46,7 +45,6 @@ class FileTallySource:
             records.append(record)
         return records
 
-    # Parity with TallyClient so callers can ping() uniformly. A loaded file is
-    # always "reachable".
+    # Callers ping() the source before extracting; a loaded file is always ready.
     def ping(self) -> bool:
         return True

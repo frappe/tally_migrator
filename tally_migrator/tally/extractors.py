@@ -1,5 +1,4 @@
 from dataclasses import dataclass
-from .client import TallyClient
 from .mappings import DEBTOR_ROOTS, CREDITOR_ROOTS
 
 
@@ -50,7 +49,9 @@ class TallyExtractor:
     3. Fetch Stock Items and Godowns independently.
     """
 
-    def __init__(self, client: TallyClient):
+    def __init__(self, client):
+        # ``client`` is any source exposing ``get_collection(obj_type, fields)``
+        # — currently FileTallySource (an uploaded Tally masters XML export).
         self.client = client
 
     def extract_all(self) -> ExtractedMasters:

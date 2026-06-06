@@ -8,137 +8,101 @@ frappe.pages["tally-migrator"].on_page_load = function (wrapper) {
 	new TallyMigratorPage(page, wrapper);
 };
 
+const STEPS = [
+	{ id: "section-upload", label: "Upload" },
+	{ id: "section-configure", label: "Configure" },
+	{ id: "section-run", label: "Migrate" },
+];
+
 class TallyMigratorPage {
 	constructor(page, wrapper) {
 		this.page = page;
 		this.wrapper = wrapper;
-		this.companies = [];
-		// "file" (recommended, offline export) | "live" (direct port-9000 link)
-		this.sourceMode = "file";
 		this.fileUrl = null;
+		this.fileName = null;
+		this.preview = null; // {customers, suppliers, items, warehouses}
 		this.render();
 	}
 
 	render() {
 		$(this.wrapper).find(".page-content").html(`
-			<div class="container" style="max-width:640px; padding-top: 20px;">
+			<div class="container" style="max-width:680px; padding-top: 24px;">
 
-				<!-- Step 1: Choose data source -->
-				<div id="section-source">
-					<h5 class="text-muted uppercase" style="font-size:11px; letter-spacing:1px;">STEP 1 OF 3</h5>
-					<h4>Choose how to bring in your Tally data</h4>
-					<p class="text-muted">Pick the method that fits your setup. You can switch any time before starting.</p>
+				<!-- Persistent stepper -->
+				<div id="stepper" style="display:flex; align-items:center; margin-bottom:28px;"></div>
 
-					<div class="row" style="margin-bottom:8px;">
-						<div class="col-sm-6">
-							<div id="card-file" class="src-card src-card-active">
-								<div style="display:flex; align-items:center; gap:8px;">
-									<input type="radio" name="src" value="file" checked />
-									<strong>Upload export file</strong>
-									<span class="indicator-pill green" style="font-size:10px;">RECOMMENDED</span>
-								</div>
-								<p class="text-muted" style="font-size:12px; margin:6px 0 0 24px;">
-									Export an XML file from Tally and upload it here. Works everywhere —
-									including hosted ERPNext — and gives a saved, repeatable record.
-								</p>
-							</div>
-						</div>
-						<div class="col-sm-6">
-							<div id="card-live" class="src-card">
-								<div style="display:flex; align-items:center; gap:8px;">
-									<input type="radio" name="src" value="live" />
-									<strong>Direct connection</strong>
-								</div>
-								<p class="text-muted" style="font-size:12px; margin:6px 0 0 24px;">
-									Connect live to a running Tally on the same network (port 9000).
-									Best for on-premise setups where ERPNext can reach Tally.
-								</p>
-							</div>
+				<!-- STEP 1: Upload -->
+				<div id="section-upload">
+					<h4>Bring your Tally data into ERPNext</h4>
+					<p class="text-muted" style="margin-bottom:18px;">
+						This tool copies your master records — Customers, Suppliers, Items and Warehouses —
+						from Tally into ERPNext. It takes three short steps.
+					</p>
+
+					<div class="alert alert-info" style="display:flex; gap:10px; align-items:flex-start;">
+						<span style="font-size:16px;">🛡️</span>
+						<div style="font-size:13px;">
+							<strong>Your existing ERPNext data is safe.</strong>
+							Nothing is ever overwritten or deleted. If a record already exists, the migrator
+							skips it. You can run this as many times as you like.
 						</div>
 					</div>
 
-					<!-- File sub-panel -->
-					<div id="panel-file" style="margin-top:16px;">
-						<p class="text-muted">
-							In <strong>Tally Prime</strong>: <strong>Gateway of Tally → Import/Export → Export</strong>,
-							choose <em>Masters</em>, set format to <strong>XML</strong>, and export. Then upload that file below.
-						</p>
-						<button id="btn-pick-file" class="btn btn-default btn-sm">Upload Master Data XML</button>
-						<span id="file-status" style="margin-left:12px;" class="text-muted"></span>
-						<div style="margin-top:16px;">
-							<button id="btn-next-file" class="btn btn-primary btn-sm" disabled>Next →</button>
+					<div class="well well-sm" style="margin-top:18px;">
+						<strong>First, export a file from Tally</strong>
+						<ol style="margin:10px 0 0 0; padding-left:20px; font-size:13px; line-height:1.7;">
+							<li>Open your company in <strong>Tally Prime</strong>.</li>
+							<li>Go to <strong>Gateway of Tally → Import/Export → Export</strong>.</li>
+							<li>Choose <strong>Masters</strong> as the type.</li>
+							<li>Set <strong>Format</strong> to <strong>XML</strong>, and <strong>Show All Masters</strong> to <strong>Yes</strong>.</li>
+							<li>Export, and note where the <code>.xml</code> file is saved.</li>
+						</ol>
+					</div>
+
+					<div style="margin-top:18px;">
+						<strong>Then upload it here</strong>
+						<div style="margin-top:8px;">
+							<button id="btn-pick-file" class="btn btn-default btn-sm">
+								<i class="fa fa-upload"></i> &nbsp;Choose Tally XML file
+							</button>
+							<span id="file-status" style="margin-left:12px;" class="text-muted"></span>
 						</div>
 					</div>
 
-					<!-- Live sub-panel -->
-					<div id="panel-live" style="display:none; margin-top:16px;">
-						<p class="text-muted">
-							Open Tally and enable the HTTP server. In <strong>Tally Prime</strong>:
-							<strong>F1 (Help) → Settings → Connectivity → Client/Server configuration</strong>,
-							set <em>"TallyPrime acts as"</em> to <strong>Both</strong> (or Server) on port 9000.
-							Make sure your company is open on screen.
-						</p>
-						<div class="form-group row">
-							<div class="col-sm-8">
-								<label class="control-label">Tally Host</label>
-								<input id="tally-host" class="form-control" value="localhost" />
-							</div>
-							<div class="col-sm-4">
-								<label class="control-label">Port</label>
-								<input id="tally-port" class="form-control" value="9000" type="number" />
-							</div>
-						</div>
-						<button id="btn-test" class="btn btn-default btn-sm">Test Connection</button>
-						<a href="#" id="btn-debug" style="margin-left:12px; font-size:12px;">Show raw XML</a>
-						<span id="conn-status" style="margin-left:12px;"></span>
+					<!-- Preview of what's inside the file -->
+					<div id="preview-box" style="display:none; margin-top:18px;"></div>
 
-						<div id="debug-section" style="display:none; margin-top:12px;">
-							<label class="control-label" style="font-size:12px;">Raw response from Tally (diagnostic)</label>
-							<pre id="debug-output" style="max-height:240px; overflow:auto; font-size:11px; background:#f8f8f8;"></pre>
-						</div>
-
-						<div id="company-section" style="display:none; margin-top:20px;">
-							<div class="form-group">
-								<label class="control-label">Tally Company</label>
-								<select id="tally-company" class="form-control" style="max-width:360px;"></select>
-							</div>
-							<button id="btn-next-live" class="btn btn-primary btn-sm">Next →</button>
-						</div>
+					<div style="margin-top:24px;">
+						<button id="btn-next-upload" class="btn btn-primary btn-sm" disabled>Continue →</button>
 					</div>
 				</div>
 
-				<!-- Step 2: Configure -->
+				<!-- STEP 2: Configure -->
 				<div id="section-configure" style="display:none;">
-					<h5 class="text-muted uppercase" style="font-size:11px; letter-spacing:1px;">STEP 2 OF 3</h5>
-					<h4>Configure Target</h4>
-					<p class="text-muted">Select the ERPNext company that will receive the migrated data.</p>
+					<h4>Choose where the data should go</h4>
+					<p class="text-muted">Select the ERPNext company that will receive these records.</p>
+
 					<div class="form-group">
 						<label class="control-label">ERPNext Company</label>
 						<select id="erpnext-company" class="form-control" style="max-width:360px;"></select>
+						<div id="company-empty" style="display:none; margin-top:8px;" class="text-muted small">
+							No company found. <a href="/app/company/new">Create a Company in ERPNext</a> first,
+							then come back and refresh this page.
+						</div>
 					</div>
 
 					<div class="well well-sm" style="margin-top:16px; margin-bottom:20px;">
-						<strong>Phase 1 — What will be migrated</strong>
-						<ul class="list-unstyled" style="margin-top:8px; margin-bottom:0;">
-							<li>✓ &nbsp;Customers — ledgers under Sundry Debtors</li>
-							<li>✓ &nbsp;Suppliers — ledgers under Sundry Creditors</li>
-							<li>✓ &nbsp;Items — all Stock Items with UOM mapping</li>
-							<li>✓ &nbsp;Warehouses — all Godowns (parent-before-child)</li>
-							<li>✓ &nbsp;Addresses — billing address per customer / supplier</li>
-						</ul>
+						<strong>Here's what will be imported</strong>
+						<div id="configure-counts" style="margin-top:10px;"></div>
 					</div>
-					<p class="text-muted" style="font-size:12px;">
-						Existing records are <strong>never overwritten</strong> — the migrator skips any record already present in ERPNext.
-					</p>
 
 					<button id="btn-back-2" class="btn btn-default btn-sm">← Back</button>
 					&nbsp;
 					<button id="btn-next-2" class="btn btn-primary btn-sm">Start Migration →</button>
 				</div>
 
-				<!-- Step 3: Run & Results -->
+				<!-- STEP 3: Run & Results -->
 				<div id="section-run" style="display:none;">
-					<h5 class="text-muted uppercase" style="font-size:11px; letter-spacing:1px;">STEP 3 OF 3</h5>
 					<h4>Migration</h4>
 					<p id="run-subtitle" class="text-muted"></p>
 
@@ -149,129 +113,83 @@ class TallyMigratorPage {
 						<p id="progress-desc" class="text-muted" style="font-size:12px; margin:0;">Starting…</p>
 					</div>
 
-					<div id="results-section" style="display:none;">
-						<div id="results-table"></div>
-						<br>
-						<button id="btn-view-logs" class="btn btn-default btn-sm">View Migration Logs</button>
-						&nbsp;
-						<button id="btn-restart" class="btn btn-default btn-sm">← Start Over</button>
-					</div>
+					<div id="results-section" style="display:none;"></div>
 
 					<div id="error-section" style="display:none;" class="alert alert-danger"></div>
 
-					<button id="btn-back-3" class="btn btn-default btn-sm">← Back</button>
-					&nbsp;
-					<button id="btn-run" class="btn btn-primary btn-sm">▶ Run Migration</button>
+					<div id="run-actions">
+						<button id="btn-back-3" class="btn btn-default btn-sm">← Back</button>
+						&nbsp;
+						<button id="btn-run" class="btn btn-primary btn-sm">▶ Run Migration</button>
+					</div>
 				</div>
 
 			</div>
 		`);
 
-		this.injectStyles();
+		this.renderStepper("section-upload");
 		this.bindEvents();
 	}
 
-	injectStyles() {
-		if (document.getElementById("tally-migrator-styles")) return;
-		const css = `
-			.src-card { border:1px solid var(--border-color, #d1d8dd); border-radius:8px;
-				padding:12px; cursor:pointer; height:100%; transition:border-color .15s, box-shadow .15s; }
-			.src-card:hover { border-color:#7575ff; }
-			.src-card-active { border-color:#5e64ff; box-shadow:0 0 0 1px #5e64ff inset; }
-		`;
-		$("<style>", { id: "tally-migrator-styles", text: css }).appendTo("head");
+	// ── Persistent stepper ──────────────────────────────────────────────────────
+
+	renderStepper(activeId) {
+		const activeIdx = STEPS.findIndex((s) => s.id === activeId);
+		const parts = STEPS.map((s, i) => {
+			const done = i < activeIdx;
+			const active = i === activeIdx;
+			const circleColor = active ? "#5e64ff" : done ? "#28a745" : "#d1d8dd";
+			const textColor = active ? "#1f272e" : "#8d99a6";
+			const circle = `
+				<div style="display:flex; align-items:center; gap:8px;">
+					<span style="display:inline-flex; align-items:center; justify-content:center;
+						width:24px; height:24px; border-radius:50%; background:${circleColor};
+						color:#fff; font-size:12px; font-weight:600;">
+						${done ? "✓" : i + 1}
+					</span>
+					<span style="color:${textColor}; font-weight:${active ? 600 : 400}; font-size:13px;">${s.label}</span>
+				</div>`;
+			const connector =
+				i < STEPS.length - 1
+					? `<div style="flex:1; height:2px; background:${i < activeIdx ? "#28a745" : "#e0e6ed"}; margin:0 12px;"></div>`
+					: "";
+			return circle + connector;
+		});
+		$("#stepper").html(parts.join(""));
 	}
 
 	bindEvents() {
-		const $ = window.$;
-
-		// Step 1 — source selection
-		$("#card-file").on("click", () => this.selectSource("file"));
-		$("#card-live").on("click", () => this.selectSource("live"));
-
-		// File path — upload + advance
+		// Step 1 — upload + advance
 		$("#btn-pick-file").on("click", () => this.pickFile());
-		$("#btn-next-file").on("click", () => {
+		$("#btn-next-upload").on("click", () => {
 			if (!this.fileUrl) {
-				frappe.msgprint("Please upload a Master Data XML file first.");
+				frappe.msgprint("Please upload a Tally XML file first.");
 				return;
 			}
 			this.proceedToConfigure();
 		});
 
-		// Live path — test connection
-		$("#btn-test").on("click", () => this.testConnection());
-		$("#btn-debug").on("click", (e) => {
-			e.preventDefault();
-			this.showDebugXml();
-		});
-		$("#btn-next-live").on("click", () => {
-			if (!$("#tally-company").val()) {
-				frappe.msgprint("Please select a Tally company.");
-				return;
-			}
-			this.proceedToConfigure();
-		});
-
-		// Step 2 → Step 1
-		$("#btn-back-2").on("click", () => this.show("section-source"));
-
-		// Step 2 → Step 3
+		// Step 2
+		$("#btn-back-2").on("click", () => this.show("section-upload"));
 		$("#btn-next-2").on("click", () => {
-			if (!$("#erpnext-company").val()) {
+			const erpnext = $("#erpnext-company").val();
+			if (!erpnext) {
 				frappe.msgprint("Please select an ERPNext company.");
 				return;
 			}
-			const erpnext = $("#erpnext-company").val();
-			const sourceLabel =
-				this.sourceMode === "file"
-					? "uploaded file"
-					: `"${$("#tally-company").val()}" (live)`;
-			$("#run-subtitle").text(`Migrating masters from ${sourceLabel} → "${erpnext}"`);
+			$("#run-subtitle").html(
+				`Importing from <strong>${frappe.utils.escape_html(this.fileName || "your file")}</strong> ` +
+					`into <strong>${frappe.utils.escape_html(erpnext)}</strong>.`
+			);
 			this.show("section-run");
 		});
 
-		// Step 3 → Step 2
+		// Step 3
 		$("#btn-back-3").on("click", () => this.show("section-configure"));
-
-		// Run migration
 		$("#btn-run").on("click", () => this.runMigration());
-
-		// View logs
-		$("#btn-view-logs").on("click", () => {
-			frappe.set_route("List", "Tally Migration Log");
-		});
-
-		// Start over
-		$("#btn-restart").on("click", () => {
-			// Reset live-connection state
-			$("#conn-status").html("");
-			$("#company-section").hide();
-			// Reset file-upload state
-			this.fileUrl = null;
-			$("#file-status").html("");
-			$("#btn-next-file").prop("disabled", true);
-			// Reset run/results state
-			$("#progress-section").hide();
-			$("#results-section").hide();
-			$("#error-section").hide();
-			$("#progress-bar").css("width", "0%").text("0%");
-			$("#btn-run").show().prop("disabled", false);
-			$("#btn-back-3").show().prop("disabled", false);
-			this.show("section-source");
-		});
 	}
 
-	// ── Source selection ──────────────────────────────────────────────────────
-
-	selectSource(mode) {
-		this.sourceMode = mode;
-		$("#card-file").toggleClass("src-card-active", mode === "file");
-		$("#card-live").toggleClass("src-card-active", mode === "live");
-		$(`input[name="src"][value="${mode}"]`).prop("checked", true);
-		$("#panel-file").toggle(mode === "file");
-		$("#panel-live").toggle(mode === "live");
-	}
+	// ── Step 1: upload + preview ────────────────────────────────────────────────
 
 	pickFile() {
 		new frappe.ui.FileUploader({
@@ -279,94 +197,89 @@ class TallyMigratorPage {
 			restrictions: { allowed_file_types: [".xml", "text/xml", "application/xml"] },
 			on_success: (file_doc) => {
 				this.fileUrl = file_doc.file_url;
+				this.fileName = file_doc.file_name || file_doc.file_url;
 				$("#file-status").html(
-					`<span class="indicator green">${frappe.utils.escape_html(
-						file_doc.file_name || file_doc.file_url
-					)}</span>`
+					`<span class="indicator green">${frappe.utils.escape_html(this.fileName)}</span>`
 				);
-				$("#btn-next-file").prop("disabled", false);
+				this.loadPreview();
 			},
 		});
+	}
+
+	loadPreview() {
+		$("#preview-box")
+			.show()
+			.html(`<span class="text-muted"><i class="fa fa-spinner fa-spin"></i> &nbsp;Reading your file…</span>`);
+		$("#btn-next-upload").prop("disabled", true);
+
+		frappe.call({
+			method: "tally_migrator.api.preview_masters_file",
+			args: { file_url: this.fileUrl },
+			callback: (r) => {
+				const p = r.message || {};
+				this.preview = p;
+				const total =
+					(p.customers || 0) + (p.suppliers || 0) + (p.items || 0) + (p.warehouses || 0);
+				if (total === 0) {
+					$("#preview-box").html(
+						`<div class="alert alert-warning" style="margin:0;">
+							We read the file, but found no Customers, Suppliers, Items or Warehouses in it.
+							Make sure you exported <strong>Masters</strong> (with <strong>Show All Masters = Yes</strong>) from Tally.
+						</div>`
+					);
+					$("#btn-next-upload").prop("disabled", true);
+					return;
+				}
+				$("#preview-box").html(
+					`<div class="alert alert-success" style="margin:0;">
+						<strong>✓ File read successfully.</strong> Here's what we found:
+						${this.countsHtml(p)}
+					</div>`
+				);
+				$("#btn-next-upload").prop("disabled", false);
+			},
+			error: () => {
+				$("#preview-box").html(
+					`<div class="alert alert-danger" style="margin:0;">
+						We couldn't read this file. Please make sure it's a valid Tally <strong>Masters XML</strong>
+						export and upload it again.
+					</div>`
+				);
+				$("#btn-next-upload").prop("disabled", true);
+			},
+		});
+	}
+
+	countsHtml(p) {
+		const rows = [
+			["Customers", p.customers || 0],
+			["Suppliers", p.suppliers || 0],
+			["Items", p.items || 0],
+			["Warehouses", p.warehouses || 0],
+		];
+		const chips = rows
+			.map(
+				([label, n]) =>
+					`<span style="display:inline-block; margin:6px 8px 0 0; padding:3px 10px;
+						background:#fff; border:1px solid #d1d8dd; border-radius:12px; font-size:12px;">
+						<strong>${n}</strong> ${label}</span>`
+			)
+			.join("");
+		return `<div style="margin-top:6px;">${chips}</div>`;
 	}
 
 	proceedToConfigure() {
 		this.loadERPNextCompanies();
+		$("#configure-counts").html(this.preview ? this.countsHtml(this.preview) : "");
 		this.show("section-configure");
 	}
 
-	// ── Navigation ────────────────────────────────────────────────────────────
+	// ── Navigation ──────────────────────────────────────────────────────────────
 
 	show(sectionId) {
-		["section-source", "section-configure", "section-run"].forEach((id) => {
-			$("#" + id).hide();
-		});
+		STEPS.forEach((s) => $("#" + s.id).hide());
 		$("#" + sectionId).show();
-	}
-
-	// ── Live connection ───────────────────────────────────────────────────────
-
-	testConnection() {
-		const host = $("#tally-host").val() || "localhost";
-		const port = parseInt($("#tally-port").val()) || 9000;
-
-		$("#btn-test").prop("disabled", true).text("Testing…");
-		$("#conn-status").html("");
-
-		frappe.call({
-			method: "tally_migrator.api.ping_tally",
-			args: { tally_host: host, tally_port: port },
-			callback: (r) => {
-				$("#btn-test").prop("disabled", false).text("Test Connection");
-				const result = r.message;
-				if (result && result.reachable) {
-					$("#conn-status").html('<span class="indicator green">Connected</span>');
-					const $select = $("#tally-company").empty();
-					(result.companies || []).forEach((c) => {
-						$select.append(`<option value="${c}">${c}</option>`);
-					});
-					$("#company-section").show();
-				} else {
-					$("#conn-status").html('<span class="indicator red">Cannot connect</span>');
-					$("#company-section").hide();
-					frappe.msgprint(
-						`Could not reach Tally on ${host}:${port}. ` +
-							"Make sure Tally is running and the HTTP server is enabled."
-					);
-				}
-			},
-			error: () => {
-				$("#btn-test").prop("disabled", false).text("Test Connection");
-				$("#conn-status").html('<span class="indicator red">Error</span>');
-			},
-		});
-	}
-
-	showDebugXml() {
-		const host = $("#tally-host").val() || "localhost";
-		const port = parseInt($("#tally-port").val()) || 9000;
-
-		$("#debug-section").show();
-		$("#debug-output").text("Fetching…");
-
-		frappe.call({
-			method: "tally_migrator.api.debug_company_xml",
-			args: { tally_host: host, tally_port: port },
-			callback: (r) => {
-				const m = r.message || {};
-				const parsed = m.parsed || [];
-				$("#debug-output").text(
-					"Parsed companies: " +
-						(parsed.length ? JSON.stringify(parsed) : "(none)") +
-						"\n\n--- Raw XML ---\n" +
-						(m.raw || "(empty)")
-				);
-			},
-			error: () => {
-				$("#debug-output").text(
-					"Request failed — is Tally reachable on " + host + ":" + port + "?"
-				);
-			},
-		});
+		this.renderStepper(sectionId);
 	}
 
 	loadERPNextCompanies() {
@@ -374,16 +287,26 @@ class TallyMigratorPage {
 			method: "frappe.client.get_list",
 			args: { doctype: "Company", fields: ["name"], limit_page_length: 100 },
 			callback: (r) => {
+				const companies = r.message || [];
 				const $select = $("#erpnext-company").empty();
+				if (!companies.length) {
+					$("#company-empty").show();
+					$("#btn-next-2").prop("disabled", true);
+					return;
+				}
+				$("#company-empty").hide();
+				$("#btn-next-2").prop("disabled", false);
 				$select.append('<option value="">Select company…</option>');
-				(r.message || []).forEach((c) => {
+				companies.forEach((c) => {
 					$select.append(`<option value="${c.name}">${c.name}</option>`);
 				});
+				// Auto-select when there is exactly one.
+				if (companies.length === 1) $select.val(companies[0].name);
 			},
 		});
 	}
 
-	// ── Run ───────────────────────────────────────────────────────────────────
+	// ── Step 3: run ──────────────────────────────────────────────────────────────
 
 	runMigration() {
 		const erpnext = $("#erpnext-company").val();
@@ -394,7 +317,6 @@ class TallyMigratorPage {
 		$("#results-section").hide();
 		$("#progress-section").show();
 
-		// Listen for realtime progress events (same title for both sources)
 		frappe.realtime.on("progress", (data) => {
 			if (data.title !== "Tally Masters Migration") return;
 			const pct = data.percent || 0;
@@ -402,39 +324,22 @@ class TallyMigratorPage {
 			$("#progress-desc").text(data.description || "");
 		});
 
-		// Branch the backend call on the chosen source.
-		const call =
-			this.sourceMode === "file"
-				? {
-						method: "tally_migrator.api.run_masters_migration_from_file",
-						args: { file_url: this.fileUrl, erpnext_company: erpnext },
-				  }
-				: {
-						method: "tally_migrator.api.run_masters_migration",
-						args: {
-							tally_host: $("#tally-host").val() || "localhost",
-							tally_port: parseInt($("#tally-port").val()) || 9000,
-							tally_company: $("#tally-company").val(),
-							erpnext_company: erpnext,
-						},
-				  };
-
 		frappe.call({
-			...call,
+			method: "tally_migrator.api.run_masters_migration_from_file",
+			args: { file_url: this.fileUrl, erpnext_company: erpnext },
 			callback: (r) => {
 				frappe.realtime.off("progress");
-				$("#btn-run").prop("disabled", false);
-				$("#btn-back-3").prop("disabled", false);
 				$("#progress-bar")
 					.removeClass("active progress-bar-striped")
 					.css("width", "100%")
 					.text("100%");
-
 				const summary = r.message;
 				if (summary) {
 					this.renderResults(summary);
-					$("#btn-run").hide();
-					$("#btn-back-3").hide();
+					$("#run-actions").hide();
+				} else {
+					$("#btn-run").prop("disabled", false);
+					$("#btn-back-3").prop("disabled", false);
 				}
 			},
 			error: (err) => {
@@ -447,8 +352,8 @@ class TallyMigratorPage {
 				$("#error-section")
 					.html(
 						`<strong>Migration failed.</strong> ${frappe.utils.escape_html(detail)}` +
-							`<br><span style="font-size:12px;">Nothing was left half-done — already-imported records are kept and safe to re-run. ` +
-							`Open <a href="#" class="err-logs-link">Migration Logs</a> to see exactly what failed.</span>`
+							`<br><span style="font-size:12px;">Nothing was left half-done — already-imported records are kept and it's safe to run again. ` +
+							`Open <a href="#" class="err-logs-link">the migration log</a> to see exactly what happened.</span>`
 					)
 					.show();
 				$(".err-logs-link").on("click", (e) => {
@@ -461,21 +366,30 @@ class TallyMigratorPage {
 
 	renderResults(summary) {
 		const hasErrors = Object.values(summary).some((r) => r.failed > 0);
+		const totalCreated = Object.values(summary).reduce((a, r) => a + (r.created || 0), 0);
+
+		// Headline
 		let html = `
 			<div class="alert ${hasErrors ? "alert-warning" : "alert-success"}">
-				${hasErrors ? "⚠ Migration completed with some errors." : "✓ All records migrated successfully."}
-			</div>
+				${
+					hasErrors
+						? "⚠ Migration finished — most records imported, but some need your attention (see Failed below)."
+						: `✓ All done! <strong>${totalCreated}</strong> new record${totalCreated === 1 ? "" : "s"} imported into ERPNext.`
+				}
+			</div>`;
+
+		// Results table
+		html += `
 			<table class="table table-bordered table-condensed" style="margin-top:12px;">
 				<thead>
 					<tr>
-						<th>Entity</th>
-						<th class="text-right">Created</th>
-						<th class="text-right">Skipped</th>
+						<th>Record type</th>
+						<th class="text-right">Imported</th>
+						<th class="text-right">Already there</th>
 						<th class="text-right">Failed</th>
 					</tr>
 				</thead>
-				<tbody>
-		`;
+				<tbody>`;
 		for (const [label, result] of Object.entries(summary)) {
 			html += `
 				<tr>
@@ -485,12 +399,61 @@ class TallyMigratorPage {
 					<td class="text-right ${result.failed > 0 ? "text-danger" : "text-muted"}">
 						${result.failed > 0 ? `<strong>${result.failed}</strong>` : result.failed}
 					</td>
-				</tr>
-			`;
+				</tr>`;
 		}
 		html += `</tbody></table>`;
 
-		$("#results-table").html(html);
-		$("#results-section").show();
+		// Plain-English legend
+		html += `
+			<div class="text-muted small" style="margin-top:6px; line-height:1.6;">
+				<strong>Imported</strong> = newly created in ERPNext &nbsp;·&nbsp;
+				<strong>Already there</strong> = skipped because it already existed (safe, nothing changed) &nbsp;·&nbsp;
+				<strong>Failed</strong> = couldn't be imported${hasErrors ? " — see the log for the reason" : ""}.
+			</div>`;
+
+		// What's next
+		html += `<div style="margin-top:22px;"><strong>What's next</strong>`;
+		html += `<div style="margin-top:10px; display:flex; flex-wrap:wrap; gap:8px;">
+				<button class="btn btn-default btn-sm" data-go="Customer">View Customers</button>
+				<button class="btn btn-default btn-sm" data-go="Supplier">View Suppliers</button>
+				<button class="btn btn-default btn-sm" data-go="Item">View Items</button>
+				<button class="btn btn-default btn-sm" data-go="Warehouse">View Warehouses</button>
+				<button class="btn btn-default btn-sm" id="btn-view-logs">View migration log</button>
+			</div>`;
+		if (hasErrors) {
+			html += `<p class="text-muted small" style="margin-top:12px;">
+				To fix the failed records, open the migration log to see why each one failed,
+				correct it in your Tally export, then upload again — the records that already
+				imported will simply be skipped.</p>`;
+		}
+		html += `<div style="margin-top:16px;">
+				<button id="btn-restart" class="btn btn-default btn-sm">↺ Migrate another file</button>
+			</div></div>`;
+
+		$("#results-section").html(html).show();
+
+		// Wire next-step buttons
+		$("#results-section [data-go]").on("click", (e) => {
+			frappe.set_route("List", $(e.currentTarget).attr("data-go"));
+		});
+		$("#btn-view-logs").on("click", () => frappe.set_route("List", "Tally Migration Log"));
+		$("#btn-restart").on("click", () => this.restart());
+	}
+
+	restart() {
+		this.fileUrl = null;
+		this.fileName = null;
+		this.preview = null;
+		$("#file-status").html("");
+		$("#preview-box").hide().html("");
+		$("#btn-next-upload").prop("disabled", true);
+		$("#progress-section").hide();
+		$("#results-section").hide().html("");
+		$("#error-section").hide();
+		$("#progress-bar").css("width", "0%").text("0%");
+		$("#run-actions").show();
+		$("#btn-run").prop("disabled", false);
+		$("#btn-back-3").prop("disabled", false);
+		this.show("section-upload");
 	}
 }

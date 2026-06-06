@@ -2,7 +2,7 @@ from dataclasses import dataclass
 
 import frappe
 
-from tally_migrator.tally.client import TallyClient, TallyConfig
+from tally_migrator.tally.config import TallyConfig
 from tally_migrator.tally.extractors import TallyExtractor, ExtractedMasters
 from tally_migrator.erpnext.importers import ERPNextImporter, ImportResult
 
@@ -61,8 +61,8 @@ class MasterMigrator:
     """
 
     STEPS = {
-        0: "Connecting to Tally...",
-        10: "Extracting data from Tally...",
+        0: "Reading uploaded file...",
+        10: "Extracting masters from file...",
         25: "Importing Warehouses...",
         45: "Importing Customers...",
         60: "Importing Suppliers...",
@@ -71,15 +71,14 @@ class MasterMigrator:
         100: "Migration complete.",
     }
 
-    def __init__(self, config: TallyConfig, source=None):
+    def __init__(self, config: TallyConfig, source):
         """``source`` is any object exposing ``ping()`` + ``get_collection``.
 
-        Defaults to a live :class:`TallyClient`. Pass a
-        :class:`FileTallySource` to run the same pipeline against an uploaded
-        Tally masters XML export instead of a live connection.
+        In practice this is a :class:`FileTallySource` wrapping an uploaded
+        Tally masters XML export.
         """
         self.config = config
-        self.client = source or TallyClient(config)
+        self.client = source
         self.extractor = TallyExtractor(self.client)
         self.importer = ERPNextImporter(config.erpnext_company)
         self.log = None
@@ -91,10 +90,7 @@ class MasterMigrator:
         try:
             self._progress(0)
             if not self.client.ping():
-                frappe.throw(
-                    f"Cannot connect to Tally at {self.config.url}. "
-                    "Ensure Tally is open and the HTTP server is enabled on port 9000."
-                )
+                frappe.throw("Could not read the uploaded file. Please re-upload a valid Tally Masters XML export.")
 
             self._progress(10)
             masters = self.extractor.extract_all()
