@@ -13,6 +13,9 @@ class TallyMigratorPage {
 		this.page = page;
 		this.wrapper = wrapper;
 		this.companies = [];
+		// "file" (recommended, offline export) | "live" (direct port-9000 link)
+		this.sourceMode = "file";
+		this.fileUrl = null;
 		this.render();
 	}
 
@@ -20,41 +23,87 @@ class TallyMigratorPage {
 		$(this.wrapper).find(".page-content").html(`
 			<div class="container" style="max-width:640px; padding-top: 20px;">
 
-				<!-- Step 1: Connection -->
-				<div id="section-connect">
+				<!-- Step 1: Choose data source -->
+				<div id="section-source">
 					<h5 class="text-muted uppercase" style="font-size:11px; letter-spacing:1px;">STEP 1 OF 3</h5>
-					<h4>Connect to Tally</h4>
-					<p class="text-muted">
-						Open Tally and enable the HTTP server. In <strong>Tally Prime</strong>:
-						<strong>F1 (Help) → Settings → Connectivity → Client/Server configuration</strong>,
-						set <em>"TallyPrime acts as"</em> to <strong>Both</strong> (or Server) on port 9000.
-						Make sure your company is open on screen.
-					</p>
-					<div class="form-group row">
-						<div class="col-sm-8">
-							<label class="control-label">Tally Host</label>
-							<input id="tally-host" class="form-control" value="localhost" />
+					<h4>Choose how to bring in your Tally data</h4>
+					<p class="text-muted">Pick the method that fits your setup. You can switch any time before starting.</p>
+
+					<div class="row" style="margin-bottom:8px;">
+						<div class="col-sm-6">
+							<div id="card-file" class="src-card src-card-active">
+								<div style="display:flex; align-items:center; gap:8px;">
+									<input type="radio" name="src" value="file" checked />
+									<strong>Upload export file</strong>
+									<span class="indicator-pill green" style="font-size:10px;">RECOMMENDED</span>
+								</div>
+								<p class="text-muted" style="font-size:12px; margin:6px 0 0 24px;">
+									Export an XML file from Tally and upload it here. Works everywhere —
+									including hosted ERPNext — and gives a saved, repeatable record.
+								</p>
+							</div>
 						</div>
-						<div class="col-sm-4">
-							<label class="control-label">Port</label>
-							<input id="tally-port" class="form-control" value="9000" type="number" />
+						<div class="col-sm-6">
+							<div id="card-live" class="src-card">
+								<div style="display:flex; align-items:center; gap:8px;">
+									<input type="radio" name="src" value="live" />
+									<strong>Direct connection</strong>
+								</div>
+								<p class="text-muted" style="font-size:12px; margin:6px 0 0 24px;">
+									Connect live to a running Tally on the same network (port 9000).
+									Best for on-premise setups where ERPNext can reach Tally.
+								</p>
+							</div>
 						</div>
 					</div>
-					<button id="btn-test" class="btn btn-default btn-sm">Test Connection</button>
-					<a href="#" id="btn-debug" style="margin-left:12px; font-size:12px;">Show raw XML</a>
-					<span id="conn-status" style="margin-left:12px;"></span>
 
-					<div id="debug-section" style="display:none; margin-top:12px;">
-						<label class="control-label" style="font-size:12px;">Raw response from Tally (diagnostic)</label>
-						<pre id="debug-output" style="max-height:240px; overflow:auto; font-size:11px; background:#f8f8f8;"></pre>
+					<!-- File sub-panel -->
+					<div id="panel-file" style="margin-top:16px;">
+						<p class="text-muted">
+							In <strong>Tally Prime</strong>: <strong>Gateway of Tally → Import/Export → Export</strong>,
+							choose <em>Masters</em>, set format to <strong>XML</strong>, and export. Then upload that file below.
+						</p>
+						<button id="btn-pick-file" class="btn btn-default btn-sm">Upload Master Data XML</button>
+						<span id="file-status" style="margin-left:12px;" class="text-muted"></span>
+						<div style="margin-top:16px;">
+							<button id="btn-next-file" class="btn btn-primary btn-sm" disabled>Next →</button>
+						</div>
 					</div>
 
-					<div id="company-section" style="display:none; margin-top:20px;">
-						<div class="form-group">
-							<label class="control-label">Tally Company</label>
-							<select id="tally-company" class="form-control" style="max-width:360px;"></select>
+					<!-- Live sub-panel -->
+					<div id="panel-live" style="display:none; margin-top:16px;">
+						<p class="text-muted">
+							Open Tally and enable the HTTP server. In <strong>Tally Prime</strong>:
+							<strong>F1 (Help) → Settings → Connectivity → Client/Server configuration</strong>,
+							set <em>"TallyPrime acts as"</em> to <strong>Both</strong> (or Server) on port 9000.
+							Make sure your company is open on screen.
+						</p>
+						<div class="form-group row">
+							<div class="col-sm-8">
+								<label class="control-label">Tally Host</label>
+								<input id="tally-host" class="form-control" value="localhost" />
+							</div>
+							<div class="col-sm-4">
+								<label class="control-label">Port</label>
+								<input id="tally-port" class="form-control" value="9000" type="number" />
+							</div>
 						</div>
-						<button id="btn-next-1" class="btn btn-primary btn-sm">Next →</button>
+						<button id="btn-test" class="btn btn-default btn-sm">Test Connection</button>
+						<a href="#" id="btn-debug" style="margin-left:12px; font-size:12px;">Show raw XML</a>
+						<span id="conn-status" style="margin-left:12px;"></span>
+
+						<div id="debug-section" style="display:none; margin-top:12px;">
+							<label class="control-label" style="font-size:12px;">Raw response from Tally (diagnostic)</label>
+							<pre id="debug-output" style="max-height:240px; overflow:auto; font-size:11px; background:#f8f8f8;"></pre>
+						</div>
+
+						<div id="company-section" style="display:none; margin-top:20px;">
+							<div class="form-group">
+								<label class="control-label">Tally Company</label>
+								<select id="tally-company" class="form-control" style="max-width:360px;"></select>
+							</div>
+							<button id="btn-next-live" class="btn btn-primary btn-sm">Next →</button>
+						</div>
 					</div>
 				</div>
 
@@ -118,33 +167,54 @@ class TallyMigratorPage {
 			</div>
 		`);
 
+		this.injectStyles();
 		this.bindEvents();
+	}
+
+	injectStyles() {
+		if (document.getElementById("tally-migrator-styles")) return;
+		const css = `
+			.src-card { border:1px solid var(--border-color, #d1d8dd); border-radius:8px;
+				padding:12px; cursor:pointer; height:100%; transition:border-color .15s, box-shadow .15s; }
+			.src-card:hover { border-color:#7575ff; }
+			.src-card-active { border-color:#5e64ff; box-shadow:0 0 0 1px #5e64ff inset; }
+		`;
+		$("<style>", { id: "tally-migrator-styles", text: css }).appendTo("head");
 	}
 
 	bindEvents() {
 		const $ = window.$;
 
-		// Step 1 — test connection
-		$("#btn-test").on("click", () => this.testConnection());
+		// Step 1 — source selection
+		$("#card-file").on("click", () => this.selectSource("file"));
+		$("#card-live").on("click", () => this.selectSource("live"));
 
-		// Step 1 — diagnostic: dump raw company XML
+		// File path — upload + advance
+		$("#btn-pick-file").on("click", () => this.pickFile());
+		$("#btn-next-file").on("click", () => {
+			if (!this.fileUrl) {
+				frappe.msgprint("Please upload a Master Data XML file first.");
+				return;
+			}
+			this.proceedToConfigure();
+		});
+
+		// Live path — test connection
+		$("#btn-test").on("click", () => this.testConnection());
 		$("#btn-debug").on("click", (e) => {
 			e.preventDefault();
 			this.showDebugXml();
 		});
-
-		// Step 1 → Step 2
-		$("#btn-next-1").on("click", () => {
+		$("#btn-next-live").on("click", () => {
 			if (!$("#tally-company").val()) {
 				frappe.msgprint("Please select a Tally company.");
 				return;
 			}
-			this.loadERPNextCompanies();
-			this.show("section-configure");
+			this.proceedToConfigure();
 		});
 
 		// Step 2 → Step 1
-		$("#btn-back-2").on("click", () => this.show("section-connect"));
+		$("#btn-back-2").on("click", () => this.show("section-source"));
 
 		// Step 2 → Step 3
 		$("#btn-next-2").on("click", () => {
@@ -152,11 +222,12 @@ class TallyMigratorPage {
 				frappe.msgprint("Please select an ERPNext company.");
 				return;
 			}
-			const tally = $("#tally-company").val();
 			const erpnext = $("#erpnext-company").val();
-			$("#run-subtitle").text(
-				`Migrating masters from "${tally}" → "${erpnext}"`
-			);
+			const sourceLabel =
+				this.sourceMode === "file"
+					? "uploaded file"
+					: `"${$("#tally-company").val()}" (live)`;
+			$("#run-subtitle").text(`Migrating masters from ${sourceLabel} → "${erpnext}"`);
 			this.show("section-run");
 		});
 
@@ -179,16 +250,52 @@ class TallyMigratorPage {
 			$("#results-section").hide();
 			$("#error-section").hide();
 			$("#progress-bar").css("width", "0%").text("0%");
-			this.show("section-connect");
+			this.show("section-source");
 		});
 	}
 
+	// ── Source selection ──────────────────────────────────────────────────────
+
+	selectSource(mode) {
+		this.sourceMode = mode;
+		$("#card-file").toggleClass("src-card-active", mode === "file");
+		$("#card-live").toggleClass("src-card-active", mode === "live");
+		$(`input[name="src"][value="${mode}"]`).prop("checked", true);
+		$("#panel-file").toggle(mode === "file");
+		$("#panel-live").toggle(mode === "live");
+	}
+
+	pickFile() {
+		new frappe.ui.FileUploader({
+			folder: "Home/Attachments",
+			restrictions: { allowed_file_types: [".xml", "text/xml", "application/xml"] },
+			on_success: (file_doc) => {
+				this.fileUrl = file_doc.file_url;
+				$("#file-status").html(
+					`<span class="indicator green">${frappe.utils.escape_html(
+						file_doc.file_name || file_doc.file_url
+					)}</span>`
+				);
+				$("#btn-next-file").prop("disabled", false);
+			},
+		});
+	}
+
+	proceedToConfigure() {
+		this.loadERPNextCompanies();
+		this.show("section-configure");
+	}
+
+	// ── Navigation ────────────────────────────────────────────────────────────
+
 	show(sectionId) {
-		["section-connect", "section-configure", "section-run"].forEach((id) => {
+		["section-source", "section-configure", "section-run"].forEach((id) => {
 			$("#" + id).hide();
 		});
 		$("#" + sectionId).show();
 	}
+
+	// ── Live connection ───────────────────────────────────────────────────────
 
 	testConnection() {
 		const host = $("#tally-host").val() || "localhost";
@@ -204,30 +311,24 @@ class TallyMigratorPage {
 				$("#btn-test").prop("disabled", false).text("Test Connection");
 				const result = r.message;
 				if (result && result.reachable) {
-					$("#conn-status").html(
-						'<span class="indicator green">Connected</span>'
-					);
+					$("#conn-status").html('<span class="indicator green">Connected</span>');
 					const $select = $("#tally-company").empty();
 					(result.companies || []).forEach((c) => {
 						$select.append(`<option value="${c}">${c}</option>`);
 					});
 					$("#company-section").show();
 				} else {
-					$("#conn-status").html(
-						'<span class="indicator red">Cannot connect</span>'
-					);
+					$("#conn-status").html('<span class="indicator red">Cannot connect</span>');
 					$("#company-section").hide();
 					frappe.msgprint(
 						`Could not reach Tally on ${host}:${port}. ` +
-						"Make sure Tally is running and the HTTP server is enabled."
+							"Make sure Tally is running and the HTTP server is enabled."
 					);
 				}
 			},
 			error: () => {
 				$("#btn-test").prop("disabled", false).text("Test Connection");
-				$("#conn-status").html(
-					'<span class="indicator red">Error</span>'
-				);
+				$("#conn-status").html('<span class="indicator red">Error</span>');
 			},
 		});
 	}
@@ -244,7 +345,7 @@ class TallyMigratorPage {
 			args: { tally_host: host, tally_port: port },
 			callback: (r) => {
 				const m = r.message || {};
-				const parsed = (m.parsed || []);
+				const parsed = m.parsed || [];
 				$("#debug-output").text(
 					"Parsed companies: " +
 						(parsed.length ? JSON.stringify(parsed) : "(none)") +
@@ -253,7 +354,9 @@ class TallyMigratorPage {
 				);
 			},
 			error: () => {
-				$("#debug-output").text("Request failed — is Tally reachable on " + host + ":" + port + "?");
+				$("#debug-output").text(
+					"Request failed — is Tally reachable on " + host + ":" + port + "?"
+				);
 			},
 		});
 	}
@@ -272,10 +375,9 @@ class TallyMigratorPage {
 		});
 	}
 
+	// ── Run ───────────────────────────────────────────────────────────────────
+
 	runMigration() {
-		const host    = $("#tally-host").val() || "localhost";
-		const port    = parseInt($("#tally-port").val()) || 9000;
-		const tally   = $("#tally-company").val();
 		const erpnext = $("#erpnext-company").val();
 
 		$("#btn-run").prop("disabled", true);
@@ -284,7 +386,7 @@ class TallyMigratorPage {
 		$("#results-section").hide();
 		$("#progress-section").show();
 
-		// Listen for realtime progress events
+		// Listen for realtime progress events (same title for both sources)
 		frappe.realtime.on("progress", (data) => {
 			if (data.title !== "Tally Masters Migration") return;
 			const pct = data.percent || 0;
@@ -292,14 +394,25 @@ class TallyMigratorPage {
 			$("#progress-desc").text(data.description || "");
 		});
 
+		// Branch the backend call on the chosen source.
+		const call =
+			this.sourceMode === "file"
+				? {
+						method: "tally_migrator.api.run_masters_migration_from_file",
+						args: { file_url: this.fileUrl, erpnext_company: erpnext },
+				  }
+				: {
+						method: "tally_migrator.api.run_masters_migration",
+						args: {
+							tally_host: $("#tally-host").val() || "localhost",
+							tally_port: parseInt($("#tally-port").val()) || 9000,
+							tally_company: $("#tally-company").val(),
+							erpnext_company: erpnext,
+						},
+				  };
+
 		frappe.call({
-			method: "tally_migrator.api.run_masters_migration",
-			args: {
-				tally_host:      host,
-				tally_port:      port,
-				tally_company:   tally,
-				erpnext_company: erpnext,
-			},
+			...call,
 			callback: (r) => {
 				frappe.realtime.off("progress");
 				$("#btn-run").prop("disabled", false);
