@@ -71,7 +71,7 @@ class MasterMigrator:
         100: "Migration complete.",
     }
 
-    def __init__(self, config: TallyConfig, source):
+    def __init__(self, config: TallyConfig, source, uom_overrides: dict | None = None):
         """``source`` is any object exposing ``ping()`` + ``get_collection``.
 
         In practice this is a :class:`FileTallySource` wrapping an uploaded
@@ -80,7 +80,7 @@ class MasterMigrator:
         self.config = config
         self.client = source
         self.extractor = TallyExtractor(self.client)
-        self.importer = ERPNextImporter(config.erpnext_company)
+        self.importer = ERPNextImporter(config.erpnext_company, uom_overrides=uom_overrides or {})
         self.log = None
 
     # ── Public ────────────────────────────────────────────────────────────────

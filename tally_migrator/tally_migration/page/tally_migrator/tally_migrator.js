@@ -11,6 +11,7 @@ frappe.pages["tally-migrator"].on_page_load = function (wrapper) {
 const STEPS = [
 	{ id: "section-upload", label: "Upload" },
 	{ id: "section-configure", label: "Configure" },
+	{ id: "section-check", label: "Check" },
 	{ id: "section-run", label: "Migrate" },
 ];
 
@@ -20,7 +21,10 @@ class TallyMigratorPage {
 		this.wrapper = wrapper;
 		this.fileUrl = null;
 		this.fileName = null;
-		this.preview = null; // {customers, suppliers, items, warehouses}
+		this.preview = null;       // {customers, suppliers, items, warehouses}
+		this.uomIssues = [];       // [{tally_uom, erpnext_uom, exists}]
+		this.allUoms = [];         // existing ERPNext UOM names
+		this.uomResolutions = {};  // {tally_uom: {action: "map"|"create", value: "..."}}
 		this.render();
 	}
 
@@ -36,7 +40,7 @@ class TallyMigratorPage {
 					<h4>Bring your Tally data into ERPNext</h4>
 					<p class="text-muted" style="margin-bottom:18px;">
 						This tool copies your master records — Customers, Suppliers, Items and Warehouses —
-						from Tally into ERPNext. It takes three short steps.
+						from Tally into ERPNext. It takes a few short steps.
 					</p>
 
 					<div class="alert alert-info" style="display:flex; gap:10px; align-items:flex-start;">
@@ -98,10 +102,42 @@ class TallyMigratorPage {
 
 					<button id="btn-back-2" class="btn btn-default btn-sm">← Back</button>
 					&nbsp;
-					<button id="btn-next-2" class="btn btn-primary btn-sm">Start Migration →</button>
+					<button id="btn-next-2" class="btn btn-primary btn-sm">Continue →</button>
 				</div>
 
-				<!-- STEP 3: Run & Results -->
+				<!-- STEP 3: Pre-flight check -->
+				<div id="section-check" style="display:none;">
+					<h4>Quick check before we begin</h4>
+					<p class="text-muted">
+						We compare the data in your file against what already exists in ERPNext, so you can
+						decide how to handle anything that doesn't match — nothing is changed automatically.
+					</p>
+
+					<div id="check-loading" class="text-muted" style="margin:18px 0;">
+						<i class="fa fa-spinner fa-spin"></i> &nbsp;Checking your file against ERPNext…
+					</div>
+
+					<div id="check-clean" style="display:none;" class="alert alert-success">
+						<strong>✓ Nothing to resolve.</strong> Everything in your file matches what ERPNext expects.
+					</div>
+
+					<div id="check-issues" style="display:none;">
+						<div class="alert alert-warning" style="margin-bottom:14px;">
+							<strong>⚠ Some Units of Measure in your file don't exist in ERPNext yet.</strong>
+							For each one below, choose what to do — your migration won't run until every
+							row is resolved.
+						</div>
+						<div id="uom-issue-list"></div>
+					</div>
+
+					<div style="margin-top:24px;">
+						<button id="btn-back-check" class="btn btn-default btn-sm">← Back</button>
+						&nbsp;
+						<button id="btn-next-check" class="btn btn-primary btn-sm" disabled>Continue →</button>
+					</div>
+				</div>
+
+				<!-- STEP 4: Run & Results -->
 				<div id="section-run" style="display:none;">
 					<h4>Migration</h4>
 					<p id="run-subtitle" class="text-muted"></p>
@@ -132,14 +168,20 @@ class TallyMigratorPage {
 	}
 
 	// ── Persistent stepper ──────────────────────────────────────────────────────
+	// Frappe default (near-black) for the active step, green for completed,
+	// light grey for steps still ahead — matches standard Frappe desk styling.
 
 	renderStepper(activeId) {
 		const activeIdx = STEPS.findIndex((s) => s.id === activeId);
+		const ACTIVE = "#1f272e";   // Frappe desk default text/ink color
+		const DONE = "#28a745";     // success green
+		const PENDING = "#d1d8dd";  // light grey
+
 		const parts = STEPS.map((s, i) => {
 			const done = i < activeIdx;
 			const active = i === activeIdx;
-			const circleColor = active ? "#5e64ff" : done ? "#28a745" : "#d1d8dd";
-			const textColor = active ? "#1f272e" : "#8d99a6";
+			const circleColor = done ? DONE : active ? ACTIVE : PENDING;
+			const textColor = active ? ACTIVE : done ? DONE : "#8d99a6";
 			const circle = `
 				<div style="display:flex; align-items:center; gap:8px;">
 					<span style="display:inline-flex; align-items:center; justify-content:center;
@@ -151,7 +193,7 @@ class TallyMigratorPage {
 				</div>`;
 			const connector =
 				i < STEPS.length - 1
-					? `<div style="flex:1; height:2px; background:${i < activeIdx ? "#28a745" : "#e0e6ed"}; margin:0 12px;"></div>`
+					? `<div style="flex:1; height:2px; background:${i < activeIdx ? DONE : "#e0e6ed"}; margin:0 12px;"></div>`
 					: "";
 			return circle + connector;
 		});
@@ -177,6 +219,13 @@ class TallyMigratorPage {
 				frappe.msgprint("Please select an ERPNext company.");
 				return;
 			}
+			this.proceedToCheck();
+		});
+
+		// Step 3 — pre-flight check
+		$("#btn-back-check").on("click", () => this.show("section-configure"));
+		$("#btn-next-check").on("click", () => {
+			const erpnext = $("#erpnext-company").val();
 			$("#run-subtitle").html(
 				`Importing from <strong>${frappe.utils.escape_html(this.fileName || "your file")}</strong> ` +
 					`into <strong>${frappe.utils.escape_html(erpnext)}</strong>.`
@@ -184,8 +233,8 @@ class TallyMigratorPage {
 			this.show("section-run");
 		});
 
-		// Step 3
-		$("#btn-back-3").on("click", () => this.show("section-configure"));
+		// Step 4
+		$("#btn-back-3").on("click", () => this.show("section-check"));
 		$("#btn-run").on("click", () => this.runMigration());
 	}
 
@@ -306,10 +355,165 @@ class TallyMigratorPage {
 		});
 	}
 
-	// ── Step 3: run ──────────────────────────────────────────────────────────────
+	// ── Step 3: pre-flight check ─────────────────────────────────────────────────
+
+	proceedToCheck() {
+		this.uomIssues = [];
+		this.allUoms = [];
+		this.uomResolutions = {};
+
+		$("#check-loading").show();
+		$("#check-clean").hide();
+		$("#check-issues").hide();
+		$("#btn-next-check").prop("disabled", true);
+		this.show("section-check");
+
+		frappe.call({
+			method: "tally_migrator.api.validate_masters_file",
+			args: { file_url: this.fileUrl },
+			callback: (r) => {
+				const data = r.message || {};
+				const issues = (data.issues || []).filter((i) => !i.exists);
+				this.uomIssues = issues;
+				this.allUoms = data.all_uoms || [];
+
+				$("#check-loading").hide();
+
+				if (!issues.length) {
+					$("#check-clean").show();
+					$("#btn-next-check").prop("disabled", false);
+					return;
+				}
+
+				$("#check-issues").show();
+				this.renderUomIssues();
+			},
+			error: () => {
+				// Non-fatal: let the user proceed; the importer will still surface
+				// failures afterwards. We just lose the chance to pre-resolve them.
+				$("#check-loading").hide();
+				$("#check-clean")
+					.show()
+					.removeClass("alert-success")
+					.addClass("alert-warning")
+					.html("Couldn't run the pre-flight check — you can still continue, " +
+						"and any issues will be reported after the migration runs.");
+				$("#btn-next-check").prop("disabled", false);
+			},
+		});
+	}
+
+	renderUomIssues() {
+		const rows = this.uomIssues.map((issue, idx) => {
+			const options = this.allUoms
+				.map((u) => `<option value="${frappe.utils.escape_html(u)}">${frappe.utils.escape_html(u)}</option>`)
+				.join("");
+			return `
+				<div class="uom-issue-row" data-tally-uom="${frappe.utils.escape_html(issue.tally_uom)}"
+					style="border:1px solid #e0e6ed; border-radius:6px; padding:12px 14px; margin-bottom:10px;">
+					<div style="display:flex; align-items:center; justify-content:space-between; flex-wrap:wrap; gap:10px;">
+						<div style="font-size:13px;">
+							Your file uses the unit <strong>"${frappe.utils.escape_html(issue.tally_uom)}"</strong>,
+							which would normally become <strong>"${frappe.utils.escape_html(issue.erpnext_uom)}"</strong>
+							in ERPNext — but that doesn't exist yet.
+						</div>
+						<span class="uom-status text-muted small">Not resolved</span>
+					</div>
+					<div style="display:flex; align-items:center; gap:10px; margin-top:10px; flex-wrap:wrap;">
+						<label style="font-size:12px; margin:0;">
+							<input type="radio" name="uom-action-${idx}" value="create" checked>
+							&nbsp;Create "<strong>${frappe.utils.escape_html(issue.erpnext_uom)}</strong>" in ERPNext
+						</label>
+						<label style="font-size:12px; margin:0;">
+							<input type="radio" name="uom-action-${idx}" value="map">
+							&nbsp;Use an existing ERPNext unit instead:
+						</label>
+						<select class="form-control input-sm uom-map-select" style="width:auto; display:inline-block;" disabled>
+							<option value="">Select unit…</option>
+							${options}
+						</select>
+						<button class="btn btn-default btn-xs btn-resolve-uom">Apply</button>
+					</div>
+				</div>`;
+		});
+		$("#uom-issue-list").html(rows.join(""));
+		this.bindUomRowEvents();
+	}
+
+	bindUomRowEvents() {
+		const $list = $("#uom-issue-list");
+
+		// Toggle the dropdown depending on which radio is selected
+		$list.find(".uom-issue-row").each((_, rowEl) => {
+			const $row = $(rowEl);
+			$row.find('input[type="radio"]').on("change", () => {
+				const action = $row.find('input[type="radio"]:checked').val();
+				$row.find(".uom-map-select").prop("disabled", action !== "map");
+			});
+		});
+
+		$list.find(".btn-resolve-uom").on("click", (e) => {
+			const $row = $(e.currentTarget).closest(".uom-issue-row");
+			const tallyUom = $row.data("tally-uom");
+			const action = $row.find('input[type="radio"]:checked').val();
+
+			if (action === "map") {
+				const mapTo = $row.find(".uom-map-select").val();
+				if (!mapTo) {
+					frappe.msgprint("Please select an existing ERPNext unit to map to.");
+					return;
+				}
+				this.uomResolutions[tallyUom] = { action: "map", value: mapTo };
+				$row.find(".uom-status")
+					.removeClass("text-muted")
+					.addClass("text-success")
+					.html(`✓ Will map to "${frappe.utils.escape_html(mapTo)}"`);
+				this.maybeEnableCheckContinue();
+			} else {
+				const issue = this.uomIssues.find((i) => i.tally_uom === tallyUom);
+				const target = issue ? issue.erpnext_uom : tallyUom;
+				const $btn = $(e.currentTarget);
+				$btn.prop("disabled", true).text("Creating…");
+
+				frappe.call({
+					method: "frappe.client.insert",
+					args: { doc: { doctype: "UOM", uom_name: target, must_be_whole_number: 0 } },
+					callback: () => {
+						this.uomResolutions[tallyUom] = { action: "create", value: target };
+						$row.find(".uom-status")
+							.removeClass("text-muted")
+							.addClass("text-success")
+							.html(`✓ Created "${frappe.utils.escape_html(target)}"`);
+						$btn.text("Applied").addClass("disabled");
+						this.maybeEnableCheckContinue();
+					},
+					error: () => {
+						$btn.prop("disabled", false).text("Apply");
+						$row.find(".uom-status")
+							.removeClass("text-muted text-success")
+							.addClass("text-danger")
+							.text("Couldn't create — try mapping to an existing unit instead.");
+					},
+				});
+			}
+		});
+	}
+
+	maybeEnableCheckContinue() {
+		const allResolved = this.uomIssues.every((i) => this.uomResolutions[i.tally_uom]);
+		$("#btn-next-check").prop("disabled", !allResolved);
+	}
+
+	// ── Step 4: run ──────────────────────────────────────────────────────────────
 
 	runMigration() {
 		const erpnext = $("#erpnext-company").val();
+
+		// Build the override map to send to the backend: tally_uom → final ERPNext UOM
+		const overrides = {};
+		Object.entries(this.uomResolutions).forEach(([tallyUom, res]) => {
+			overrides[tallyUom] = res.value;
+		});
 
 		$("#btn-run").prop("disabled", true);
 		$("#btn-back-3").prop("disabled", true);
@@ -326,7 +530,11 @@ class TallyMigratorPage {
 
 		frappe.call({
 			method: "tally_migrator.api.run_masters_migration_from_file",
-			args: { file_url: this.fileUrl, erpnext_company: erpnext },
+			args: {
+				file_url: this.fileUrl,
+				erpnext_company: erpnext,
+				uom_overrides: JSON.stringify(overrides),
+			},
 			callback: (r) => {
 				frappe.realtime.off("progress");
 				$("#progress-bar")
@@ -365,8 +573,11 @@ class TallyMigratorPage {
 	}
 
 	renderResults(summary) {
-		const hasErrors = Object.values(summary).some((r) => r.failed > 0);
-		const totalCreated = Object.values(summary).reduce((a, r) => a + (r.created || 0), 0);
+		const logName = summary.log_name;
+		// Pull out the per-entity results (everything except our own log_name key)
+		const entries = Object.entries(summary).filter(([key]) => key !== "log_name");
+		const hasErrors = entries.some(([, r]) => r.failed > 0);
+		const totalCreated = entries.reduce((a, [, r]) => a + (r.created || 0), 0);
 
 		// Headline
 		let html = `
@@ -390,7 +601,7 @@ class TallyMigratorPage {
 					</tr>
 				</thead>
 				<tbody>`;
-		for (const [label, result] of Object.entries(summary)) {
+		for (const [label, result] of entries) {
 			html += `
 				<tr>
 					<td>${label}</td>
@@ -412,19 +623,22 @@ class TallyMigratorPage {
 			</div>`;
 
 		// What's next
+		const logBtnLabel = logName
+			? `View migration log <strong>${frappe.utils.escape_html(logName)}</strong>`
+			: "View migration log";
 		html += `<div style="margin-top:22px;"><strong>What's next</strong>`;
 		html += `<div style="margin-top:10px; display:flex; flex-wrap:wrap; gap:8px;">
 				<button class="btn btn-default btn-sm" data-go="Customer">View Customers</button>
 				<button class="btn btn-default btn-sm" data-go="Supplier">View Suppliers</button>
 				<button class="btn btn-default btn-sm" data-go="Item">View Items</button>
 				<button class="btn btn-default btn-sm" data-go="Warehouse">View Warehouses</button>
-				<button class="btn btn-default btn-sm" id="btn-view-logs">View migration log</button>
+				<button class="btn btn-default btn-sm" id="btn-view-log">${logBtnLabel}</button>
 			</div>`;
 		if (hasErrors) {
 			html += `<p class="text-muted small" style="margin-top:12px;">
-				To fix the failed records, open the migration log to see why each one failed,
-				correct it in your Tally export, then upload again — the records that already
-				imported will simply be skipped.</p>`;
+				To fix the failed records, open the migration log above to see exactly why each one
+				failed, correct it in your Tally export (or in ERPNext), then upload again — records
+				that already imported will simply be skipped.</p>`;
 		}
 		html += `<div style="margin-top:16px;">
 				<button id="btn-restart" class="btn btn-default btn-sm">↺ Migrate another file</button>
@@ -436,7 +650,13 @@ class TallyMigratorPage {
 		$("#results-section [data-go]").on("click", (e) => {
 			frappe.set_route("List", $(e.currentTarget).attr("data-go"));
 		});
-		$("#btn-view-logs").on("click", () => frappe.set_route("List", "Tally Migration Log"));
+		$("#btn-view-log").on("click", () => {
+			if (logName) {
+				frappe.set_route("Form", "Tally Migration Log", logName);
+			} else {
+				frappe.set_route("List", "Tally Migration Log");
+			}
+		});
 		$("#btn-restart").on("click", () => this.restart());
 	}
 
@@ -444,9 +664,17 @@ class TallyMigratorPage {
 		this.fileUrl = null;
 		this.fileName = null;
 		this.preview = null;
+		this.uomIssues = [];
+		this.allUoms = [];
+		this.uomResolutions = {};
 		$("#file-status").html("");
 		$("#preview-box").hide().html("");
 		$("#btn-next-upload").prop("disabled", true);
+		$("#check-loading").show();
+		$("#check-clean").hide().removeClass("alert-warning").addClass("alert-success");
+		$("#check-issues").hide();
+		$("#uom-issue-list").html("");
+		$("#btn-next-check").prop("disabled", true);
 		$("#progress-section").hide();
 		$("#results-section").hide().html("");
 		$("#error-section").hide();

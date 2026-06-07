@@ -230,11 +230,17 @@ class ItemImporter(BaseImporter):
     doctype = "Item"
     key_field = "item_code"
 
+    def __init__(self, company: str, abbr: str, uom_overrides: dict | None = None):
+        super().__init__(company, abbr)
+        self._uom_overrides = uom_overrides or {}
+
     def before_run(self, records: list[dict], result: ImportResult) -> None:
         self._ensure_item_groups({r.get("Parent") for r in records if r.get("Parent")})
 
     def build_doc(self, record: dict) -> dict:
-        uom = UOM_MAP.get((record.get("BaseUnits") or "").strip(), DEFAULT_UOM)
+        tally_uom = (record.get("BaseUnits") or "").strip()
+        # User-supplied overrides (from pre-flight check) take precedence
+        uom = self._uom_overrides.get(tally_uom) or UOM_MAP.get(tally_uom, DEFAULT_UOM)
         return {
             "doctype": "Item",
             "item_code": self._safe_name(record["_name"]),
@@ -332,9 +338,10 @@ class ERPNextImporter:
     Resolves company metadata once, then delegates each entity to its importer.
     """
 
-    def __init__(self, erpnext_company: str):
+    def __init__(self, erpnext_company: str, uom_overrides: dict | None = None):
         self.company = erpnext_company
         self.abbr = frappe.get_value("Company", erpnext_company, "abbr") or ""
+        self._uom_overrides = uom_overrides or {}
 
     def import_warehouses(self, warehouses: list[dict]) -> ImportResult:
         return WarehouseImporter(self.company, self.abbr).run(warehouses)
@@ -346,4 +353,4 @@ class ERPNextImporter:
         return SupplierImporter(self.company, self.abbr).run(suppliers)
 
     def import_items(self, items: list[dict]) -> ImportResult:
-        return ItemImporter(self.company, self.abbr).run(items)
+        return ItemImporter(self.company, self.abbr, uom_overrides=self._uom_overrides).run(items)
