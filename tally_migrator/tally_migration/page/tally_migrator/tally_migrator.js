@@ -308,13 +308,18 @@ class TallyMigratorPage {
 	}
 
 	countsHtml(p) {
+		const accounts = (p.account_groups || 0) + (p.ledger_accounts || 0);
 		const rows = [
-			["Customers", p.customers || 0],
-			["Suppliers", p.suppliers || 0],
-			["Items", p.items || 0],
-			["Warehouses", p.warehouses || 0],
+			["Customers", p.customers || 0, true],
+			["Suppliers", p.suppliers || 0, true],
+			["Items", p.items || 0, true],
+			["Warehouses", p.warehouses || 0, true],
+			// COA entities only show when present (many files are masters-only).
+			["Accounts", accounts, accounts > 0],
+			["Cost Centres", p.cost_centres || 0, (p.cost_centres || 0) > 0],
 		];
 		const chips = rows
+			.filter(([, , show]) => show)
 			.map(
 				([label, n]) =>
 					`<span style="display:inline-block; margin:6px 8px 0 0; padding:3px 10px;

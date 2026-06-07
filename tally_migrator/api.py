@@ -25,7 +25,8 @@ def preview_masters_file(file_url):
     """
     frappe.only_for(ALLOWED_ROLES)
     _, source = _source_from_file(file_url)
-    return TallyExtractor(source).extract_all().summary
+    extractor = TallyExtractor(source)
+    return {**extractor.extract_all().summary, **extractor.extract_coa().summary}
 
 
 @frappe.whitelist()
@@ -105,7 +106,7 @@ def create_uoms(uom_names):
 
 @frappe.whitelist()
 def run_masters_migration_from_file(file_url, erpnext_company="", uom_overrides="",
-                                    validation_report="", record_overrides=""):
+                                    validation_report="", record_overrides="", coa_mode="reuse"):
     """Run the masters migration from an uploaded Tally masters XML export.
 
     ``file_url``        – URL of the File uploaded via the standard Frappe uploader.
@@ -128,6 +129,7 @@ def run_masters_migration_from_file(file_url, erpnext_company="", uom_overrides=
         tally_company=f"File: {file_doc.file_name or file_url}",
         source_file=file_url,
         validation_report=validation_report or "",
+        coa_mode=coa_mode if coa_mode in ("reuse", "mirror") else "reuse",
     )
     return _run_and_summarize(config, source, uom, records)
 

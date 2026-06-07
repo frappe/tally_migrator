@@ -98,7 +98,11 @@ class MasterMigrator:
         self.config = config
         self.client = source
         self.extractor = TallyExtractor(self.client)
-        self.importer = ERPNextImporter(config.erpnext_company, uom_overrides=uom_overrides or {})
+        self.importer = ERPNextImporter(
+            config.erpnext_company,
+            uom_overrides=uom_overrides or {},
+            coa_mode=getattr(config, "coa_mode", "reuse"),
+        )
         self.record_overrides = record_overrides or {}
         self.log = None
 
@@ -114,16 +118,17 @@ class MasterMigrator:
             self._progress(10)
             masters = self.extractor.extract_all()
             apply_record_overrides(masters, self.record_overrides)
-            frappe.logger().info(f"[Tally Migrator] Extracted: {masters.summary}")
+            coa = self.extractor.extract_coa()
+            frappe.logger().info(f"[Tally Migrator] Extracted: {masters.summary} | COA: {coa.summary}")
 
             results: dict[str, ImportResult] = {}
-            for step in self._pipeline(masters):
+            for step in self._pipeline(masters, coa):
                 self._progress(step.percent, f"Importing {len(step.records)} {step.label.lower()}...")
                 results[step.label] = step.importer(step.records)
             summary = MigrationSummary(results)
 
             self._progress(95)
-            self._finalize_log(masters, summary)
+            self._finalize_log(masters, coa, summary)
 
             self._progress(100)
             return summary
@@ -131,18 +136,28 @@ class MasterMigrator:
             self._fail_log(exc)
             raise
 
-    def _pipeline(self, masters: ExtractedMasters) -> list[PipelineStep]:
+    def _pipeline(self, masters: ExtractedMasters, coa) -> list[PipelineStep]:
         """Entity import order. Adding an entity = add one step here.
 
-        Warehouses first (Items reference them); Customers/Suppliers next
-        (independent); Items last (depend on Item Groups + Warehouses).
+        Accounts (COA) first — opening balances post against them; Cost Centres
+        next; then Warehouses (Items reference them), Customers/Suppliers
+        (independent), Items (depend on Item Groups + Warehouses); Opening
+        Balances last, once every account exists.
         """
-        return [
-            PipelineStep("Warehouses", 25, self.importer.import_warehouses, masters.warehouses),
-            PipelineStep("Customers", 45, self.importer.import_customers, masters.customers),
-            PipelineStep("Suppliers", 60, self.importer.import_suppliers, masters.suppliers),
-            PipelineStep("Items", 75, self.importer.import_items, masters.items),
+        steps: list[PipelineStep] = []
+        if coa.accounts:
+            steps.append(PipelineStep("Accounts", 20, self.importer.import_accounts, coa.accounts))
+        if coa.cost_centres:
+            steps.append(PipelineStep("Cost Centres", 30, self.importer.import_cost_centres, coa.cost_centres))
+        steps += [
+            PipelineStep("Warehouses", 40, self.importer.import_warehouses, masters.warehouses),
+            PipelineStep("Customers", 55, self.importer.import_customers, masters.customers),
+            PipelineStep("Suppliers", 65, self.importer.import_suppliers, masters.suppliers),
+            PipelineStep("Items", 80, self.importer.import_items, masters.items),
         ]
+        if any(a.opening_balance and not a.is_group for a in coa.accounts):
+            steps.append(PipelineStep("Opening Balances", 90, self.importer.import_opening_balances, coa.accounts))
+        return steps
 
     # ── Progress ────────────────────────────────────────────────────────────────
 
@@ -170,12 +185,12 @@ class MasterMigrator:
         frappe.db.commit()
         return log
 
-    def _finalize_log(self, masters: ExtractedMasters, summary: MigrationSummary) -> None:
+    def _finalize_log(self, masters: ExtractedMasters, coa, summary: MigrationSummary) -> None:
         """Record extraction/import results. Must never abort the migration."""
         try:
             self.log.reload()
             self.log.status = "Completed with Errors" if summary.has_errors else "Completed"
-            self.log.extracted_counts = frappe.as_json(masters.summary)
+            self.log.extracted_counts = frappe.as_json({**masters.summary, **coa.summary})
             self.log.import_summary = frappe.as_json(summary.as_dict())
             self.log.set("errors", [])
             if summary.has_errors:
