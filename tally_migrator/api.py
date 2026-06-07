@@ -124,8 +124,40 @@ def run_masters_migration_from_file(file_url, erpnext_company="", uom_overrides=
     config = TallyConfig(
         erpnext_company=erpnext_company,
         tally_company=f"File: {file_doc.file_name or file_url}",
+        source_file=file_url,
     )
     migrator = MasterMigrator(config, source=FileTallySource(xml_text), uom_overrides=overrides)
+    summary = migrator.run()
+    result = summary.as_dict()
+    result["log_name"] = migrator.log.name if migrator.log else None
+    return result
+
+
+@frappe.whitelist()
+def rerun_from_log(log_name):
+    """Re-run a migration from the source file stored on an existing log.
+
+    The import is idempotent — records that already exist are skipped — so a full
+    re-run effectively retries only the records that failed last time (typically
+    once their underlying issue, e.g. a missing UOM, has been resolved). A fresh
+    log is created so the run history is preserved.
+    """
+    frappe.only_for(["System Manager", "Tally Migration Manager"])
+    log = frappe.get_doc("Tally Migration Log", log_name)
+    if not log.source_file:
+        frappe.throw(
+            "This log has no source file stored, so it can't be re-run automatically. "
+            "Open the Tally Migrator page and upload the file again."
+        )
+
+    file_doc = frappe.get_doc("File", {"file_url": log.source_file})
+    xml_text = _decode(file_doc.get_content())
+    config = TallyConfig(
+        erpnext_company=log.company,
+        tally_company=log.tally_company,
+        source_file=log.source_file,
+    )
+    migrator = MasterMigrator(config, source=FileTallySource(xml_text))
     summary = migrator.run()
     result = summary.as_dict()
     result["log_name"] = migrator.log.name if migrator.log else None

@@ -29,6 +29,13 @@
       "in_list_view": 1
     },
     {
+      "fieldname": "source_file",
+      "fieldtype": "Attach",
+      "label": "Source File",
+      "read_only": 1,
+      "description": "The Tally Masters XML this run imported from. Kept so the run can be repeated."
+    },
+    {
       "fieldname": "col_break_1",
       "fieldtype": "Column Break"
     },
@@ -59,9 +66,33 @@
       "in_list_view": 1
     },
     {
-      "fieldname": "section_counts",
+      "fieldname": "section_summary",
       "fieldtype": "Section Break",
-      "label": "Extraction Counts"
+      "label": "Summary"
+    },
+    {
+      "fieldname": "summary_view",
+      "fieldtype": "HTML",
+      "label": "Summary"
+    },
+    {
+      "fieldname": "section_errors",
+      "fieldtype": "Section Break",
+      "label": "Failed Records",
+      "depends_on": "eval:(doc.errors && doc.errors.length) || doc.status == 'Failed'"
+    },
+    {
+      "fieldname": "errors",
+      "fieldtype": "Table",
+      "label": "Failed Records",
+      "options": "Tally Migration Error",
+      "read_only": 1
+    },
+    {
+      "fieldname": "section_raw",
+      "fieldtype": "Section Break",
+      "label": "Raw Data (JSON)",
+      "collapsible": 1
     },
     {
       "fieldname": "extracted_counts",
@@ -71,11 +102,6 @@
       "read_only": 1
     },
     {
-      "fieldname": "section_summary",
-      "fieldtype": "Section Break",
-      "label": "Import Summary"
-    },
-    {
       "fieldname": "import_summary",
       "fieldtype": "Code",
       "label": "Import Summary",
@@ -83,15 +109,9 @@
       "read_only": 1
     },
     {
-      "fieldname": "section_errors",
-      "fieldtype": "Section Break",
-      "label": "Errors",
-      "depends_on": "eval:doc.status == 'Completed with Errors' || doc.status == 'Failed'"
-    },
-    {
       "fieldname": "error_log",
       "fieldtype": "Long Text",
-      "label": "Error Log",
+      "label": "Error Log (plain text)",
       "read_only": 1
     }
   ],

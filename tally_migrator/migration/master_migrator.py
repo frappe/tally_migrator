@@ -38,6 +38,14 @@ class MigrationSummary:
         ]
         return "\n".join(lines)
 
+    def error_records(self) -> list[dict]:
+        """Structured per-record failures for the log's child table."""
+        return [
+            {"record_type": label, "record_name": e["name"], "reason": e["reason"]}
+            for label, result in self._pairs()
+            for e in result.errors
+        ]
+
 
 class MasterMigrator:
     """
@@ -139,6 +147,8 @@ class MasterMigrator:
         log.tally_company = self.config.tally_company
         log.migration_type = "Masters"
         log.status = "Running"
+        if self.config.source_file:
+            log.source_file = self.config.source_file
         log.insert(ignore_permissions=True)
         frappe.db.commit()
         return log
@@ -150,8 +160,11 @@ class MasterMigrator:
             self.log.status = "Completed with Errors" if summary.has_errors else "Completed"
             self.log.extracted_counts = frappe.as_json(masters.summary)
             self.log.import_summary = frappe.as_json(summary.as_dict())
+            self.log.set("errors", [])
             if summary.has_errors:
                 self.log.error_log = summary.error_lines()
+                for row in summary.error_records():
+                    self.log.append("errors", row)
             self.log.save(ignore_permissions=True)
             frappe.db.commit()
         except Exception as exc:

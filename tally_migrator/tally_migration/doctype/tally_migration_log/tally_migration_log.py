@@ -7,13 +7,18 @@ class TallyMigrationLog(Document):
     # This code is auto-generated. Do not modify anything in this block.
 
     from frappe.types import DF
+    from tally_migrator.tally_migration.doctype.tally_migration_error.tally_migration_error import (
+        TallyMigrationError,
+    )
 
     company: DF.Link
     error_log: DF.LongText | None
+    errors: DF.Table[TallyMigrationError]
     extracted_counts: DF.Code | None
     import_summary: DF.Code | None
     migration_date: DF.Datetime | None
     migration_type: DF.Literal["Masters", "Transactions"]
+    source_file: DF.Attach | None
     status: DF.Literal["", "Running", "Completed", "Completed with Errors", "Failed"]
     tally_company: DF.Data
     # end: auto-generated types

@@ -50,6 +50,33 @@ class TestMigrationSummary(unittest.TestCase):
         self.assertEqual(d["Customers"]["created"], 2)
         self.assertEqual(d["Customers"]["failed"], 1)
 
+    def test_error_records_are_structured_and_labelled(self):
+        s = MigrationSummary(
+            warehouses=_result("Warehouse"),
+            customers=_result("Customer", errors=[("Acme", "Invalid GST")]),
+            suppliers=_result("Supplier"),
+            items=_result("Item", errors=[("Widget", "bad UOM")]),
+        )
+        records = s.error_records()
+        self.assertEqual(len(records), 2)
+        self.assertIn(
+            {"record_type": "Customers", "record_name": "Acme", "reason": "Invalid GST"},
+            records,
+        )
+        self.assertIn(
+            {"record_type": "Items", "record_name": "Widget", "reason": "bad UOM"},
+            records,
+        )
+
+    def test_error_records_empty_when_clean(self):
+        s = MigrationSummary(
+            warehouses=_result("Warehouse", created=1),
+            customers=_result("Customer", created=2),
+            suppliers=_result("Supplier"),
+            items=_result("Item"),
+        )
+        self.assertEqual(s.error_records(), [])
+
 
 if __name__ == "__main__":
     unittest.main()

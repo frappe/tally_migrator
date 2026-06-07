@@ -1,0 +1,36 @@
+{
+  "name": "Tally Migration Error",
+  "doctype": "DocType",
+  "module": "Tally Migration",
+  "custom": 0,
+  "istable": 1,
+  "editable_grid": 1,
+  "engine": "InnoDB",
+  "fields": [
+    {
+      "fieldname": "record_type",
+      "fieldtype": "Data",
+      "label": "Record Type",
+      "in_list_view": 1,
+      "columns": 2,
+      "read_only": 1
+    },
+    {
+      "fieldname": "record_name",
+      "fieldtype": "Data",
+      "label": "Record",
+      "in_list_view": 1,
+      "columns": 3,
+      "read_only": 1
+    },
+    {
+      "fieldname": "reason",
+      "fieldtype": "Small Text",
+      "label": "Why it failed",
+      "in_list_view": 1,
+      "columns": 6,
+      "read_only": 1
+    }
+  ],
+  "permissions": []
+}
