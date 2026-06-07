@@ -14,24 +14,24 @@ def _result(doctype, created=0, skipped=0, errors=()):
     return r
 
 
+def _summary(warehouse, customer, supplier, item):
+    """Build a MigrationSummary with the standard four entities, in order."""
+    return MigrationSummary({
+        "Warehouses": warehouse,
+        "Customers": customer,
+        "Suppliers": supplier,
+        "Items": item,
+    })
+
+
 class TestMigrationSummary(unittest.TestCase):
     def test_no_errors_is_false_and_empty_lines(self):
-        s = MigrationSummary(
-            warehouses=_result("Warehouse", created=2),
-            customers=_result("Customer", created=3),
-            suppliers=_result("Supplier", skipped=1),
-            items=_result("Item", created=5),
-        )
+        s = _summary(_result("Warehouse", created=2), _result("Customer", created=3), _result("Supplier", skipped=1), _result("Item", created=5))
         self.assertFalse(s.has_errors)
         self.assertEqual(s.error_lines(), "")
 
     def test_error_lines_are_labelled_and_flattened(self):
-        s = MigrationSummary(
-            warehouses=_result("Warehouse"),
-            customers=_result("Customer", errors=[("Acme", "Invalid GST")]),
-            suppliers=_result("Supplier"),
-            items=_result("Item", errors=[("Widget", "bad UOM")]),
-        )
+        s = _summary(_result("Warehouse"), _result("Customer", errors=[("Acme", "Invalid GST")]), _result("Supplier"), _result("Item", errors=[("Widget", "bad UOM")]))
         self.assertTrue(s.has_errors)
         lines = s.error_lines().splitlines()
         self.assertIn("[Customers] Acme: Invalid GST", lines)
@@ -39,42 +39,25 @@ class TestMigrationSummary(unittest.TestCase):
         self.assertEqual(len(lines), 2)
 
     def test_as_dict_shape(self):
-        s = MigrationSummary(
-            warehouses=_result("Warehouse", created=1),
-            customers=_result("Customer", created=2, errors=[("X", "e")]),
-            suppliers=_result("Supplier"),
-            items=_result("Item"),
-        )
+        s = _summary(_result("Warehouse", created=1), _result("Customer", created=2, errors=[("X", "e")]), _result("Supplier"), _result("Item"))
         d = s.as_dict()
         self.assertEqual(set(d), {"Warehouses", "Customers", "Suppliers", "Items"})
         self.assertEqual(d["Customers"]["created"], 2)
         self.assertEqual(d["Customers"]["failed"], 1)
 
     def test_error_records_are_structured_and_labelled(self):
-        s = MigrationSummary(
-            warehouses=_result("Warehouse"),
-            customers=_result("Customer", errors=[("Acme", "Invalid GST")]),
-            suppliers=_result("Supplier"),
-            items=_result("Item", errors=[("Widget", "bad UOM")]),
-        )
+        s = _summary(_result("Warehouse"), _result("Customer", errors=[("Acme", "Invalid GST")]), _result("Supplier"), _result("Item", errors=[("Widget", "bad UOM")]))
         records = s.error_records()
         self.assertEqual(len(records), 2)
         self.assertIn(
             {"record_type": "Customers", "record_name": "Acme", "reason": "Invalid GST"},
-            records,
-        )
+            records)
         self.assertIn(
             {"record_type": "Items", "record_name": "Widget", "reason": "bad UOM"},
-            records,
-        )
+            records)
 
     def test_error_records_empty_when_clean(self):
-        s = MigrationSummary(
-            warehouses=_result("Warehouse", created=1),
-            customers=_result("Customer", created=2),
-            suppliers=_result("Supplier"),
-            items=_result("Item"),
-        )
+        s = _summary(_result("Warehouse", created=1), _result("Customer", created=2), _result("Supplier"), _result("Item"))
         self.assertEqual(s.error_records(), [])
 
 

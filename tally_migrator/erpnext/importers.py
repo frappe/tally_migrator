@@ -37,15 +37,8 @@ from tally_migrator.tally.mappings import (
     DEFAULT_WAREHOUSE,
     DEFAULT_UOM,
 )
+from tally_migrator.naming import safe_item_code
 from tally_migrator.validation.engine import infer_gst_category
-
-
-def _gst_category(record: dict) -> str:
-    """Infer ERPNext GST Category from the party's GSTIN + country."""
-    return infer_gst_category(
-        record.get("GSTRegistrationNumber") or "",
-        record.get("CountryName") or "India",
-    )
 
 
 # ── Result tracking ───────────────────────────────────────────────────────────
@@ -163,6 +156,14 @@ class PartyImporter(BaseImporter):
     def after_insert(self, name: str, record: dict) -> None:
         self._save_address(name, self.doctype, record)
 
+    @staticmethod
+    def _gst_category(record: dict) -> str:
+        """Infer the ERPNext GST Category from the party's GSTIN + country."""
+        return infer_gst_category(
+            record.get("GSTRegistrationNumber") or "",
+            record.get("CountryName") or "India",
+        )
+
     def _resolve_payment_terms(self, tally_credit_period: str) -> str:
         """
         Tally stores a credit period as '30 Days' or '30'. Map to an ERPNext
@@ -213,7 +214,7 @@ class CustomerImporter(PartyImporter):
             "customer_type": "Company",
             "tax_id": record.get("GSTRegistrationNumber") or "",
             "pan": record.get("INCOMETAXNumber") or "",
-            "gst_category": _gst_category(record),
+            "gst_category": self._gst_category(record),
             "payment_terms": self._resolve_payment_terms(record.get("BillCreditPeriod")),
         }
 
@@ -230,7 +231,7 @@ class SupplierImporter(PartyImporter):
             "supplier_type": "Company",
             "tax_id": record.get("GSTRegistrationNumber") or "",
             "pan": record.get("INCOMETAXNumber") or "",
-            "gst_category": _gst_category(record),
+            "gst_category": self._gst_category(record),
             "payment_terms": self._resolve_payment_terms(record.get("BillCreditPeriod")),
         }
 
@@ -254,7 +255,7 @@ class ItemImporter(BaseImporter):
         uom = self._uom_overrides.get(tally_uom) or UOM_MAP.get(tally_uom, DEFAULT_UOM)
         return {
             "doctype": "Item",
-            "item_code": self._safe_name(record["_name"]),
+            "item_code": safe_item_code(record["_name"]),
             "item_name": record["_name"],
             "item_group": record.get("Parent") or DEFAULT_ITEM_GROUP,
             "stock_uom": uom,
@@ -277,12 +278,6 @@ class ItemImporter(BaseImporter):
                     frappe.db.commit()
                 except Exception as exc:
                     frappe.log_error(f"Item Group creation failed: {group}: {exc}", "Tally Migrator")
-
-    @staticmethod
-    def _safe_name(name: str) -> str:
-        """ERPNext item_code caps at 140 chars and dislikes '/'."""
-        from tally_migrator.naming import safe_item_code
-        return safe_item_code(name)
 
 
 # ── Warehouse importer ──────────────────────────────────────────────────────────

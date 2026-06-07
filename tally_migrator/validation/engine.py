@@ -301,20 +301,10 @@ def _validate_party(rec: dict, entity_type: str, report: ValidationReport) -> No
             "Check whether the PIN or the state is the typo."))
 
 
-def validate_masters(masters, report: ValidationReport | None = None) -> ValidationReport:
-    report = report or ValidationReport()
-    report.count("Customer", len(masters.customers))
-    report.count("Supplier", len(masters.suppliers))
-    report.count("Item", len(masters.items))
-
-    for c in masters.customers:
-        _validate_party(c, "Customer", report)
-    for s in masters.suppliers:
-        _validate_party(s, "Supplier", report)
-
-    # Items: HSN presence + item_code collisions.
+def _validate_items(items: list[dict], report: ValidationReport) -> None:
+    """Per-item rules: HSN presence (warning) + item_code collisions (error)."""
     seen_codes: dict[str, str] = {}
-    for it in masters.items:
+    for it in items:
         name = it["_name"]
         if not (it.get("HSNCode") or "").strip():
             report.add(ValidationIssue(
@@ -330,14 +320,30 @@ def validate_masters(masters, report: ValidationReport | None = None) -> Validat
         else:
             seen_codes[code] = name
 
-    # Duplicate parties (customers + suppliers together — a party can be both).
-    for group in find_duplicate_groups(masters.customers + masters.suppliers):
+
+def _validate_duplicates(parties: list[dict], report: ValidationReport) -> None:
+    """Flag likely-duplicate parties (customers + suppliers share the namespace)."""
+    for group in find_duplicate_groups(parties):
         primary = group[0]
         for dupe in group[1:]:
             report.add(ValidationIssue(
                 "Customer", dupe, WARNING, "DUPLICATE_PARTY",
                 f"Looks like a duplicate of '{primary}'.",
                 "Merge in Tally, or pick one survivor before migrating."))
+
+
+def validate_masters(masters, report: ValidationReport | None = None) -> ValidationReport:
+    report = report or ValidationReport()
+    report.count("Customer", len(masters.customers))
+    report.count("Supplier", len(masters.suppliers))
+    report.count("Item", len(masters.items))
+
+    for c in masters.customers:
+        _validate_party(c, "Customer", report)
+    for s in masters.suppliers:
+        _validate_party(s, "Supplier", report)
+    _validate_items(masters.items, report)
+    _validate_duplicates(masters.customers + masters.suppliers, report)
     return report
 
 

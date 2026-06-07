@@ -1,4 +1,5 @@
 from dataclasses import dataclass
+from typing import Callable
 
 import frappe
 
@@ -8,41 +9,45 @@ from tally_migrator.erpnext.importers import ERPNextImporter, ImportResult
 
 
 @dataclass
-class MigrationSummary:
-    warehouses: ImportResult
-    customers: ImportResult
-    suppliers: ImportResult
-    items: ImportResult
+class PipelineStep:
+    """One entity in the migration pipeline: how to import it and how to report it."""
+    label: str                                   # e.g. "Warehouses"
+    percent: int                                 # progress-bar position
+    importer: Callable[[list[dict]], ImportResult]
+    records: list[dict]
 
-    def _pairs(self):
-        return [
-            ("Warehouses", self.warehouses),
-            ("Customers", self.customers),
-            ("Suppliers", self.suppliers),
-            ("Items", self.items),
-        ]
+
+class MigrationSummary:
+    """Per-entity import results, keyed by label in pipeline order.
+
+    Holding the results in one ordered mapping (rather than a fixed field per
+    entity) means adding a new entity to the pipeline needs no change here — the
+    summary, the log, and the error reporting all iterate generically.
+    """
+
+    def __init__(self, results: dict[str, ImportResult]):
+        self.results = results
 
     def as_dict(self) -> dict:
-        return {label: result.as_dict() for label, result in self._pairs()}
+        return {label: result.as_dict() for label, result in self.results.items()}
 
     @property
     def has_errors(self) -> bool:
-        return any(result.failed > 0 for _, result in self._pairs())
+        return any(result.failed > 0 for result in self.results.values())
 
     def error_lines(self) -> str:
         """Flat, human-readable list of per-record failures for the log."""
-        lines = [
+        return "\n".join(
             f"[{label}] {e['name']}: {e['reason']}"
-            for label, result in self._pairs()
+            for label, result in self.results.items()
             for e in result.errors
-        ]
-        return "\n".join(lines)
+        )
 
     def error_records(self) -> list[dict]:
         """Structured per-record failures for the log's child table."""
         return [
             {"record_type": label, "record_name": e["name"], "reason": e["reason"]}
-            for label, result in self._pairs()
+            for label, result in self.results.items()
             for e in result.errors
         ]
 
@@ -104,21 +109,11 @@ class MasterMigrator:
             masters = self.extractor.extract_all()
             frappe.logger().info(f"[Tally Migrator] Extracted: {masters.summary}")
 
-            self._progress(25, f"Importing {len(masters.warehouses)} warehouses...")
-            warehouses = self.importer.import_warehouses(masters.warehouses)
-
-            self._progress(45, f"Importing {len(masters.customers)} customers...")
-            customers = self.importer.import_customers(masters.customers)
-
-            self._progress(60, f"Importing {len(masters.suppliers)} suppliers...")
-            suppliers = self.importer.import_suppliers(masters.suppliers)
-
-            self._progress(75, f"Importing {len(masters.items)} items...")
-            items = self.importer.import_items(masters.items)
-
-            summary = MigrationSummary(
-                warehouses=warehouses, customers=customers, suppliers=suppliers, items=items
-            )
+            results: dict[str, ImportResult] = {}
+            for step in self._pipeline(masters):
+                self._progress(step.percent, f"Importing {len(step.records)} {step.label.lower()}...")
+                results[step.label] = step.importer(step.records)
+            summary = MigrationSummary(results)
 
             self._progress(95)
             self._finalize_log(masters, summary)
@@ -128,6 +123,19 @@ class MasterMigrator:
         except Exception as exc:
             self._fail_log(exc)
             raise
+
+    def _pipeline(self, masters: ExtractedMasters) -> list[PipelineStep]:
+        """Entity import order. Adding an entity = add one step here.
+
+        Warehouses first (Items reference them); Customers/Suppliers next
+        (independent); Items last (depend on Item Groups + Warehouses).
+        """
+        return [
+            PipelineStep("Warehouses", 25, self.importer.import_warehouses, masters.warehouses),
+            PipelineStep("Customers", 45, self.importer.import_customers, masters.customers),
+            PipelineStep("Suppliers", 60, self.importer.import_suppliers, masters.suppliers),
+            PipelineStep("Items", 75, self.importer.import_items, masters.items),
+        ]
 
     # ── Progress ────────────────────────────────────────────────────────────────
 
