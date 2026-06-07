@@ -1,9 +1,87 @@
 frappe.ui.form.on("Tally Migration Log", {
 	refresh(frm) {
 		render_summary(frm);
+		render_quality(frm);
 		add_buttons(frm);
 	},
 });
+
+// ── Pre-flight data-quality report ──────────────────────────────────────────
+// Renders the stored grouped validation report (errors/warnings by rule code)
+// captured before the migration ran.
+
+function render_quality(frm) {
+	const field = frm.get_field("quality_view");
+	if (!field) return;
+	const wrapper = field.$wrapper;
+	wrapper.empty();
+
+	let report = null;
+	try {
+		report = JSON.parse(frm.doc.validation_report || "null");
+	} catch (e) {
+		report = null;
+	}
+	if (!report || !report.groups) return;
+
+	const esc = frappe.utils.escape_html;
+
+	if (report.clean || !report.groups.length) {
+		wrapper.html(
+			`<div class="text-success" style="padding:6px 0;">
+				✓ No data-quality issues were flagged before this run.
+			</div>`
+		);
+		return;
+	}
+
+	const LABELS = {
+		GSTIN_INVALID: "Invalid GSTIN",
+		GST_STATE_MISSING: "GST state missing",
+		GSTIN_STATE_MISMATCH: "GSTIN / state mismatch",
+		PIN_STATE_CONFLICT: "PIN / state conflict",
+		HSN_MISSING: "HSN code missing",
+		ITEM_CODE_COLLISION: "Item code collision",
+		DUPLICATE_PARTY: "Possible duplicate party",
+	};
+
+	const rows = report.groups
+		.map((g) => {
+			const isErr = g.severity === "error";
+			const dot = isErr ? "#e24c4c" : "#f0a500";
+			const label = LABELS[g.code] || g.code;
+			const items = g.items
+				.map(
+					(it) =>
+						`<div style="padding:2px 0; color:#555;">
+							<span class="text-muted">${esc(it.entity_type)}</span> · ${esc(it.entity_name)}
+						</div>`
+				)
+				.join("");
+			return `
+				<div style="border-top:1px solid #f0f4f7; padding:8px 0;">
+					<div style="font-weight:600;">
+						<span style="color:${dot};">■</span> ${esc(label)}
+						<span class="text-muted" style="font-weight:400;">(${g.items.length})</span>
+					</div>
+					${g.fix_hint ? `<div class="text-muted small" style="margin:2px 0 4px;">${esc(g.fix_hint)}</div>` : ""}
+					<div style="margin-left:14px;">${items}</div>
+				</div>`;
+		})
+		.join("");
+
+	wrapper.html(`
+		<div style="border:1px solid #e0e6ed; border-radius:8px; padding:12px 16px;">
+			<div style="margin-bottom:6px;">
+				<span class="text-danger"><strong>${report.error_count}</strong> error(s)</span>
+				&nbsp;·&nbsp;
+				<span style="color:#f0a500;"><strong>${report.warning_count}</strong> warning(s)</span>
+				<span class="text-muted small">— flagged before this run</span>
+			</div>
+			${rows}
+		</div>
+	`);
+}
 
 // ── Visual summary dashboard ────────────────────────────────────────────────
 // Turns the stored import_summary JSON into a scannable per-entity breakdown

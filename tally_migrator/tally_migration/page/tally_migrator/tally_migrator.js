@@ -25,6 +25,7 @@ class TallyMigratorPage {
 		this.uomIssues = [];       // [{tally_uom, erpnext_uom, exists}]
 		this.allUoms = [];         // existing ERPNext UOM names
 		this.uomOverrides = {};    // {tally_uom: final_erpnext_uom} after resolution
+		this.qualityReport = null; // grouped data-quality report from the pre-flight scan
 		this.render();
 	}
 
@@ -119,6 +120,18 @@ class TallyMigratorPage {
 
 					<div id="check-clean" style="display:none;" class="alert alert-success">
 						<strong>✓ Nothing to resolve.</strong> Everything in your file matches what ERPNext expects.
+					</div>
+
+					<!-- Data-quality report (read-only; informational + consent) -->
+					<div id="dq-section" style="display:none; margin-bottom:18px;">
+						<div id="dq-cards" style="display:flex; gap:10px; margin-bottom:12px;"></div>
+						<div id="dq-list"></div>
+						<div id="dq-consent" style="display:none; margin-top:12px;" class="alert alert-danger">
+							<label style="margin:0; font-weight:400; cursor:pointer;">
+								<input type="checkbox" id="dq-consent-check" />
+								&nbsp;I understand some records have errors and will fail to import. Continue and migrate the rest.
+							</label>
+						</div>
 					</div>
 
 					<div id="check-issues" style="display:none;">
@@ -354,11 +367,37 @@ class TallyMigratorPage {
 		this.uomIssues = [];
 		this.allUoms = [];
 		this.uomOverrides = {};
+		this.qualityReport = null;
 
 		$("#check-loading").show();
 		$("#check-clean").hide();
 		$("#check-issues").hide();
+		$("#dq-section").hide();
 		this.show("section-check");
+
+		// Two independent read-only scans run in parallel: data-quality (GST / HSN /
+		// duplicates / collisions) and UOM resolution. Render once both return.
+		let pending = 2;
+		const done = () => {
+			if (--pending > 0) return;
+			$("#check-loading").hide();
+			const noUom = !this.uomIssues.length;
+			const noDq = !this.qualityReport || this.qualityReport.clean;
+			if (noUom && noDq) {
+				$("#check-clean").show();
+			}
+		};
+
+		frappe.call({
+			method: "tally_migrator.api.validate_masters_data",
+			args: { file_url: this.fileUrl },
+			callback: (r) => {
+				this.qualityReport = r.message || null;
+				this.renderDataQuality();
+				done();
+			},
+			error: () => done(),  // non-fatal — importer still reports failures later
+		});
 
 		frappe.call({
 			method: "tally_migrator.api.validate_masters_file",
@@ -368,29 +407,96 @@ class TallyMigratorPage {
 				const issues = (data.issues || []).filter((i) => !i.exists);
 				this.uomIssues = issues;
 				this.allUoms = data.all_uoms || [];
-
-				$("#check-loading").hide();
-
-				if (!issues.length) {
-					$("#check-clean").show();
-					return;
+				if (issues.length) {
+					$("#check-issues").show();
+					this.renderUomIssues();
 				}
-
-				$("#check-issues").show();
-				this.renderUomIssues();
+				done();
 			},
-			error: () => {
-				// Non-fatal: let the user proceed; the importer will still surface
-				// failures afterwards. We just lose the chance to pre-resolve them.
-				$("#check-loading").hide();
-				$("#check-clean")
-					.show()
-					.removeClass("alert-success")
-					.addClass("alert-warning")
-					.html("Couldn't run the pre-flight check — you can still continue, " +
-						"and any issues will be reported after the migration runs.");
-			},
+			error: () => done(),
 		});
+	}
+
+	// Render the grouped data-quality report: stat cards + one expandable row per
+	// rule code. Read-only — the user can't fix data here (fixes live in Tally), so
+	// errors gate Continue via an explicit consent checkbox (informed proceed).
+	renderDataQuality() {
+		const report = this.qualityReport;
+		if (!report || report.clean || !(report.groups || []).length) {
+			$("#dq-section").hide();
+			return;
+		}
+		const esc = frappe.utils.escape_html;
+		const LABELS = {
+			GSTIN_INVALID: "Invalid GSTIN",
+			GST_STATE_MISSING: "GST state missing",
+			GSTIN_STATE_MISMATCH: "GSTIN / state mismatch",
+			PIN_STATE_CONFLICT: "PIN / state conflict",
+			HSN_MISSING: "HSN code missing",
+			ITEM_CODE_COLLISION: "Item code collision",
+			DUPLICATE_PARTY: "Possible duplicate party",
+		};
+
+		const card = (n, label, color) => `
+			<div style="flex:1; border:1px solid #e0e6ed; border-radius:6px; padding:10px 12px; text-align:center;">
+				<div style="font-size:20px; font-weight:700; color:${color};">${n}</div>
+				<div class="text-muted small">${label}</div>
+			</div>`;
+		$("#dq-cards").html(
+			card(report.error_count, "Errors", report.error_count ? "#e24c4c" : "#8d99a6") +
+			card(report.warning_count, "Warnings", report.warning_count ? "#f0a500" : "#8d99a6")
+		);
+
+		const rows = report.groups
+			.map((g, idx) => {
+				const isErr = g.severity === "error";
+				const dot = isErr ? "#e24c4c" : "#f0a500";
+				const label = LABELS[g.code] || g.code;
+				const items = g.items
+					.map(
+						(it) => `<div style="padding:2px 0; color:#555;">
+							<span class="text-muted">${esc(it.entity_type)}</span> · ${esc(it.entity_name)}
+						</div>`
+					)
+					.join("");
+				return `
+					<div style="border-top:1px solid #f0f4f7;">
+						<div class="dq-head" data-idx="${idx}" style="cursor:pointer; padding:8px 0; display:flex; align-items:center; gap:6px;">
+							<span style="color:${dot};">■</span>
+							<strong>${esc(label)}</strong>
+							<span class="text-muted">(${g.items.length})</span>
+							<span class="text-muted" style="margin-left:auto;" id="dq-caret-${idx}">▸</span>
+						</div>
+						${g.fix_hint ? `<div class="text-muted small" style="margin:-2px 0 6px;">${esc(g.fix_hint)}</div>` : ""}
+						<div class="dq-body" id="dq-body-${idx}" style="display:none; margin:0 0 8px 16px;">${items}</div>
+					</div>`;
+			})
+			.join("");
+
+		$("#dq-list").html(`
+			<div style="border:1px solid #e0e6ed; border-radius:6px; padding:6px 14px; max-height:300px; overflow-y:auto;">
+				${rows}
+			</div>`);
+
+		$("#dq-list .dq-head").on("click", (e) => {
+			const idx = $(e.currentTarget).data("idx");
+			const $body = $("#dq-body-" + idx);
+			$body.toggle();
+			$("#dq-caret-" + idx).text($body.is(":visible") ? "▾" : "▸");
+		});
+
+		// Errors require explicit consent before Continue.
+		if (report.error_count > 0) {
+			$("#dq-consent").show();
+			$("#btn-next-check").prop("disabled", true);
+			$("#dq-consent-check").off("change").on("change", (e) => {
+				$("#btn-next-check").prop("disabled", !e.target.checked);
+			});
+		} else {
+			$("#dq-consent").hide();
+			$("#btn-next-check").prop("disabled", false);
+		}
+		$("#dq-section").show();
 	}
 
 	// Compact, scalable table: one row per missing unit. Every row defaults to
@@ -535,6 +641,7 @@ class TallyMigratorPage {
 				file_url: this.fileUrl,
 				erpnext_company: erpnext,
 				uom_overrides: JSON.stringify(overrides),
+				validation_report: this.qualityReport ? JSON.stringify(this.qualityReport) : "",
 			},
 			callback: (r) => {
 				frappe.realtime.off("progress");
@@ -659,6 +766,7 @@ class TallyMigratorPage {
 		this.uomIssues = [];
 		this.allUoms = [];
 		this.uomOverrides = {};
+		this.qualityReport = null;
 		$("#file-status").html("");
 		$("#preview-box").hide().html("");
 		$("#btn-next-upload").prop("disabled", true);
@@ -666,6 +774,10 @@ class TallyMigratorPage {
 		$("#check-clean").hide().removeClass("alert-warning").addClass("alert-success");
 		$("#check-issues").hide();
 		$("#uom-issue-list").html("");
+		$("#dq-section").hide();
+		$("#dq-consent").hide();
+		$("#dq-consent-check").prop("checked", false);
+		$("#btn-next-check").prop("disabled", false);
 		$("#progress-section").hide();
 		$("#results-section").hide().html("");
 		$("#error-section").hide();

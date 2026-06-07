@@ -21,6 +21,7 @@ class TallyMigrationLog(Document):
     source_file: DF.Attach | None
     status: DF.Literal["", "Running", "Completed", "Completed with Errors", "Failed"]
     tally_company: DF.Data
+    validation_report: DF.Code | None
     # end: auto-generated types
 
     def before_insert(self):

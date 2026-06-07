@@ -70,6 +70,26 @@ def validate_masters_file(file_url):
 
 
 @frappe.whitelist()
+def validate_masters_data(file_url):
+    """Pre-flight data-quality scan of an uploaded Tally Masters XML.
+
+    Read-only — extracts and inspects, writes nothing. Returns a grouped,
+    UI-ready report (issues collapsed by rule code, errors first) so the user can
+    see how dirty the data is and decide (fix in Tally / proceed anyway) before any
+    migration runs.
+    """
+    frappe.only_for(["System Manager", "Tally Migration Manager"])
+    from tally_migrator.tally.extractors import TallyExtractor
+    from tally_migrator.validation.engine import validate_extraction, group_report
+
+    file_doc = frappe.get_doc("File", {"file_url": file_url})
+    xml_text = _decode(file_doc.get_content())
+    masters = TallyExtractor(FileTallySource(xml_text)).extract_all()
+    report = validate_extraction(masters=masters)
+    return group_report(report)
+
+
+@frappe.whitelist()
 def create_uoms(uom_names):
     """Batch-create UOM records that don't already exist.
 
@@ -103,7 +123,7 @@ def create_uoms(uom_names):
 
 
 @frappe.whitelist()
-def run_masters_migration_from_file(file_url, erpnext_company="", uom_overrides=""):
+def run_masters_migration_from_file(file_url, erpnext_company="", uom_overrides="", validation_report=""):
     """Run the masters migration from an uploaded Tally masters XML export.
 
     ``file_url``        – URL of the File uploaded via the standard Frappe uploader.
@@ -125,6 +145,7 @@ def run_masters_migration_from_file(file_url, erpnext_company="", uom_overrides=
         erpnext_company=erpnext_company,
         tally_company=f"File: {file_doc.file_name or file_url}",
         source_file=file_url,
+        validation_report=validation_report or "",
     )
     migrator = MasterMigrator(config, source=FileTallySource(xml_text), uom_overrides=overrides)
     summary = migrator.run()

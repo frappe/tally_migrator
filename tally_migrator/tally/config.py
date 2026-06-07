@@ -13,3 +13,4 @@ class TallyConfig:
     tally_company: str = ""    # Source label, e.g. the export file name
     erpnext_company: str = ""  # Target Company inside ERPNext
     source_file: str = ""      # file_url of the uploaded XML, stored on the log for re-runs
+    validation_report: str = ""  # JSON of the pre-flight data-quality report, stored on the log

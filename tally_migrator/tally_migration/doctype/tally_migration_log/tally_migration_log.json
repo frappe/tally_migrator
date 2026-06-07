@@ -89,6 +89,26 @@
       "read_only": 1
     },
     {
+      "fieldname": "section_quality",
+      "fieldtype": "Section Break",
+      "label": "Pre-flight Data Quality",
+      "collapsible": 1,
+      "depends_on": "eval:doc.validation_report"
+    },
+    {
+      "fieldname": "quality_view",
+      "fieldtype": "HTML",
+      "label": "Data Quality"
+    },
+    {
+      "fieldname": "validation_report",
+      "fieldtype": "Code",
+      "label": "Validation Report",
+      "options": "JSON",
+      "read_only": 1,
+      "hidden": 1
+    },
+    {
       "fieldname": "section_raw",
       "fieldtype": "Section Break",
       "label": "Raw Data (JSON)",

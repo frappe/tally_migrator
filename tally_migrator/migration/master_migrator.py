@@ -149,6 +149,8 @@ class MasterMigrator:
         log.status = "Running"
         if self.config.source_file:
             log.source_file = self.config.source_file
+        if self.config.validation_report:
+            log.validation_report = self.config.validation_report
         log.insert(ignore_permissions=True)
         frappe.db.commit()
         return log

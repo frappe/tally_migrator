@@ -37,6 +37,15 @@ from tally_migrator.tally.mappings import (
     DEFAULT_WAREHOUSE,
     DEFAULT_UOM,
 )
+from tally_migrator.validation.engine import infer_gst_category
+
+
+def _gst_category(record: dict) -> str:
+    """Infer ERPNext GST Category from the party's GSTIN + country."""
+    return infer_gst_category(
+        record.get("GSTRegistrationNumber") or "",
+        record.get("CountryName") or "India",
+    )
 
 
 # ── Result tracking ───────────────────────────────────────────────────────────
@@ -204,6 +213,7 @@ class CustomerImporter(PartyImporter):
             "customer_type": "Company",
             "tax_id": record.get("GSTRegistrationNumber") or "",
             "pan": record.get("INCOMETAXNumber") or "",
+            "gst_category": _gst_category(record),
             "payment_terms": self._resolve_payment_terms(record.get("BillCreditPeriod")),
         }
 
@@ -220,6 +230,7 @@ class SupplierImporter(PartyImporter):
             "supplier_type": "Company",
             "tax_id": record.get("GSTRegistrationNumber") or "",
             "pan": record.get("INCOMETAXNumber") or "",
+            "gst_category": _gst_category(record),
             "payment_terms": self._resolve_payment_terms(record.get("BillCreditPeriod")),
         }
 
@@ -270,7 +281,8 @@ class ItemImporter(BaseImporter):
     @staticmethod
     def _safe_name(name: str) -> str:
         """ERPNext item_code caps at 140 chars and dislikes '/'."""
-        return name[:140].replace("/", "-").strip()
+        from tally_migrator.naming import safe_item_code
+        return safe_item_code(name)
 
 
 # ── Warehouse importer ──────────────────────────────────────────────────────────
