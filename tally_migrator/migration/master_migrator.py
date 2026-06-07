@@ -6,6 +6,7 @@ import frappe
 from tally_migrator.tally.config import TallyConfig
 from tally_migrator.tally.extractors import TallyExtractor, ExtractedMasters
 from tally_migrator.erpnext.importers import ERPNextImporter, ImportResult
+from tally_migrator.migration.overrides import apply_record_overrides
 
 
 @dataclass
@@ -84,16 +85,21 @@ class MasterMigrator:
         100: "Migration complete.",
     }
 
-    def __init__(self, config: TallyConfig, source, uom_overrides: dict | None = None):
+    def __init__(self, config: TallyConfig, source, uom_overrides: dict | None = None,
+                 record_overrides: dict | None = None):
         """``source`` is any object exposing ``ping()`` + ``get_collection``.
 
         In practice this is a :class:`FileTallySource` wrapping an uploaded
         Tally masters XML export.
+
+        ``record_overrides`` are per-record field fixes from the pre-flight screen,
+        applied to the extracted records in memory before import.
         """
         self.config = config
         self.client = source
         self.extractor = TallyExtractor(self.client)
         self.importer = ERPNextImporter(config.erpnext_company, uom_overrides=uom_overrides or {})
+        self.record_overrides = record_overrides or {}
         self.log = None
 
     # ── Public ────────────────────────────────────────────────────────────────
@@ -107,6 +113,7 @@ class MasterMigrator:
 
             self._progress(10)
             masters = self.extractor.extract_all()
+            apply_record_overrides(masters, self.record_overrides)
             frappe.logger().info(f"[Tally Migrator] Extracted: {masters.summary}")
 
             results: dict[str, ImportResult] = {}

@@ -21,6 +21,7 @@ from dataclasses import dataclass, field
 from difflib import SequenceMatcher
 
 from tally_migrator.naming import safe_item_code
+from tally_migrator.tally.mappings import TALLY_STATE_MAP
 
 # ── Issue + report model ──────────────────────────────────────────────────────
 
@@ -355,11 +356,46 @@ def validate_extraction(masters=None) -> ValidationReport:
     return report
 
 
-def group_report(report: ValidationReport) -> dict:
+# Per-rule fields the user can fix inline on the pre-flight screen. The edits
+# become in-memory record overrides (see migration/overrides.py) — the source XML
+# is never mutated. ``type`` drives the input widget: "text" or "state" (dropdown).
+EDITABLE_FIELDS: dict[str, list[dict]] = {
+    "GSTIN_INVALID":        [{"field": "GSTRegistrationNumber", "label": "GSTIN", "type": "text"}],
+    "GST_STATE_MISSING":    [{"field": "LedgerState", "label": "State", "type": "state"}],
+    "GSTIN_STATE_MISMATCH": [{"field": "LedgerState", "label": "State", "type": "state"},
+                             {"field": "GSTRegistrationNumber", "label": "GSTIN", "type": "text"}],
+    "PIN_STATE_CONFLICT":   [{"field": "LedgerState", "label": "State", "type": "state"},
+                             {"field": "PinCode", "label": "PIN code", "type": "text"}],
+    "HSN_MISSING":          [{"field": "HSNCode", "label": "HSN code", "type": "text"}],
+}
+
+
+def erpnext_states() -> list[str]:
+    """Canonical ERPNext state names, for the inline 'State' dropdown."""
+    return sorted(set(TALLY_STATE_MAP.values()))
+
+
+def records_by_key(masters) -> dict:
+    """Index extracted records by (entity_type, name) for current-value lookups."""
+    index: dict = {}
+    for c in masters.customers:
+        index[("Customer", c["_name"])] = c
+    for s in masters.suppliers:
+        index[("Supplier", s["_name"])] = s
+    for it in masters.items:
+        index[("Item", it["_name"])] = it
+    return index
+
+
+def group_report(report: ValidationReport, lookup: dict | None = None) -> dict:
     """Shape a ValidationReport into grouped-by-code rows for the frontend.
 
     Collapses repetitive issues (e.g. "GST state missing — 13 suppliers") into one
     expandable group instead of N rows. Errors are ordered before warnings.
+
+    When ``lookup`` (from :func:`records_by_key`) is supplied, each group carries
+    its ``editable_fields`` and each item gets a ``current`` map of those fields'
+    present values, so the screen can render pre-filled inline editors.
     """
     groups: dict = {}
     for i in report.issues:
@@ -367,13 +403,21 @@ def group_report(report: ValidationReport) -> dict:
             "code": i.code,
             "severity": i.severity,        # "error" | "warning"
             "fix_hint": i.fix_hint,
-            "items": [],                   # [{entity_type, entity_name, message}]
+            "editable_fields": EDITABLE_FIELDS.get(i.code, []),
+            "items": [],                   # [{entity_type, entity_name, message, current?}]
         })
-        g["items"].append({
+        item = {
             "entity_type": i.entity_type,
             "entity_name": i.entity_name,
             "message": i.message,
-        })
+        }
+        if lookup is not None and i.code in EDITABLE_FIELDS:
+            record = lookup.get((i.entity_type, i.entity_name), {})
+            item["current"] = {
+                f["field"]: (record.get(f["field"]) or "")
+                for f in EDITABLE_FIELDS[i.code]
+            }
+        g["items"].append(item)
     ordered = sorted(groups.values(), key=lambda g: (g["severity"] != "error", g["code"]))
     return {
         "totals": report.totals,

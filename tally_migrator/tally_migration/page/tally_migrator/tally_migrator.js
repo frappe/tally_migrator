@@ -26,6 +26,8 @@ class TallyMigratorPage {
 		this.allUoms = [];         // existing ERPNext UOM names
 		this.uomOverrides = {};    // {tally_uom: final_erpnext_uom} after resolution
 		this.qualityReport = null; // grouped data-quality report from the pre-flight scan
+		this.recordOverrides = {}; // {entityType: {name: {field: value}}} inline fixes
+		this.states = [];          // ERPNext state names for the inline state dropdown
 		this.render();
 	}
 
@@ -368,6 +370,8 @@ class TallyMigratorPage {
 		this.allUoms = [];
 		this.uomOverrides = {};
 		this.qualityReport = null;
+		this.recordOverrides = {};
+		this.states = [];
 
 		$("#check-loading").show();
 		$("#check-clean").hide();
@@ -393,6 +397,7 @@ class TallyMigratorPage {
 			args: { file_url: this.fileUrl },
 			callback: (r) => {
 				this.qualityReport = r.message || null;
+				this.states = (r.message && r.message.states) || [];
 				this.renderDataQuality();
 				done();
 			},
@@ -417,17 +422,8 @@ class TallyMigratorPage {
 		});
 	}
 
-	// Render the grouped data-quality report: stat cards + one expandable row per
-	// rule code. Read-only — the user can't fix data here (fixes live in Tally), so
-	// errors gate Continue via an explicit consent checkbox (informed proceed).
-	renderDataQuality() {
-		const report = this.qualityReport;
-		if (!report || report.clean || !(report.groups || []).length) {
-			$("#dq-section").hide();
-			return;
-		}
-		const esc = frappe.utils.escape_html;
-		const LABELS = {
+	static get DQ_LABELS() {
+		return {
 			GSTIN_INVALID: "Invalid GSTIN",
 			GST_STATE_MISSING: "GST state missing",
 			GSTIN_STATE_MISMATCH: "GSTIN / state mismatch",
@@ -436,7 +432,36 @@ class TallyMigratorPage {
 			ITEM_CODE_COLLISION: "Item code collision",
 			DUPLICATE_PARTY: "Possible duplicate party",
 		};
+	}
 
+	// Render the grouped data-quality report: stat cards + one expandable row per
+	// rule code. Editable rules show inline inputs (pre-filled) so the user can fix
+	// flagged fields; "Re-check" re-validates the fixes against the same engine.
+	// Edits never touch the source file — they ride along as in-memory overrides.
+	// Errors that remain gate Continue via an explicit consent checkbox.
+	renderDataQuality() {
+		const report = this.qualityReport;
+		if (!report) {
+			$("#dq-section").hide();
+			return;
+		}
+		// Clean now: if the user fixed everything, say so; otherwise stay hidden.
+		if (report.clean || !(report.groups || []).length) {
+			if (Object.keys(this.recordOverrides).length) {
+				$("#dq-cards").empty();
+				$("#dq-list").html(
+					`<div class="alert alert-success" style="margin:0;">✓ All flagged data issues are resolved.</div>`
+				);
+				$("#dq-consent").hide();
+				$("#btn-next-check").prop("disabled", false);
+				$("#dq-section").show();
+			} else {
+				$("#dq-section").hide();
+			}
+			return;
+		}
+
+		const esc = frappe.utils.escape_html;
 		const card = (n, label, color) => `
 			<div style="flex:1; border:1px solid #e0e6ed; border-radius:6px; padding:10px 12px; text-align:center;">
 				<div style="font-size:20px; font-weight:700; color:${color};">${n}</div>
@@ -447,34 +472,18 @@ class TallyMigratorPage {
 			card(report.warning_count, "Warnings", report.warning_count ? "#f0a500" : "#8d99a6")
 		);
 
-		const rows = report.groups
-			.map((g, idx) => {
-				const isErr = g.severity === "error";
-				const dot = isErr ? "#e24c4c" : "#f0a500";
-				const label = LABELS[g.code] || g.code;
-				const items = g.items
-					.map(
-						(it) => `<div style="padding:2px 0; color:#555;">
-							<span class="text-muted">${esc(it.entity_type)}</span> · ${esc(it.entity_name)}
-						</div>`
-					)
-					.join("");
-				return `
-					<div style="border-top:1px solid #f0f4f7;">
-						<div class="dq-head" data-idx="${idx}" style="cursor:pointer; padding:8px 0; display:flex; align-items:center; gap:6px;">
-							<span style="color:${dot};">■</span>
-							<strong>${esc(label)}</strong>
-							<span class="text-muted">(${g.items.length})</span>
-							<span class="text-muted" style="margin-left:auto;" id="dq-caret-${idx}">▸</span>
-						</div>
-						${g.fix_hint ? `<div class="text-muted small" style="margin:-2px 0 6px;">${esc(g.fix_hint)}</div>` : ""}
-						<div class="dq-body" id="dq-body-${idx}" style="display:none; margin:0 0 8px 16px;">${items}</div>
-					</div>`;
-			})
-			.join("");
+		const rows = report.groups.map((g, idx) => this.dqGroupHtml(g, idx)).join("");
+		const hasEditable = report.groups.some((g) => (g.editable_fields || []).length);
+		const toolbar = hasEditable
+			? `<div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:8px;">
+					<span class="text-muted small">Fix a value below, then re-check — or continue anyway.</span>
+					<button class="btn btn-default btn-xs" id="btn-dq-recheck">↻ Re-check</button>
+				</div>`
+			: "";
 
 		$("#dq-list").html(`
-			<div style="border:1px solid #e0e6ed; border-radius:6px; padding:6px 14px; max-height:300px; overflow-y:auto;">
+			${toolbar}
+			<div style="border:1px solid #e0e6ed; border-radius:6px; padding:6px 14px; max-height:340px; overflow-y:auto;">
 				${rows}
 			</div>`);
 
@@ -484,12 +493,14 @@ class TallyMigratorPage {
 			$body.toggle();
 			$("#dq-caret-" + idx).text($body.is(":visible") ? "▾" : "▸");
 		});
+		$("#dq-list .dq-edit").on("change", (e) => this.captureEdit(e.currentTarget));
+		$("#btn-dq-recheck").on("click", () => this.recheck());
 
 		// Errors require explicit consent before Continue.
 		if (report.error_count > 0) {
 			$("#dq-consent").show();
 			$("#btn-next-check").prop("disabled", true);
-			$("#dq-consent-check").off("change").on("change", (e) => {
+			$("#dq-consent-check").prop("checked", false).off("change").on("change", (e) => {
 				$("#btn-next-check").prop("disabled", !e.target.checked);
 			});
 		} else {
@@ -497,6 +508,90 @@ class TallyMigratorPage {
 			$("#btn-next-check").prop("disabled", false);
 		}
 		$("#dq-section").show();
+	}
+
+	// One expandable group: header + fix hint + per-record rows (with inline editors
+	// when the rule is fixable).
+	dqGroupHtml(g, idx) {
+		const esc = frappe.utils.escape_html;
+		const dot = g.severity === "error" ? "#e24c4c" : "#f0a500";
+		const label = TallyMigratorPage.DQ_LABELS[g.code] || g.code;
+		const editable = g.editable_fields || [];
+		const items = g.items.map((it) => this.dqItemHtml(it, editable)).join("");
+		return `
+			<div style="border-top:1px solid #f0f4f7;">
+				<div class="dq-head" data-idx="${idx}" style="cursor:pointer; padding:8px 0; display:flex; align-items:center; gap:6px;">
+					<span style="color:${dot};">■</span>
+					<strong>${esc(label)}</strong>
+					<span class="text-muted">(${g.items.length})</span>
+					<span class="text-muted" style="margin-left:auto;" id="dq-caret-${idx}">▸</span>
+				</div>
+				${g.fix_hint ? `<div class="text-muted small" style="margin:-2px 0 6px;">${esc(g.fix_hint)}</div>` : ""}
+				<div class="dq-body" id="dq-body-${idx}" style="display:none; margin:0 0 8px 16px;">${items}</div>
+			</div>`;
+	}
+
+	dqItemHtml(it, editableFields) {
+		const esc = frappe.utils.escape_html;
+		const name = `<div style="padding:2px 0; color:#555;">
+			<span class="text-muted">${esc(it.entity_type)}</span> · ${esc(it.entity_name)}
+		</div>`;
+		if (!editableFields.length) return name;
+		const inputs = editableFields.map((f) => this.dqFieldHtml(it, f)).join("");
+		return `<div style="padding:4px 0;">
+			${name}
+			<div style="display:flex; flex-wrap:wrap; gap:8px; margin:2px 0 6px 12px;">${inputs}</div>
+		</div>`;
+	}
+
+	dqFieldHtml(it, f) {
+		const esc = frappe.utils.escape_html;
+		const cur = this.overrideValue(it, f.field);
+		const attrs = `class="form-control input-sm dq-edit" style="width:auto; min-width:160px; display:inline-block;"
+			data-etype="${esc(it.entity_type)}" data-name="${esc(it.entity_name)}" data-field="${esc(f.field)}"`;
+		const lbl = `<span class="text-muted small" style="margin-right:4px;">${esc(f.label)}:</span>`;
+		if (f.type === "state") {
+			const opts = ['<option value="">— select —</option>']
+				.concat(this.states.map((s) => `<option value="${esc(s)}" ${s === cur ? "selected" : ""}>${esc(s)}</option>`))
+				.join("");
+			return `<label style="margin:0; font-weight:400;">${lbl}<select ${attrs}>${opts}</select></label>`;
+		}
+		return `<label style="margin:0; font-weight:400;">${lbl}<input type="text" ${attrs} value="${esc(cur)}" placeholder="${esc(f.label)}"></label>`;
+	}
+
+	// Prefer an edit the user already made this session; fall back to the file value.
+	overrideValue(it, field) {
+		const byType = this.recordOverrides[it.entity_type] || {};
+		const byName = byType[it.entity_name] || {};
+		if (field in byName) return byName[field];
+		return (it.current && it.current[field]) || "";
+	}
+
+	captureEdit(el) {
+		const $el = $(el);
+		const etype = $el.data("etype");
+		const name = $el.data("name");
+		const field = $el.data("field");
+		this.recordOverrides[etype] = this.recordOverrides[etype] || {};
+		this.recordOverrides[etype][name] = this.recordOverrides[etype][name] || {};
+		this.recordOverrides[etype][name][field] = $el.val();
+	}
+
+	// Re-validate with the in-memory edits applied — fixes are confirmed by the same
+	// engine, so resolved issues drop off and any remaining ones stay visible.
+	recheck() {
+		frappe.dom.freeze(__("Re-checking…"));
+		frappe.call({
+			method: "tally_migrator.api.validate_masters_data",
+			args: { file_url: this.fileUrl, record_overrides: JSON.stringify(this.recordOverrides) },
+			callback: (r) => {
+				frappe.dom.unfreeze();
+				this.qualityReport = r.message || null;
+				this.states = (r.message && r.message.states) || this.states;
+				this.renderDataQuality();
+			},
+			error: () => frappe.dom.unfreeze(),
+		});
 	}
 
 	// Compact, scalable table: one row per missing unit. Every row defaults to
@@ -642,6 +737,7 @@ class TallyMigratorPage {
 				erpnext_company: erpnext,
 				uom_overrides: JSON.stringify(overrides),
 				validation_report: this.qualityReport ? JSON.stringify(this.qualityReport) : "",
+				record_overrides: JSON.stringify(this.recordOverrides || {}),
 			},
 			callback: (r) => {
 				frappe.realtime.off("progress");
@@ -767,6 +863,8 @@ class TallyMigratorPage {
 		this.allUoms = [];
 		this.uomOverrides = {};
 		this.qualityReport = null;
+		this.recordOverrides = {};
+		this.states = [];
 		$("#file-status").html("");
 		$("#preview-box").hide().html("");
 		$("#btn-next-upload").prop("disabled", true);

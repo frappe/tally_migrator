@@ -6,7 +6,10 @@ from tally_migrator.tally.config import TallyConfig
 from tally_migrator.tally.file_source import FileTallySource
 from tally_migrator.tally.extractors import TallyExtractor, ITEM_FIELDS
 from tally_migrator.erpnext.uom_resolver import UomResolver
-from tally_migrator.validation.engine import validate_extraction, group_report
+from tally_migrator.validation.engine import (
+    validate_extraction, group_report, records_by_key, erpnext_states,
+)
+from tally_migrator.migration.overrides import apply_record_overrides
 from tally_migrator.migration.master_migrator import MasterMigrator
 
 ALLOWED_ROLES = ["System Manager", "Tally Migration Manager"]
@@ -46,18 +49,25 @@ def validate_masters_file(file_url):
 
 
 @frappe.whitelist()
-def validate_masters_data(file_url):
+def validate_masters_data(file_url, record_overrides=""):
     """Pre-flight data-quality scan of an uploaded Tally Masters XML.
 
     Read-only — extracts and inspects, writes nothing. Returns a grouped,
-    UI-ready report (issues collapsed by rule code, errors first) so the user can
-    see how dirty the data is and decide (fix in Tally / proceed anyway) before any
-    migration runs.
+    UI-ready report (issues collapsed by rule code, errors first) plus the inline
+    editor metadata (editable fields + current values + the state list) so the user
+    can fix flagged fields and decide (fix / proceed anyway) before any migration.
+
+    ``record_overrides`` is the JSON of edits made on the screen so far; they are
+    applied in memory before re-validating, so "Re-check" confirms fixes against
+    the same rules. The uploaded file itself is never modified.
     """
     frappe.only_for(ALLOWED_ROLES)
+    overrides = json.loads(record_overrides) if record_overrides else {}
     _, source = _source_from_file(file_url)
-    masters = TallyExtractor(source).extract_all()
-    return group_report(validate_extraction(masters=masters))
+    masters = apply_record_overrides(TallyExtractor(source).extract_all(), overrides)
+    payload = group_report(validate_extraction(masters=masters), records_by_key(masters))
+    payload["states"] = erpnext_states()
+    return payload
 
 
 @frappe.whitelist()
@@ -94,7 +104,8 @@ def create_uoms(uom_names):
 
 
 @frappe.whitelist()
-def run_masters_migration_from_file(file_url, erpnext_company="", uom_overrides="", validation_report=""):
+def run_masters_migration_from_file(file_url, erpnext_company="", uom_overrides="",
+                                    validation_report="", record_overrides=""):
     """Run the masters migration from an uploaded Tally masters XML export.
 
     ``file_url``        – URL of the File uploaded via the standard Frappe uploader.
@@ -108,7 +119,8 @@ def run_masters_migration_from_file(file_url, erpnext_company="", uom_overrides=
     the UI can link directly to the migration log.
     """
     frappe.only_for(ALLOWED_ROLES)
-    overrides: dict = json.loads(uom_overrides) if uom_overrides else {}
+    uom: dict = json.loads(uom_overrides) if uom_overrides else {}
+    records: dict = json.loads(record_overrides) if record_overrides else {}
 
     file_doc, source = _source_from_file(file_url)
     config = TallyConfig(
@@ -117,7 +129,7 @@ def run_masters_migration_from_file(file_url, erpnext_company="", uom_overrides=
         source_file=file_url,
         validation_report=validation_report or "",
     )
-    return _run_and_summarize(config, source, overrides)
+    return _run_and_summarize(config, source, uom, records)
 
 
 @frappe.whitelist()
@@ -158,9 +170,14 @@ def _source_from_file(file_url):
     return file_doc, FileTallySource(_decode(file_doc.get_content()))
 
 
-def _run_and_summarize(config: TallyConfig, source, uom_overrides: dict | None = None) -> dict:
+def _run_and_summarize(config: TallyConfig, source, uom_overrides: dict | None = None,
+                       record_overrides: dict | None = None) -> dict:
     """Run a masters migration and return its summary dict plus the log name."""
-    migrator = MasterMigrator(config, source=source, uom_overrides=uom_overrides or {})
+    migrator = MasterMigrator(
+        config, source=source,
+        uom_overrides=uom_overrides or {},
+        record_overrides=record_overrides or {},
+    )
     result = migrator.run().as_dict()
     result["log_name"] = migrator.log.name if migrator.log else None
     return result
