@@ -70,6 +70,39 @@ def validate_masters_file(file_url):
 
 
 @frappe.whitelist()
+def create_uoms(uom_names):
+    """Batch-create UOM records that don't already exist.
+
+    Called from the pre-flight check screen when the user opts to create one or
+    more missing Units of Measure. One round-trip for the whole batch (scales to
+    hundreds of units), instead of one insert per row from the browser.
+
+    ``uom_names`` is a JSON list of names. Returns
+    ``{created: [...], existing: [...], failed: {name: reason}}``.
+    """
+    frappe.only_for(["System Manager", "Tally Migration Manager"])
+    names = json.loads(uom_names) if isinstance(uom_names, str) else (uom_names or [])
+
+    created, existing, failed = [], [], {}
+    for raw in names:
+        name = (raw or "").strip()
+        if not name:
+            continue
+        if frappe.db.exists("UOM", name):
+            existing.append(name)
+            continue
+        try:
+            doc = frappe.new_doc("UOM")
+            doc.uom_name = name
+            doc.insert(ignore_permissions=True)
+            created.append(name)
+        except Exception as exc:
+            failed[name] = str(exc)
+    frappe.db.commit()
+    return {"created": created, "existing": existing, "failed": failed}
+
+
+@frappe.whitelist()
 def run_masters_migration_from_file(file_url, erpnext_company="", uom_overrides=""):
     """Run the masters migration from an uploaded Tally masters XML export.
 

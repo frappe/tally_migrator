@@ -24,7 +24,7 @@ class TallyMigratorPage {
 		this.preview = null;       // {customers, suppliers, items, warehouses}
 		this.uomIssues = [];       // [{tally_uom, erpnext_uom, exists}]
 		this.allUoms = [];         // existing ERPNext UOM names
-		this.uomResolutions = {};  // {tally_uom: {action: "map"|"create", value: "..."}}
+		this.uomOverrides = {};    // {tally_uom: final_erpnext_uom} after resolution
 		this.render();
 	}
 
@@ -124,8 +124,8 @@ class TallyMigratorPage {
 					<div id="check-issues" style="display:none;">
 						<div class="alert alert-warning" style="margin-bottom:14px;">
 							<strong>⚠ Some Units of Measure in your file don't exist in ERPNext yet.</strong>
-							For each one below, choose what to do — your migration won't run until every
-							row is resolved.
+							By default we'll create each one as a new unit. Change any row below if you'd
+							rather map it to a unit you already use — then click Continue.
 						</div>
 						<div id="uom-issue-list"></div>
 					</div>
@@ -133,7 +133,7 @@ class TallyMigratorPage {
 					<div style="margin-top:24px;">
 						<button id="btn-back-check" class="btn btn-default btn-sm">← Back</button>
 						&nbsp;
-						<button id="btn-next-check" class="btn btn-primary btn-sm" disabled>Continue →</button>
+						<button id="btn-next-check" class="btn btn-primary btn-sm">Continue →</button>
 					</div>
 				</div>
 
@@ -224,14 +224,7 @@ class TallyMigratorPage {
 
 		// Step 3 — pre-flight check
 		$("#btn-back-check").on("click", () => this.show("section-configure"));
-		$("#btn-next-check").on("click", () => {
-			const erpnext = $("#erpnext-company").val();
-			$("#run-subtitle").html(
-				`Importing from <strong>${frappe.utils.escape_html(this.fileName || "your file")}</strong> ` +
-					`into <strong>${frappe.utils.escape_html(erpnext)}</strong>.`
-			);
-			this.show("section-run");
-		});
+		$("#btn-next-check").on("click", () => this.resolveUomsAndContinue());
 
 		// Step 4
 		$("#btn-back-3").on("click", () => this.show("section-check"));
@@ -360,12 +353,11 @@ class TallyMigratorPage {
 	proceedToCheck() {
 		this.uomIssues = [];
 		this.allUoms = [];
-		this.uomResolutions = {};
+		this.uomOverrides = {};
 
 		$("#check-loading").show();
 		$("#check-clean").hide();
 		$("#check-issues").hide();
-		$("#btn-next-check").prop("disabled", true);
 		this.show("section-check");
 
 		frappe.call({
@@ -381,7 +373,6 @@ class TallyMigratorPage {
 
 				if (!issues.length) {
 					$("#check-clean").show();
-					$("#btn-next-check").prop("disabled", false);
 					return;
 				}
 
@@ -398,122 +389,132 @@ class TallyMigratorPage {
 					.addClass("alert-warning")
 					.html("Couldn't run the pre-flight check — you can still continue, " +
 						"and any issues will be reported after the migration runs.");
-				$("#btn-next-check").prop("disabled", false);
 			},
 		});
 	}
 
+	// Compact, scalable table: one row per missing unit. Every row defaults to
+	// "create as new", so 3 or 300 issues both resolve in a single Continue
+	// click; per-row dropdowns let the user map specific units to existing ones.
 	renderUomIssues() {
-		const rows = this.uomIssues.map((issue, idx) => {
-			const options = this.allUoms
-				.map((u) => `<option value="${frappe.utils.escape_html(u)}">${frappe.utils.escape_html(u)}</option>`)
-				.join("");
-			return `
-				<div class="uom-issue-row" data-tally-uom="${frappe.utils.escape_html(issue.tally_uom)}"
-					style="border:1px solid #e0e6ed; border-radius:6px; padding:12px 14px; margin-bottom:10px;">
-					<div style="display:flex; align-items:center; justify-content:space-between; flex-wrap:wrap; gap:10px;">
-						<div style="font-size:13px;">
-							Your file uses the unit <strong>"${frappe.utils.escape_html(issue.tally_uom)}"</strong>,
-							which would normally become <strong>"${frappe.utils.escape_html(issue.erpnext_uom)}"</strong>
-							in ERPNext — but that doesn't exist yet.
-						</div>
-						<span class="uom-status text-muted small">Not resolved</span>
-					</div>
-					<div style="display:flex; align-items:center; gap:10px; margin-top:10px; flex-wrap:wrap;">
-						<label style="font-size:12px; margin:0;">
-							<input type="radio" name="uom-action-${idx}" value="create" checked>
-							&nbsp;Create "<strong>${frappe.utils.escape_html(issue.erpnext_uom)}</strong>" in ERPNext
-						</label>
-						<label style="font-size:12px; margin:0;">
-							<input type="radio" name="uom-action-${idx}" value="map">
-							&nbsp;Use an existing ERPNext unit instead:
-						</label>
-						<select class="form-control input-sm uom-map-select" style="width:auto; display:inline-block;" disabled>
-							<option value="">Select unit…</option>
-							${options}
+		const esc = frappe.utils.escape_html;
+		const existingOptions = this.allUoms
+			.map((u) => `<option value="${esc(u)}">Map to existing: ${esc(u)}</option>`)
+			.join("");
+
+		const rows = this.uomIssues
+			.map((issue) => `
+				<tr class="uom-row" data-tally-uom="${esc(issue.tally_uom)}">
+					<td style="font-weight:600; vertical-align:middle;">${esc(issue.tally_uom)}</td>
+					<td class="text-muted text-center" style="width:28px; vertical-align:middle;">→</td>
+					<td>
+						<select class="form-control input-sm uom-choice">
+							<option value="__create__">Create "${esc(issue.erpnext_uom)}" as a new unit</option>
+							${existingOptions}
 						</select>
-						<button class="btn btn-default btn-xs btn-resolve-uom">Apply</button>
-					</div>
-				</div>`;
+					</td>
+				</tr>`)
+			.join("");
+
+		const n = this.uomIssues.length;
+		$("#uom-issue-list").html(`
+			<div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:8px;">
+				<span class="text-muted small">${n} unit${n === 1 ? "" : "s"} to resolve</span>
+				<button class="btn btn-default btn-xs" id="btn-uom-all-create">Set all to "create as new"</button>
+			</div>
+			<div style="max-height:340px; overflow-y:auto; border:1px solid #e0e6ed; border-radius:6px;">
+				<table class="table table-condensed" style="margin:0;">
+					<thead>
+						<tr>
+							<th style="border-top:0;">Tally unit</th>
+							<th style="border-top:0;"></th>
+							<th style="border-top:0;">What to do</th>
+						</tr>
+					</thead>
+					<tbody>${rows}</tbody>
+				</table>
+			</div>
+		`);
+
+		$("#btn-uom-all-create").on("click", () => {
+			$("#uom-issue-list .uom-choice").val("__create__");
 		});
-		$("#uom-issue-list").html(rows.join(""));
-		this.bindUomRowEvents();
 	}
 
-	bindUomRowEvents() {
-		const $list = $("#uom-issue-list");
+	// Read every row, batch-create any UOMs the user chose to create (one call),
+	// build the {tally_uom: final_uom} override map, then advance to the run step.
+	resolveUomsAndContinue() {
+		if (!this.uomIssues.length) {
+			this.uomOverrides = {};
+			this.gotoRun();
+			return;
+		}
 
-		// Toggle the dropdown depending on which radio is selected
-		$list.find(".uom-issue-row").each((_, rowEl) => {
-			const $row = $(rowEl);
-			$row.find('input[type="radio"]').on("change", () => {
-				const action = $row.find('input[type="radio"]:checked').val();
-				$row.find(".uom-map-select").prop("disabled", action !== "map");
-			});
-		});
-
-		$list.find(".btn-resolve-uom").on("click", (e) => {
-			const $row = $(e.currentTarget).closest(".uom-issue-row");
-			const tallyUom = $row.data("tally-uom");
-			const action = $row.find('input[type="radio"]:checked').val();
-
-			if (action === "map") {
-				const mapTo = $row.find(".uom-map-select").val();
-				if (!mapTo) {
-					frappe.msgprint("Please select an existing ERPNext unit to map to.");
-					return;
-				}
-				this.uomResolutions[tallyUom] = { action: "map", value: mapTo };
-				$row.find(".uom-status")
-					.removeClass("text-muted")
-					.addClass("text-success")
-					.html(`✓ Will map to "${frappe.utils.escape_html(mapTo)}"`);
-				this.maybeEnableCheckContinue();
+		const overrides = {};
+		const toCreate = new Set();
+		$("#uom-issue-list .uom-row").each((_, el) => {
+			const $row = $(el);
+			const tally = $row.data("tally-uom");
+			const choice = $row.find(".uom-choice").val();
+			if (choice === "__create__") {
+				const issue = this.uomIssues.find((i) => i.tally_uom === tally);
+				const target = issue ? issue.erpnext_uom : tally;
+				overrides[tally] = target;
+				toCreate.add(target);
 			} else {
-				const issue = this.uomIssues.find((i) => i.tally_uom === tallyUom);
-				const target = issue ? issue.erpnext_uom : tallyUom;
-				const $btn = $(e.currentTarget);
-				$btn.prop("disabled", true).text("Creating…");
-
-				frappe.call({
-					method: "frappe.client.insert",
-					args: { doc: { doctype: "UOM", uom_name: target, must_be_whole_number: 0 } },
-					callback: () => {
-						this.uomResolutions[tallyUom] = { action: "create", value: target };
-						$row.find(".uom-status")
-							.removeClass("text-muted")
-							.addClass("text-success")
-							.html(`✓ Created "${frappe.utils.escape_html(target)}"`);
-						$btn.text("Applied").addClass("disabled");
-						this.maybeEnableCheckContinue();
-					},
-					error: () => {
-						$btn.prop("disabled", false).text("Apply");
-						$row.find(".uom-status")
-							.removeClass("text-muted text-success")
-							.addClass("text-danger")
-							.text("Couldn't create — try mapping to an existing unit instead.");
-					},
-				});
+				overrides[tally] = choice;
 			}
 		});
+
+		const finish = () => {
+			this.uomOverrides = overrides;
+			this.gotoRun();
+		};
+
+		if (!toCreate.size) {
+			finish();
+			return;
+		}
+
+		frappe.dom.freeze("Creating units…");
+		frappe.call({
+			method: "tally_migrator.api.create_uoms",
+			args: { uom_names: JSON.stringify([...toCreate]) },
+			callback: (r) => {
+				frappe.dom.unfreeze();
+				const res = r.message || {};
+				const failed = res.failed || {};
+				if (Object.keys(failed).length) {
+					const lines = Object.entries(failed)
+						.map(([name, reason]) => `<li><strong>${frappe.utils.escape_html(name)}</strong>: ${frappe.utils.escape_html(reason)}</li>`)
+						.join("");
+					frappe.msgprint({
+						title: "Some units couldn't be created",
+						indicator: "red",
+						message: `<p>Please map these to an existing unit instead, then try again:</p><ul>${lines}</ul>`,
+					});
+					return;
+				}
+				finish();
+			},
+			error: () => frappe.dom.unfreeze(),
+		});
 	}
 
-	maybeEnableCheckContinue() {
-		const allResolved = this.uomIssues.every((i) => this.uomResolutions[i.tally_uom]);
-		$("#btn-next-check").prop("disabled", !allResolved);
+	gotoRun() {
+		const erpnext = $("#erpnext-company").val();
+		$("#run-subtitle").html(
+			`Importing from <strong>${frappe.utils.escape_html(this.fileName || "your file")}</strong> ` +
+				`into <strong>${frappe.utils.escape_html(erpnext)}</strong>.`
+		);
+		this.show("section-run");
 	}
 
 	// ── Step 4: run ──────────────────────────────────────────────────────────────
 
 	runMigration() {
 		const erpnext = $("#erpnext-company").val();
-
-		// Build the override map to send to the backend: tally_uom → final ERPNext UOM
-		const overrides = {};
-		Object.entries(this.uomResolutions).forEach(([tallyUom, res]) => {
-			overrides[tallyUom] = res.value;
-		});
+		const overrides = this.uomOverrides || {};
 
 		$("#btn-run").prop("disabled", true);
 		$("#btn-back-3").prop("disabled", true);
@@ -628,18 +629,12 @@ class TallyMigratorPage {
 			: "View migration log";
 		html += `<div style="margin-top:22px;"><strong>What's next</strong>`;
 		html += `<div style="margin-top:10px; display:flex; flex-wrap:wrap; gap:8px;">
-				<button class="btn btn-default btn-sm" data-go="Customer">View Customers</button>
-				<button class="btn btn-default btn-sm" data-go="Supplier">View Suppliers</button>
-				<button class="btn btn-default btn-sm" data-go="Item">View Items</button>
-				<button class="btn btn-default btn-sm" data-go="Warehouse">View Warehouses</button>
-				<button class="btn btn-default btn-sm" id="btn-view-log">${logBtnLabel}</button>
+				<button class="btn btn-primary btn-sm" id="btn-view-log">${logBtnLabel}</button>
 			</div>`;
-		if (hasErrors) {
-			html += `<p class="text-muted small" style="margin-top:12px;">
-				To fix the failed records, open the migration log above to see exactly why each one
-				failed, correct it in your Tally export (or in ERPNext), then upload again — records
-				that already imported will simply be skipped.</p>`;
-		}
+		html += `<p class="text-muted small" style="margin-top:10px;">
+				The migration log lists every record this run touched${hasErrors ? ", including exactly why each failed one didn't import" : ""}.
+				${hasErrors ? "Fix the source in Tally (or in ERPNext), then upload again — records that already imported will simply be skipped." : ""}
+			</p>`;
 		html += `<div style="margin-top:16px;">
 				<button id="btn-restart" class="btn btn-default btn-sm">↺ Migrate another file</button>
 			</div></div>`;
@@ -647,9 +642,6 @@ class TallyMigratorPage {
 		$("#results-section").html(html).show();
 
 		// Wire next-step buttons
-		$("#results-section [data-go]").on("click", (e) => {
-			frappe.set_route("List", $(e.currentTarget).attr("data-go"));
-		});
 		$("#btn-view-log").on("click", () => {
 			if (logName) {
 				frappe.set_route("Form", "Tally Migration Log", logName);
@@ -666,7 +658,7 @@ class TallyMigratorPage {
 		this.preview = null;
 		this.uomIssues = [];
 		this.allUoms = [];
-		this.uomResolutions = {};
+		this.uomOverrides = {};
 		$("#file-status").html("");
 		$("#preview-box").hide().html("");
 		$("#btn-next-upload").prop("disabled", true);
@@ -674,7 +666,6 @@ class TallyMigratorPage {
 		$("#check-clean").hide().removeClass("alert-warning").addClass("alert-success");
 		$("#check-issues").hide();
 		$("#uom-issue-list").html("");
-		$("#btn-next-check").prop("disabled", true);
 		$("#progress-section").hide();
 		$("#results-section").hide().html("");
 		$("#error-section").hide();
