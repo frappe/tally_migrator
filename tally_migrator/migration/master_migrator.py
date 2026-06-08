@@ -151,6 +151,7 @@ class MasterMigrator:
         )
         self.record_overrides = record_overrides or {}
         self.applied_edits: list[dict] = []   # audit trail of effective pre-flight edits
+        self.posting_date = getattr(config, "posting_date", "") or ""
         self.log = None
 
     # ── Public ────────────────────────────────────────────────────────────────
@@ -213,13 +214,16 @@ class MasterMigrator:
             steps.append(PipelineStep(
                 "Opening Balances", 90,
                 lambda _records, c=masters.customers, s=masters.suppliers:
-                    self.importer.import_opening_balances(coa.accounts, c, s),
+                    self.importer.import_opening_balances(
+                        coa.accounts, c, s, self.posting_date),
                 coa.accounts,
             ))
         # Opening stock: item opening quantities → one submitted Stock Reconciliation.
         if any(_has_opening(i.get("OpeningBalance")) for i in masters.items):
             steps.append(PipelineStep(
-                "Opening Stock", 93, self.importer.import_opening_stock, masters.items))
+                "Opening Stock", 93,
+                lambda items: self.importer.import_opening_stock(items, self.posting_date),
+                masters.items))
         return steps
 
     def _record_excluded(self, results: dict, coa) -> None:

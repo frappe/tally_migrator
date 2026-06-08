@@ -180,6 +180,7 @@ class PartyImporter(BaseImporter):
 
     def after_insert(self, name: str, record: dict, result: "ImportResult") -> None:
         self._save_address(name, self.doctype, record, result)
+        self._save_contact(name, self.doctype, record, result)
 
     @staticmethod
     def _gst_category(record: dict) -> str:
@@ -229,6 +230,39 @@ class PartyImporter(BaseImporter):
         except Exception as exc:
             frappe.log_error(f"Address save failed for {link_name}: {exc}", "Tally Migrator")
             result.add_warning(link_name, f"address not created: {exc}")
+
+    def _save_contact(self, link_name: str, link_type: str, data: dict,
+                      result: "ImportResult") -> None:
+        """Create a Contact (phone / mobile / email) linked to the party.
+
+        Tally keeps these on the ledger, but ERPNext stores them on a Contact, not
+        on the Customer/Supplier itself — so without this they'd survive only as
+        Address fields and be lost entirely when the party has no street address.
+        Non-fatal: a failure is recorded as a warning so the dropped contact is
+        visible in the migration log rather than lost silently."""
+        phone = (data.get("LedgerPhone") or "").strip()
+        mobile = (data.get("LedgerMobile") or "").strip()
+        email = (data.get("LedgerEmail") or "").strip()
+        if not (phone or mobile or email):
+            return
+        try:
+            contact = frappe.new_doc("Contact")
+            contact.first_name = link_name
+            if email:
+                contact.append("email_ids", {"email_id": email, "is_primary": 1})
+            if mobile:
+                contact.append("phone_nos", {"phone": mobile, "is_primary_mobile_no": 1})
+            if phone:
+                contact.append("phone_nos", {
+                    "phone": phone,
+                    "is_primary_phone": 1 if not mobile else 0,
+                })
+            contact.append("links", {"link_doctype": link_type, "link_name": link_name})
+            contact.insert(ignore_permissions=True)
+            frappe.db.commit()
+        except Exception as exc:
+            frappe.log_error(f"Contact save failed for {link_name}: {exc}", "Tally Migrator")
+            result.add_warning(link_name, f"contact not created: {exc}")
 
 
 class CustomerImporter(PartyImporter):
@@ -852,12 +886,13 @@ class ERPNextImporter:
         return CostCentreImporter(self.company, self.abbr).run(centres)
 
     def import_opening_balances(self, accounts: list, customers: list,
-                                suppliers: list) -> ImportResult:
+                                suppliers: list, posting_date: str = "") -> ImportResult:
         return OpeningBalanceImporter(self.company, self.abbr).run(
-            accounts, customers, suppliers, self._fiscal_year_start())
+            accounts, customers, suppliers, self._opening_date(posting_date))
 
-    def import_opening_stock(self, items: list) -> ImportResult:
-        return StockOpeningImporter(self.company, self.abbr).run(items, self._fiscal_year_start())
+    def import_opening_stock(self, items: list, posting_date: str = "") -> ImportResult:
+        return StockOpeningImporter(self.company, self.abbr).run(
+            items, self._opening_date(posting_date))
 
     def import_warehouses(self, warehouses: list[dict]) -> ImportResult:
         return WarehouseImporter(self.company, self.abbr).run(warehouses)
@@ -870,6 +905,15 @@ class ERPNextImporter:
 
     def import_items(self, items: list[dict]) -> ImportResult:
         return ItemImporter(self.company, self.abbr, uom_overrides=self._uom_overrides).run(items)
+
+    def _opening_date(self, posting_date: str = "") -> str:
+        """Posting date for opening entries.
+
+        Uses the user-supplied date when given (pre-flight picker); otherwise
+        defaults to the company's current fiscal-year start."""
+        if posting_date:
+            return str(posting_date)
+        return self._fiscal_year_start()
 
     def _fiscal_year_start(self) -> str:
         """Posting date for the opening entry — the company's current FY start."""

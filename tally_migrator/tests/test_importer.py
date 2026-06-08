@@ -62,6 +62,34 @@ class TestERPNextImporter(unittest.TestCase):
         )
         self.assertEqual(len(addresses), 1, msg="re-run duplicated the address")
 
+    def test_contact_created_with_phone_and_email(self):
+        customer = {
+            "_name": "_TMTest Customer Contact",
+            "LedgerMobile": "9876543210",
+            "LedgerEmail": "buyer@example.com",
+        }
+        self.importer.import_customers([customer])
+        contacts = frappe.get_all(
+            "Contact", filters={"first_name": "_TMTest Customer Contact"}, pluck="name")
+        self.assertEqual(len(contacts), 1)
+        doc = frappe.get_doc("Contact", contacts[0])
+        self.assertIn("buyer@example.com", [e.email_id for e in doc.email_ids])
+        self.assertIn("9876543210", [p.phone for p in doc.phone_nos])
+
+    def test_no_contact_when_no_phone_or_email(self):
+        customer = {"_name": "_TMTest Customer NoContact"}
+        self.importer.import_customers([customer])
+        self.assertFalse(
+            frappe.db.exists("Contact", {"first_name": "_TMTest Customer NoContact"}))
+
+    def test_reimport_does_not_duplicate_contact(self):
+        customer = {"_name": "_TMTest Customer ContactDup", "LedgerEmail": "x@example.com"}
+        self.importer.import_customers([customer])
+        self.importer.import_customers([customer])  # re-run
+        contacts = frappe.get_all(
+            "Contact", filters={"first_name": "_TMTest Customer ContactDup"})
+        self.assertEqual(len(contacts), 1, msg="re-run duplicated the contact")
+
     # ── Supplier ──────────────────────────────────────────────────────────────
 
     def test_import_supplier_creates_record(self):

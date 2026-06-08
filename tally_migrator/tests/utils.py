@@ -13,6 +13,7 @@ TEST_PREFIX = "_TMTest"
 
 # (doctype, field that holds the human name) — order matters for FK-safe deletes.
 _CLEANUP_TARGETS = [
+    ("Contact", "first_name"),
     ("Address", "address_title"),
     ("Customer", "customer_name"),
     ("Supplier", "supplier_name"),

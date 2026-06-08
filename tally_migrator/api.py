@@ -122,7 +122,8 @@ def create_uoms(uom_names):
 
 @frappe.whitelist()
 def run_masters_migration_from_file(file_url, erpnext_company="", uom_overrides="",
-                                    validation_report="", record_overrides="", coa_mode="reuse"):
+                                    validation_report="", record_overrides="", coa_mode="reuse",
+                                    posting_date=""):
     """Run the masters migration from an uploaded Tally masters XML export.
 
     ``file_url``        – URL of the File uploaded via the standard Frappe uploader.
@@ -149,6 +150,7 @@ def run_masters_migration_from_file(file_url, erpnext_company="", uom_overrides=
         # un-migrated fields is authoritative, not client-supplied.
         coverage_report=frappe.as_json(coverage_report(source)),
         coa_mode=coa_mode if coa_mode in ("reuse", "mirror") else "reuse",
+        posting_date=posting_date or "",
     )
     return _run_and_summarize(config, source, uom, records)
 

@@ -98,6 +98,28 @@ class TallyMigratorPage {
 						</div>
 					</div>
 
+					<div class="row">
+						<div class="form-group col-sm-6">
+							<label class="control-label">Chart of Accounts</label>
+							<select id="coa-mode" class="form-control" style="max-width:360px;">
+								<option value="reuse">Reuse ERPNext's standard accounts (recommended)</option>
+								<option value="mirror">Mirror Tally's group tree exactly</option>
+							</select>
+							<div class="text-muted small" style="margin-top:4px;">
+								<span id="coa-mode-hint">Tally's reserved groups map onto ERPNext's
+								built-in Chart of Accounts; only your custom groups and ledgers are created.</span>
+							</div>
+						</div>
+						<div class="form-group col-sm-6">
+							<label class="control-label">Opening-balance date</label>
+							<input type="date" id="opening-date" class="form-control" style="max-width:360px;" />
+							<div class="text-muted small" style="margin-top:4px;">
+								Posting date for opening balances &amp; stock. Leave blank to use the
+								company's current fiscal-year start.
+							</div>
+						</div>
+					</div>
+
 					<div class="well well-sm" style="margin-top:16px; margin-bottom:20px;">
 						<strong>Here's what will be imported</strong>
 						<div id="configure-counts" style="margin-top:10px;"></div>
@@ -233,6 +255,13 @@ class TallyMigratorPage {
 		});
 
 		// Step 2
+		$("#coa-mode").on("change", function () {
+			$("#coa-mode-hint").text(
+				$(this).val() === "mirror"
+					? "Every Tally group is recreated verbatim in ERPNext, preserving your exact tree."
+					: "Tally's reserved groups map onto ERPNext's built-in Chart of Accounts; only your custom groups and ledgers are created."
+			);
+		});
 		$("#btn-back-2").on("click", () => this.show("section-upload"));
 		$("#btn-next-2").on("click", () => {
 			const erpnext = $("#erpnext-company").val();
@@ -866,6 +895,8 @@ class TallyMigratorPage {
 				uom_overrides: JSON.stringify(overrides),
 				validation_report: this.qualityReport ? JSON.stringify(this.qualityReport) : "",
 				record_overrides: JSON.stringify(this.recordOverrides || {}),
+				coa_mode: $("#coa-mode").val() || "reuse",
+				posting_date: $("#opening-date").val() || "",
 			},
 			callback: (r) => {
 				frappe.realtime.off("progress");
@@ -1001,6 +1032,8 @@ class TallyMigratorPage {
 		$("#check-clean").hide().removeClass("alert-warning").addClass("alert-success");
 		$("#check-issues").hide();
 		$("#uom-issue-list").html("");
+		$("#coa-mode").val("reuse");
+		$("#opening-date").val("");
 		$("#dq-section").hide();
 		$("#readiness-section").hide().empty();
 		$("#coverage-section").hide().empty();
