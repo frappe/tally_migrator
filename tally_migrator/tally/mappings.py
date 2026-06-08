@@ -184,6 +184,27 @@ TALLY_ROOT_PARENT = "Primary"
 # migrated as ledger Accounts.
 TALLY_SYSTEM_LEDGERS = {"Profit & Loss A/c"}
 
+# Tally's explicit GST registration type → ERPNext GST Category. Tally states this
+# on the party ledger, so when present it is authoritative — unlike inferring the
+# category from the GSTIN/country, it distinguishes Composition / SEZ / consumer.
+# Unmapped/blank values fall back to GSTIN+country inference (infer_gst_category).
+GST_REGISTRATION_TYPE_MAP: dict[str, str] = {
+    "regular":             "Registered Regular",
+    "composition":         "Registered Composition",
+    "consumer":            "Unregistered",
+    "unregistered":        "Unregistered",
+    "unregistered/consumer": "Unregistered",
+    "sez":                 "SEZ",
+    "special economic zone": "SEZ",
+    "deemed export":       "Deemed Export",
+}
+
+
+def gst_category_from_type(raw: str) -> str:
+    """Map a Tally GST registration type to an ERPNext GST Category, or "" when
+    the value is blank/unrecognised (caller then falls back to inference)."""
+    return GST_REGISTRATION_TYPE_MAP.get((raw or "").strip().lower(), "")
+
 # ERPNext's standard root-type representative groups, used as a last-resort parent
 # in coa_mode="reuse" when a more specific default group can't be found.
 ERPNEXT_ROOT_GROUPS: dict[str, str] = {

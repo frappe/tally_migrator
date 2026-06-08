@@ -16,7 +16,7 @@ class _Src:
     def ping(self):
         return True
 
-    def get_collection(self, obj_type, fields):
+    def get_collection(self, obj_type, fields, aliases=None):
         return self._data.get(obj_type, [])
 
 

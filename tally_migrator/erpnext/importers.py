@@ -38,6 +38,7 @@ from tally_migrator.tally.mappings import (
     DEFAULT_UOM,
     ERPNEXT_ROOT_GROUPS,
     classify_group,
+    gst_category_from_type,
 )
 from tally_migrator.naming import safe_item_code, company_scoped
 from tally_migrator.tally.extractors import TallyExtractor
@@ -184,7 +185,12 @@ class PartyImporter(BaseImporter):
 
     @staticmethod
     def _gst_category(record: dict) -> str:
-        """Infer the ERPNext GST Category from the party's GSTIN + country."""
+        """ERPNext GST Category. Tally's explicit registration type wins when set
+        (it alone distinguishes Composition / SEZ); otherwise infer from GSTIN +
+        country."""
+        explicit = gst_category_from_type(record.get("GSTRegistrationType") or "")
+        if explicit:
+            return explicit
         return infer_gst_category(
             record.get("GSTRegistrationNumber") or "",
             record.get("CountryName") or "India",
@@ -214,7 +220,7 @@ class PartyImporter(BaseImporter):
             return
         try:
             addr = frappe.new_doc("Address")
-            addr.address_title = link_name
+            addr.address_title = (data.get("MailingName") or "").strip() or link_name
             addr.address_type = "Billing"
             addr.address_line1 = raw_address
             addr.city = data.get("PinCode") or ""          # Tally rarely supplies a city
@@ -243,13 +249,17 @@ class PartyImporter(BaseImporter):
         phone = (data.get("LedgerPhone") or "").strip()
         mobile = (data.get("LedgerMobile") or "").strip()
         email = (data.get("LedgerEmail") or "").strip()
-        if not (phone or mobile or email):
+        email_cc = (data.get("EmailCC") or "").strip()
+        if not (phone or mobile or email or email_cc):
             return
         try:
             contact = frappe.new_doc("Contact")
-            contact.first_name = link_name
+            # Tally's contact-person name when supplied, else the ledger name.
+            contact.first_name = (data.get("LedgerContact") or "").strip() or link_name
             if email:
                 contact.append("email_ids", {"email_id": email, "is_primary": 1})
+            if email_cc and email_cc.lower() != email.lower():
+                contact.append("email_ids", {"email_id": email_cc, "is_primary": 0})
             if mobile:
                 contact.append("phone_nos", {"phone": mobile, "is_primary_mobile_no": 1})
             if phone:
@@ -270,7 +280,7 @@ class CustomerImporter(PartyImporter):
     key_field = "customer_name"
 
     def build_doc(self, record: dict) -> dict:
-        return {
+        doc = {
             "doctype": "Customer",
             "customer_name": record["_name"],
             "customer_group": DEFAULT_CUSTOMER_GROUP,
@@ -281,6 +291,11 @@ class CustomerImporter(PartyImporter):
             "gst_category": self._gst_category(record),
             "payment_terms": self._resolve_payment_terms(record.get("BillCreditPeriod")),
         }
+        # Tally's per-ledger credit limit → ERPNext's company-scoped credit_limits.
+        limit = self._to_float(record.get("CreditLimit"))
+        if limit > 0:
+            doc["credit_limits"] = [{"company": self.company, "credit_limit": limit}]
+        return doc
 
 
 class SupplierImporter(PartyImporter):

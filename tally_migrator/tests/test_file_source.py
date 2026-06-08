@@ -64,5 +64,73 @@ class TestFileTallySource(unittest.TestCase):
             FileTallySource("<ENVELOPE><not-closed>")
 
 
+# A record using the tag names a *genuine* Tally Prime export emits: state under
+# <LEDSTATENAME>, email under <EMAIL>, a multi-line <ADDRESS.LIST>, and price/cost
+# as <STANDARDPRICELIST.LIST> revision lists — none of which the flat canonical
+# tags would match.
+REAL_TALLY_XML = """<ENVELOPE>
+  <BODY><IMPORTDATA><REQUESTDATA>
+    <TALLYMESSAGE>
+      <LEDGER NAME="Canonical Co"><PARENT>Sundry Debtors</PARENT>
+        <LEDGERSTATE>Gujarat</LEDGERSTATE>
+        <LEDGEREMAIL>flat@example.com</LEDGEREMAIL>
+        <ADDRESS>12 Flat Road</ADDRESS></LEDGER>
+    </TALLYMESSAGE>
+    <TALLYMESSAGE>
+      <LEDGER NAME="Real Tally Co"><PARENT>Sundry Debtors</PARENT>
+        <LEDSTATENAME>Karnataka</LEDSTATENAME>
+        <EMAIL>real@example.com</EMAIL>
+        <ADDRESS.LIST TYPE="String">
+          <ADDRESS>Door No 5</ADDRESS>
+          <ADDRESS>MG Road</ADDRESS>
+          <ADDRESS>Bengaluru</ADDRESS>
+        </ADDRESS.LIST></LEDGER>
+    </TALLYMESSAGE>
+    <TALLYMESSAGE>
+      <STOCKITEM NAME="Gadget"><PARENT>All Items</PARENT><BASEUNITS>Nos</BASEUNITS>
+        <STANDARDPRICELIST.LIST><DATE>20240101</DATE><RATE>99.50</RATE></STANDARDPRICELIST.LIST>
+        <STANDARDCOSTLIST.LIST><DATE>20240101</DATE><RATE>72.00</RATE></STANDARDCOSTLIST.LIST></STOCKITEM>
+    </TALLYMESSAGE>
+  </REQUESTDATA></IMPORTDATA></BODY>
+</ENVELOPE>"""
+
+
+class TestRealTallyTagAliases(unittest.TestCase):
+    """Genuine Tally tag variants must resolve to the same FETCH fields the flat
+    canonical tags do — otherwise standard fields silently drop into 'not migrated'."""
+
+    def setUp(self):
+        from tally_migrator.tally.extractors import LEDGER_ALIASES, ITEM_ALIASES
+        self.source = FileTallySource(REAL_TALLY_XML)
+        self.LEDGER_ALIASES = LEDGER_ALIASES
+        self.ITEM_ALIASES = ITEM_ALIASES
+
+    def _ledgers(self):
+        rows = self.source.get_collection(
+            "Ledger", ["Address", "LedgerEmail", "LedgerState"], self.LEDGER_ALIASES)
+        return {r["_name"]: r for r in rows}
+
+    def test_canonical_flat_tags_still_win(self):
+        row = self._ledgers()["Canonical Co"]
+        self.assertEqual(row["LedgerState"], "Gujarat")
+        self.assertEqual(row["LedgerEmail"], "flat@example.com")
+        self.assertEqual(row["Address"], "12 Flat Road")
+
+    def test_real_tally_state_and_email_aliases(self):
+        row = self._ledgers()["Real Tally Co"]
+        self.assertEqual(row["LedgerState"], "Karnataka")   # <LEDSTATENAME>
+        self.assertEqual(row["LedgerEmail"], "real@example.com")  # <EMAIL>
+
+    def test_multiline_address_list_is_joined(self):
+        row = self._ledgers()["Real Tally Co"]
+        self.assertEqual(row["Address"], "Door No 5, MG Road, Bengaluru")
+
+    def test_standard_price_and_cost_revision_lists(self):
+        item = self.source.get_collection(
+            "Stock Item", ["StandardPrice", "StandardCost"], self.ITEM_ALIASES)[0]
+        self.assertEqual(item["StandardPrice"], "99.50")
+        self.assertEqual(item["StandardCost"], "72.00")
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -1,7 +1,9 @@
 """Unit tests for UOM map and state map — pure Python, no Frappe needed."""
 import unittest
 
-from tally_migrator.tally.mappings import UOM_MAP, TALLY_STATE_MAP, DEFAULT_UOM
+from tally_migrator.tally.mappings import (
+    UOM_MAP, TALLY_STATE_MAP, DEFAULT_UOM, gst_category_from_type,
+)
 
 
 class TestUomMap(unittest.TestCase):
@@ -41,3 +43,19 @@ class TestStateMap(unittest.TestCase):
     def test_total_state_count(self):
         # 28 states + 8 UTs = 36 entries (Tally uses some alternative spellings)
         self.assertGreaterEqual(len(TALLY_STATE_MAP), 36)
+
+
+class TestGstCategoryFromType(unittest.TestCase):
+    def test_known_types(self):
+        self.assertEqual(gst_category_from_type("Regular"), "Registered Regular")
+        self.assertEqual(gst_category_from_type("Composition"), "Registered Composition")
+        self.assertEqual(gst_category_from_type("Consumer"), "Unregistered")
+        self.assertEqual(gst_category_from_type("SEZ"), "SEZ")
+
+    def test_case_and_whitespace_insensitive(self):
+        self.assertEqual(gst_category_from_type("  reGular "), "Registered Regular")
+
+    def test_blank_or_unknown_returns_empty(self):
+        self.assertEqual(gst_category_from_type(""), "")
+        self.assertEqual(gst_category_from_type(None), "")
+        self.assertEqual(gst_category_from_type("Something Else"), "")

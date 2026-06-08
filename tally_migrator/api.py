@@ -4,7 +4,7 @@ import frappe
 
 from tally_migrator.tally.config import TallyConfig
 from tally_migrator.tally.file_source import FileTallySource
-from tally_migrator.tally.extractors import TallyExtractor, ITEM_FIELDS
+from tally_migrator.tally.extractors import TallyExtractor, ITEM_FIELDS, ITEM_ALIASES
 from tally_migrator.erpnext.uom_resolver import UomResolver
 from tally_migrator.validation.engine import (
     validate_extraction, group_report, records_by_key, erpnext_states,
@@ -41,7 +41,7 @@ def validate_masters_file(file_url):
     """
     frappe.only_for(ALLOWED_ROLES)
     _, source = _source_from_file(file_url)
-    items = source.get_collection("Stock Item", ITEM_FIELDS)
+    items = source.get_collection("Stock Item", ITEM_FIELDS, ITEM_ALIASES)
     resolver = UomResolver(
         u["name"] for u in frappe.get_all("UOM", fields=["name"], limit_page_length=0)
     )

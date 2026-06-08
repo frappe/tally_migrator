@@ -90,6 +90,58 @@ class TestERPNextImporter(unittest.TestCase):
             "Contact", filters={"first_name": "_TMTest Customer ContactDup"})
         self.assertEqual(len(contacts), 1, msg="re-run duplicated the contact")
 
+    def test_explicit_gst_registration_type_wins(self):
+        """Tally's stated registration type overrides GSTIN/country inference."""
+        customer = {
+            "_name": "_TMTest Customer Comp",
+            "GSTRegistrationNumber": "27AAACT2727Q1ZW",   # would infer Registered Regular
+            "GSTRegistrationType": "Composition",
+        }
+        self.importer.import_customers([customer])
+        cat = frappe.db.get_value(
+            "Customer", {"customer_name": "_TMTest Customer Comp"}, "gst_category")
+        self.assertEqual(cat, "Registered Composition")
+
+    def test_credit_limit_imported(self):
+        customer = {"_name": "_TMTest Customer Credit", "CreditLimit": "200000"}
+        self.importer.import_customers([customer])
+        doc = frappe.get_doc("Customer", {"customer_name": "_TMTest Customer Credit"})
+        self.assertTrue(doc.credit_limits)
+        self.assertEqual(doc.credit_limits[0].credit_limit, 200000.0)
+
+    def test_email_cc_added_as_second_contact_email(self):
+        customer = {
+            "_name": "_TMTest Customer CC",
+            "LedgerEmail": "primary@example.com",
+            "EmailCC": "cc@example.com",
+        }
+        self.importer.import_customers([customer])
+        doc = frappe.get_doc("Contact", {"first_name": "_TMTest Customer CC"})
+        emails = [e.email_id for e in doc.email_ids]
+        self.assertIn("primary@example.com", emails)
+        self.assertIn("cc@example.com", emails)
+
+    def test_contact_person_name_used_when_present(self):
+        customer = {
+            "_name": "_TMTest Customer Person",
+            "LedgerContact": "_TMTest Jane Doe",
+            "LedgerEmail": "jane@example.com",
+        }
+        self.importer.import_customers([customer])
+        # Contact is named after the contact person, not the ledger.
+        self.assertTrue(frappe.db.exists("Contact", {"first_name": "_TMTest Jane Doe"}))
+
+    def test_mailing_name_used_as_address_title(self):
+        customer = {
+            "_name": "_TMTest Customer Mail",
+            "MailingName": "_TMTest Mailing Title",
+            "Address": "5 Mailing Road",
+        }
+        self.importer.import_customers([customer])
+        self.assertTrue(
+            frappe.db.exists("Address", {"address_title": "_TMTest Mailing Title-Billing"})
+            or frappe.db.exists("Address", {"address_title": "_TMTest Mailing Title"}))
+
     # ── Supplier ──────────────────────────────────────────────────────────────
 
     def test_import_supplier_creates_record(self):

@@ -54,7 +54,7 @@ class TestCoverage(unittest.TestCase):
 
     def test_multiple_entity_types(self):
         report = coverage_report(_Src({
-            "Ledger": {"CREDITLIMIT": _tag()},
+            "Ledger": {"CUSTOMERCATEGORY": _tag()},  # a UDF, genuinely unmapped
             "Stock Item": {"BATCHNAME": _tag(), "PARENT": _tag()},  # PARENT is mapped
         }))
         self.assertEqual(report["unmapped_field_count"], 2)
@@ -76,6 +76,24 @@ class TestCoverage(unittest.TestCase):
         self.assertEqual(led["unmapped"], [])
         self.assertEqual(led["unwritten"][0]["field"], "OPENINGBALANCE")
         self.assertEqual(led["unwritten"][0]["sample"], "5000 Dr")
+
+    def test_real_tally_alias_tags_are_not_flagged(self):
+        # A genuine export uses LEDSTATENAME / EMAIL / ADDRESS.LIST instead of the
+        # flat canonical tags — the parser reads them, so coverage must treat them
+        # as covered, not "not migrated".
+        tags = {
+            "NAME": _tag(),
+            "LEDSTATENAME": _tag(),
+            "EMAIL": _tag(),
+            "ADDRESS.LIST": _tag(),
+        }
+        report = coverage_report(_Src({"Ledger": tags}))
+        self.assertTrue(report["clean"], report["types"])
+        # And item price/cost revision-list containers on Stock Item.
+        item_tags = {"NAME": _tag(), "STANDARDPRICELIST.LIST": _tag(),
+                     "STANDARDCOSTLIST.LIST": _tag()}
+        rep2 = coverage_report(_Src({"Stock Item": item_tags}))
+        self.assertTrue(rep2["clean"], rep2["types"])
 
     def test_real_mapping_has_no_unwritten_gap(self):
         # Guard: with the real WRITTEN_FIELDS, every fetched item field is written
