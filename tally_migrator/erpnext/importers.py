@@ -40,6 +40,7 @@ from tally_migrator.tally.mappings import (
     classify_group,
 )
 from tally_migrator.naming import safe_item_code, company_scoped
+from tally_migrator.tally.extractors import TallyExtractor
 from tally_migrator.validation.engine import infer_gst_category
 
 
@@ -545,58 +546,189 @@ class CostCentreImporter:
 # ── Opening balance importer ─────────────────────────────────────────────────
 
 class OpeningBalanceImporter:
-    """Posts one 'Opening Entry' Journal Entry for all accounts with a balance.
+    """Posts one balanced 'Opening Entry' Journal Entry for the whole trial balance.
 
-    The accounts must already exist (COA imported first). ERPNext requires the JE
-    to balance; if only a subset of the trial balance was migrated, a balancing
-    line is added against 'Temporary Opening - <ABBR>'.
+    Three balance sources are combined into a single submitted JE:
+      • ledger accounts  — Dr/Cr against the account itself,
+      • customers        — against the company's default Receivable account, with
+                           ``party_type='Customer'`` / ``party=<name>``,
+      • suppliers        — against the default Payable account, ``party=<name>``.
+
+    All referenced accounts/parties must already exist (COA + Customers + Suppliers
+    imported first). ERPNext requires the JE to balance; any residual difference
+    (e.g. only part of the trial balance was migrated) is absorbed by a balancing
+    line against 'Temporary Opening - <ABBR>'. The entry is **submitted** so the
+    balances actually post to the General Ledger.
     """
 
     def __init__(self, company: str, abbr: str):
         self.company = company
         self.abbr = abbr
 
-    def run(self, accounts: list, posting_date: str) -> ImportResult:
+    def run(self, accounts: list, customers: list, suppliers: list,
+            posting_date: str) -> ImportResult:
         result = ImportResult("Journal Entry")
-        lines = []
-        for node in accounts:
-            if not node.opening_balance or node.is_group:
-                continue
-            erp_name = company_scoped(node.name, self.abbr)
-            if node.opening_dr_cr == "Dr":
-                lines.append({"account": erp_name, "debit_in_account_currency": node.opening_balance,
-                              "credit_in_account_currency": 0.0})
-            else:
-                lines.append({"account": erp_name, "debit_in_account_currency": 0.0,
-                              "credit_in_account_currency": node.opening_balance})
+        lines: list[dict] = []
+        lines += self._account_lines(accounts)
+        lines += self._party_lines(customers, "Customer", "default_receivable_account", result)
+        lines += self._party_lines(suppliers, "Supplier", "default_payable_account", result)
         if not lines:
             return result  # nothing to post
 
-        total_dr = sum(l["debit_in_account_currency"] for l in lines)
-        total_cr = sum(l["credit_in_account_currency"] for l in lines)
-        diff = round(total_dr - total_cr, 2)
-        if diff != 0:
-            temp = company_scoped("Temporary Opening", self.abbr)
-            if diff > 0:
-                lines.append({"account": temp, "debit_in_account_currency": 0.0, "credit_in_account_currency": diff})
-            else:
-                lines.append({"account": temp, "debit_in_account_currency": abs(diff), "credit_in_account_currency": 0.0})
-
+        self._balance(lines)
         try:
-            frappe.get_doc({
+            doc = frappe.get_doc({
                 "doctype": "Journal Entry",
                 "voucher_type": "Opening Entry",
                 "posting_date": posting_date,
                 "company": self.company,
                 "accounts": lines,
                 "user_remark": "Opening balances imported from Tally",
-            }).insert(ignore_permissions=True)
+            })
+            doc.insert(ignore_permissions=True)
+            doc.submit()
             frappe.db.commit()
             result.created += 1
         except Exception as exc:
             result.add_error("Opening Entry", exc)
             frappe.db.rollback()
         return result
+
+    # ── Line builders ────────────────────────────────────────────────────────
+    def _account_lines(self, accounts: list) -> list[dict]:
+        lines = []
+        for node in accounts:
+            if not node.opening_balance or node.is_group:
+                continue
+            lines.append(self._line(
+                company_scoped(node.name, self.abbr),
+                node.opening_balance, node.opening_dr_cr,
+            ))
+        return lines
+
+    def _party_lines(self, parties: list, party_type: str, company_field: str,
+                     result: ImportResult) -> list[dict]:
+        if not parties:
+            return []
+        control = frappe.get_cached_value("Company", self.company, company_field)
+        lines, missing_control = [], False
+        for record in parties:
+            amount, drcr = TallyExtractor._parse_opening(record.get("OpeningBalance", ""))
+            if not amount:
+                continue
+            if not control:
+                missing_control = True
+                continue
+            line = self._line(control, amount, drcr)
+            line.update({"party_type": party_type, "party": record["_name"]})
+            lines.append(line)
+        if missing_control:
+            result.add_error(
+                f"{party_type} opening balances",
+                f"company has no {company_field.replace('_', ' ')} set — skipped",
+            )
+        return lines
+
+    @staticmethod
+    def _line(account: str, amount: float, drcr: str) -> dict:
+        """A JE line; Dr (or blank) → debit, Cr → credit."""
+        if drcr == "Cr":
+            return {"account": account, "debit_in_account_currency": 0.0,
+                    "credit_in_account_currency": amount}
+        return {"account": account, "debit_in_account_currency": amount,
+                "credit_in_account_currency": 0.0}
+
+    def _balance(self, lines: list[dict]) -> None:
+        total_dr = sum(l["debit_in_account_currency"] for l in lines)
+        total_cr = sum(l["credit_in_account_currency"] for l in lines)
+        diff = round(total_dr - total_cr, 2)
+        if diff == 0:
+            return
+        temp = company_scoped("Temporary Opening", self.abbr)
+        if diff > 0:
+            lines.append({"account": temp, "debit_in_account_currency": 0.0,
+                          "credit_in_account_currency": diff})
+        else:
+            lines.append({"account": temp, "debit_in_account_currency": abs(diff),
+                          "credit_in_account_currency": 0.0})
+
+
+# ── Opening stock importer ───────────────────────────────────────────────────
+
+class StockOpeningImporter:
+    """Posts item opening stock as one submitted 'Opening Stock' Stock Reconciliation.
+
+    Tally stores opening stock on the Stock Item master (``OpeningBalance`` = qty,
+    ``OpeningRate`` = valuation). The masters export carries no godown-wise split,
+    so all opening stock lands in a single default warehouse. The difference posts
+    against 'Temporary Opening - <ABBR>', consistent with the opening-balance JE.
+    """
+
+    doctype = "Stock Reconciliation"
+
+    def __init__(self, company: str, abbr: str):
+        self.company = company
+        self.abbr = abbr
+
+    def run(self, items: list, posting_date: str) -> ImportResult:
+        result = ImportResult(self.doctype)
+        warehouse = self._default_warehouse()
+        if not warehouse:
+            result.add_error("Opening Stock", "no warehouse found to hold opening stock")
+            return result
+
+        rows = []
+        for it in items:
+            qty = BaseImporter._to_float(it.get("OpeningBalance"))
+            if qty <= 0:
+                continue
+            rate = (BaseImporter._to_float(it.get("OpeningRate"))
+                    or BaseImporter._to_float(it.get("StandardCost")))
+            rows.append({
+                "item_code": safe_item_code(it["_name"]),
+                "warehouse": warehouse,
+                "qty": qty,
+                "valuation_rate": rate,
+            })
+        if not rows:
+            return result  # no opening stock to post
+
+        try:
+            doc = frappe.get_doc({
+                "doctype": "Stock Reconciliation",
+                "purpose": "Opening Stock",
+                "company": self.company,
+                "posting_date": posting_date,
+                "posting_time": "00:00:00",
+                "expense_account": company_scoped("Temporary Opening", self.abbr),
+                "items": rows,
+            })
+            doc.insert(ignore_permissions=True)
+            doc.submit()
+            frappe.db.commit()
+            result.created += 1
+        except Exception as exc:
+            result.add_error("Opening Stock", exc)
+            frappe.db.rollback()
+        return result
+
+    def _default_warehouse(self) -> str:
+        """A non-group warehouse to hold opening stock.
+
+        Prefer Stock Settings' default, then the migrated default warehouse, then
+        any leaf warehouse for the company.
+        """
+        ss = frappe.db.get_single_value("Stock Settings", "default_warehouse")
+        if ss and frappe.db.exists("Warehouse", {"name": ss, "is_group": 0}):
+            return ss
+        candidate = company_scoped(DEFAULT_WAREHOUSE, self.abbr)
+        if frappe.db.exists("Warehouse", {"name": candidate, "is_group": 0}):
+            return candidate
+        rows = frappe.get_all(
+            "Warehouse", filters={"company": self.company, "is_group": 0},
+            pluck="name", limit=1,
+        )
+        return rows[0] if rows else ""
 
 
 # ── Facade ───────────────────────────────────────────────────────────────────
@@ -621,8 +753,13 @@ class ERPNextImporter:
     def import_cost_centres(self, centres: list) -> ImportResult:
         return CostCentreImporter(self.company, self.abbr).run(centres)
 
-    def import_opening_balances(self, accounts: list) -> ImportResult:
-        return OpeningBalanceImporter(self.company, self.abbr).run(accounts, self._fiscal_year_start())
+    def import_opening_balances(self, accounts: list, customers: list,
+                                suppliers: list) -> ImportResult:
+        return OpeningBalanceImporter(self.company, self.abbr).run(
+            accounts, customers, suppliers, self._fiscal_year_start())
+
+    def import_opening_stock(self, items: list) -> ImportResult:
+        return StockOpeningImporter(self.company, self.abbr).run(items, self._fiscal_year_start())
 
     def import_warehouses(self, warehouses: list[dict]) -> ImportResult:
         return WarehouseImporter(self.company, self.abbr).run(warehouses)

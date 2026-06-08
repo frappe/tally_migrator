@@ -9,6 +9,17 @@ from tally_migrator.erpnext.importers import ERPNextImporter, ImportResult
 from tally_migrator.migration.overrides import apply_record_overrides
 
 
+def _has_opening(raw) -> bool:
+    """True when a Tally opening-balance cell carries a non-zero amount.
+
+    Handles Dr/Cr suffixes, multi-currency cells and thousands separators by
+    reusing the extractor's own parser, so the pipeline-gating check agrees
+    exactly with what the importer will post.
+    """
+    from tally_migrator.tally.extractors import TallyExtractor
+    return TallyExtractor._parse_opening(raw)[0] != 0.0
+
+
 @dataclass
 class PipelineStep:
     """One entity in the migration pipeline: how to import it and how to report it."""
@@ -155,8 +166,23 @@ class MasterMigrator:
             PipelineStep("Suppliers", 65, self.importer.import_suppliers, masters.suppliers),
             PipelineStep("Items", 80, self.importer.import_items, masters.items),
         ]
-        if any(a.opening_balance and not a.is_group for a in coa.accounts):
-            steps.append(PipelineStep("Opening Balances", 90, self.importer.import_opening_balances, coa.accounts))
+        # Opening balances: ledger accounts + party (Customer/Supplier) balances,
+        # posted as one balanced, submitted Opening Entry once every account and
+        # party exists.
+        ledger_ob = any(a.opening_balance and not a.is_group for a in coa.accounts)
+        party_ob = any(_has_opening(r.get("OpeningBalance"))
+                       for r in (*masters.customers, *masters.suppliers))
+        if ledger_ob or party_ob:
+            steps.append(PipelineStep(
+                "Opening Balances", 90,
+                lambda _records, c=masters.customers, s=masters.suppliers:
+                    self.importer.import_opening_balances(coa.accounts, c, s),
+                coa.accounts,
+            ))
+        # Opening stock: item opening quantities → one submitted Stock Reconciliation.
+        if any(_has_opening(i.get("OpeningBalance")) for i in masters.items):
+            steps.append(PipelineStep(
+                "Opening Stock", 93, self.importer.import_opening_stock, masters.items))
         return steps
 
     # ── Progress ────────────────────────────────────────────────────────────────
