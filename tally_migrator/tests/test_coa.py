@@ -112,6 +112,17 @@ class TestBuildCOA(unittest.TestCase):
         sales = next(c for c in self.coa.cost_centres if c.name == "Sales Dept")
         self.assertEqual(sales.parent, "Head Office")
 
+    def test_system_ledger_recorded_as_excluded(self):
+        # Profit & Loss A/c is skipped from the COA but must be traceable, not lost.
+        names = [e["name"] for e in self.coa.excluded]
+        self.assertIn("Profit & Loss A/c", names)
+        self.assertEqual(self.coa.summary["excluded_ledgers"], 1)
+
+    def test_parties_not_in_excluded(self):
+        # Parties migrate as Customers/Suppliers — they are not "excluded" losses.
+        names = [e["name"] for e in self.coa.excluded]
+        self.assertNotIn("Acme Corp", names)
+
 
 class TestParseOpening(unittest.TestCase):
     def _p(self, raw):

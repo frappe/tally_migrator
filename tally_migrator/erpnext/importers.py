@@ -53,6 +53,15 @@ class ImportResult:
     skipped: int = 0
     errors: list[dict] = field(default_factory=list)
     warnings: list[dict] = field(default_factory=list)
+    # ERPNext names of the docs this importer actually inserted — the authoritative
+    # "what did this run touch" record (incl. the opening JE / Stock Reconciliation),
+    # so a migration can be reviewed or reversed by inspection.
+    created_names: list[str] = field(default_factory=list)
+
+    def add_created(self, name: str) -> None:
+        self.created += 1
+        if name:
+            self.created_names.append(name)
 
     def add_error(self, name: str, reason) -> None:
         self.errors.append({"name": name, "reason": str(reason)})
@@ -148,7 +157,7 @@ class BaseImporter:
             doc = frappe.get_doc(data)
             doc.insert(ignore_permissions=True)
             frappe.db.commit()
-            result.created += 1
+            result.add_created(doc.name)
             return doc.name, True
         except Exception as exc:
             result.add_error(key_value, exc)
@@ -269,23 +278,74 @@ class ItemImporter(BaseImporter):
 
     def before_run(self, records: list[dict], result: ImportResult) -> None:
         self._ensure_item_groups({r.get("Parent") for r in records if r.get("Parent")}, result)
+        # Surface any GST treatment we couldn't map so the loss is auditable rather
+        # than silently defaulting the item to taxable.
+        for r in records:
+            raw = (r.get("GSTTypeName") or "").strip()
+            if raw and self._gst_treatment(raw) is None:
+                result.add_warning(
+                    r["_name"],
+                    f"GST type '{raw}' not recognised — item imported as taxable; "
+                    "set its GST treatment manually if needed.")
 
     def build_doc(self, record: dict) -> dict:
         tally_uom = (record.get("BaseUnits") or "").strip()
         # User-supplied overrides (from pre-flight check) take precedence
         uom = self._uom_overrides.get(tally_uom) or UOM_MAP.get(tally_uom, DEFAULT_UOM)
-        return {
+        doc = {
             "doctype": "Item",
             "item_code": safe_item_code(record["_name"]),
             "item_name": record["_name"],
             "item_group": record.get("Parent") or DEFAULT_ITEM_GROUP,
             "stock_uom": uom,
             "description": record.get("Description") or record["_name"],
-            "is_stock_item": 1,
+            "is_stock_item": self._is_stock_item(record),
             "standard_rate": self._to_float(record.get("StandardPrice")),
             "valuation_rate": self._to_float(record.get("StandardCost")),
             "gst_hsn_code": record.get("HSNCode") or "",
         }
+        doc.update(self._gst_fields(record))
+        return doc
+
+    @staticmethod
+    def _is_stock_item(record: dict) -> int:
+        """Tally Prime tags service masters with TypeOfSupply='Services'. Those map
+        to non-stock items in ERPNext; everything else stays a stock item."""
+        supply = (record.get("TypeOfSupply") or "").strip().lower()
+        return 0 if supply in ("services", "service") else 1
+
+    @staticmethod
+    def _gst_treatment(gst_type: str):
+        """Map a Tally GST type to ERPNext flags, or None when unrecognised.
+
+        Returns a dict of India-Compliance Item flags to set. Empty dict = taxable
+        (the default); None = we don't know this value (caller warns)."""
+        key = (gst_type or "").strip().lower().replace("-", " ").replace("_", " ")
+        key = " ".join(key.split())
+        table = {
+            "": {},
+            "taxable": {},
+            "applicable": {},
+            "nil rated": {"is_nil_exempt": 1},
+            "nil": {"is_nil_exempt": 1},
+            "exempt": {"is_nil_exempt": 1},
+            "exempted": {"is_nil_exempt": 1},
+            "non gst": {"is_non_gst": 1},
+            "not applicable": {"is_non_gst": 1},
+        }
+        return table.get(key)
+
+    def _gst_fields(self, record: dict) -> dict:
+        """Item-level GST attributes derived from Tally's GST_Applicable / GSTTypeName.
+
+        ``is_nil_exempt`` / ``is_non_gst`` are India-Compliance fields; setting them
+        on the doc is harmless when that app isn't installed (Frappe ignores keys
+        that aren't real docfields). Unrecognised values fall back to taxable and
+        are flagged as a warning in ``before_run``."""
+        applicable = (record.get("GST_Applicable") or "").strip().lower()
+        if applicable in ("not applicable", "non gst", "non-gst", "no"):
+            return {"is_non_gst": 1}
+        return self._gst_treatment(record.get("GSTTypeName") or "") or {}
 
     def _ensure_item_groups(self, groups: set[str], result: ImportResult) -> None:
         """Create any missing Item Groups under the default parent group.
@@ -482,9 +542,10 @@ class AccountImporter:
             }
             if node.account_type:
                 doc["account_type"] = node.account_type
-            frappe.get_doc(doc).insert(ignore_permissions=True)
+            d = frappe.get_doc(doc)
+            d.insert(ignore_permissions=True)
             frappe.db.commit()
-            result.created += 1
+            result.add_created(d.name)
         except Exception as exc:
             result.add_error(node.name, exc)
             frappe.db.rollback()
@@ -551,15 +612,16 @@ class CostCentreImporter:
             if frappe.db.exists("Cost Center", self._erp_name(node.name)):
                 result.skipped += 1
                 return
-            frappe.get_doc({
+            d = frappe.get_doc({
                 "doctype": "Cost Center",
                 "cost_center_name": node.name,
                 "parent_cost_center": parent,
                 "company": self.company,
                 "is_group": 1 if is_group else 0,
-            }).insert(ignore_permissions=True)
+            })
+            d.insert(ignore_permissions=True)
             frappe.db.commit()
-            result.created += 1
+            result.add_created(d.name)
         except Exception as exc:
             result.add_error(node.name, exc)
             frappe.db.rollback()
@@ -610,7 +672,7 @@ class OpeningBalanceImporter:
             doc.insert(ignore_permissions=True)
             doc.submit()
             frappe.db.commit()
-            result.created += 1
+            result.add_created(doc.name)
         except Exception as exc:
             result.add_error("Opening Entry", exc)
             frappe.db.rollback()
@@ -728,7 +790,7 @@ class StockOpeningImporter:
             doc.insert(ignore_permissions=True)
             doc.submit()
             frappe.db.commit()
-            result.created += 1
+            result.add_created(doc.name)
         except Exception as exc:
             result.add_error("Opening Stock", exc)
             frappe.db.rollback()

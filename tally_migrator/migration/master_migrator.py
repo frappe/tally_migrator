@@ -67,6 +67,18 @@ class MigrationSummary:
             lines += ["", "Warnings (non-fatal — record imported, dependent data dropped):"] + warns
         return "\n".join(lines)
 
+    def created_records(self) -> dict:
+        """Per-entity list of the ERPNext doc names actually inserted this run.
+
+        This is the authoritative 'what did this migration touch' record — it
+        includes the opening Journal Entry and Stock Reconciliation names, so the
+        run can be reviewed or reversed by inspection. Empty entities are omitted."""
+        return {
+            label: result.created_names
+            for label, result in self.results.items()
+            if result.created_names
+        }
+
     def error_records(self) -> list[dict]:
         """Structured per-record failures + non-fatal drops for the log's table.
 
@@ -160,6 +172,7 @@ class MasterMigrator:
             for step in self._pipeline(masters, coa):
                 self._progress(step.percent, f"Importing {len(step.records)} {step.label.lower()}...")
                 results[step.label] = step.importer(step.records)
+            self._record_excluded(results, coa)
             summary = MigrationSummary(results)
 
             self._progress(95)
@@ -209,6 +222,18 @@ class MasterMigrator:
                 "Opening Stock", 93, self.importer.import_opening_stock, masters.items))
         return steps
 
+    def _record_excluded(self, results: dict, coa) -> None:
+        """Fold COA-excluded ledgers into the summary as non-fatal warnings, so a
+        ledger that was intentionally (or unexpectedly) left out of the Chart of
+        Accounts is visible in the migration log instead of vanishing silently."""
+        excluded = getattr(coa, "excluded", None)
+        if not excluded:
+            return
+        acc = results.get("Accounts") or ImportResult("Account")
+        for ex in excluded:
+            acc.add_warning(ex["name"], ex["reason"])
+        results["Accounts"] = acc
+
     # ── Progress ────────────────────────────────────────────────────────────────
 
     def _progress(self, pct: int, description: str = "") -> None:
@@ -245,6 +270,7 @@ class MasterMigrator:
             self.log.extracted_counts = frappe.as_json({**masters.summary, **coa.summary})
             self.log.import_summary = frappe.as_json(summary.as_dict())
             self.log.applied_edits = frappe.as_json(self.applied_edits)
+            self.log.created_records = frappe.as_json(summary.created_records())
             self.log.set("errors", [])
             if summary.has_errors or summary.has_warnings:
                 self.log.error_log = summary.error_lines()

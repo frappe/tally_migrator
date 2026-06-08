@@ -14,6 +14,7 @@ class TallyMigrationLog(Document):
     applied_edits: DF.Code | None
     company: DF.Link
     coverage_report: DF.Code | None
+    created_records: DF.Code | None
     error_log: DF.LongText | None
     errors: DF.Table[TallyMigrationError]
     extracted_counts: DF.Code | None

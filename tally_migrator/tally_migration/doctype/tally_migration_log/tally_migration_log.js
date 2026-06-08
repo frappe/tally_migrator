@@ -1,6 +1,7 @@
 frappe.ui.form.on("Tally Migration Log", {
 	refresh(frm) {
 		render_summary(frm);
+		render_created(frm);
 		render_quality(frm);
 		render_edits(frm);
 		render_coverage(frm);
@@ -37,34 +38,53 @@ function render_coverage(frm) {
 		return;
 	}
 
+	const fieldTable = (list, valueLabel) => {
+		const rows = list
+			.map(
+				(u) => `
+				<tr>
+					<td style="font-family:monospace;">${esc(u.field)}</td>
+					<td class="text-right text-muted">${u.count}</td>
+					<td class="text-muted">${u.sample ? esc(String(u.sample)) : ""}</td>
+					<td class="text-muted small">${(u.examples || []).map(esc).join(", ")}</td>
+				</tr>`
+			)
+			.join("");
+		return `
+			<table class="table table-condensed" style="margin:0 0 6px;">
+				<thead><tr>
+					<th style="border-top:0;">Field</th>
+					<th style="border-top:0;" class="text-right">Count</th>
+					<th style="border-top:0;">${esc(valueLabel)}</th>
+					<th style="border-top:0;">Example records</th>
+				</tr></thead>
+				<tbody>${rows}</tbody>
+			</table>`;
+	};
+
 	const blocks = report.types
 		.map((t) => {
-			const rows = t.unmapped
-				.map(
-					(u) => `
-					<tr>
-						<td style="font-family:monospace;">${esc(u.field)}</td>
-						<td class="text-right text-muted">${u.count}</td>
-						<td class="text-muted">${u.sample ? esc(String(u.sample)) : ""}</td>
-						<td class="text-muted small">${(u.examples || []).map(esc).join(", ")}</td>
-					</tr>`
-				)
-				.join("");
+			const unmapped = (t.unmapped || []).length
+				? `<div class="text-muted small" style="margin:2px 0;">Not read from the file (custom fields / UDFs):</div>${fieldTable(t.unmapped, "Sample value")}`
+				: "";
+			const unwritten = (t.unwritten || []).length
+				? `<div class="small" style="margin:6px 0 2px; color:#f0a500;">⚠ Read but not written to ERPNext:</div>${fieldTable(t.unwritten, "Sample value")}`
+				: "";
 			return `
-				<div style="margin-bottom:10px;">
+				<div style="margin-bottom:12px;">
 					<div style="font-weight:600; margin-bottom:4px;">${esc(t.entity_type)}</div>
-					<table class="table table-condensed" style="margin:0;">
-						<thead><tr>
-							<th style="border-top:0;">Field</th>
-							<th style="border-top:0;" class="text-right">Count</th>
-							<th style="border-top:0;">Sample value</th>
-							<th style="border-top:0;">Example records</th>
-						</tr></thead>
-						<tbody>${rows}</tbody>
-					</table>
+					${unmapped}${unwritten}
 				</div>`;
 		})
 		.join("");
+
+	const unwrittenCount = report.unwritten_field_count || 0;
+	const unwrittenNote = unwrittenCount
+		? `<div class="small" style="margin-bottom:8px; color:#f0a500;">
+				<strong>${unwrittenCount}</strong> field(s) were read from the file but
+				<strong>not persisted</strong> to ERPNext — review these, they are a real gap.
+			</div>`
+		: "";
 
 	wrapper.html(`
 		<div style="border:1px solid #e0e6ed; border-radius:8px; padding:12px 16px;">
@@ -72,6 +92,75 @@ function render_coverage(frm) {
 				<strong>${report.unmapped_field_count}</strong> field(s) in your file were
 				<strong>not migrated</strong> (Tally custom fields / attributes outside the
 				supported mapping). The records themselves still imported.
+			</div>
+			${unwrittenNote}
+			${blocks}
+		</div>
+	`);
+}
+
+// ── Records-created audit trail ─────────────────────────────────────────────
+// The authoritative "what did this run touch" list: every ERPNext document this
+// migration inserted, grouped by entity, with deep links — including the opening
+// Journal Entry and Stock Reconciliation, so the run is reviewable / reversible.
+
+const CREATED_DOCTYPE = {
+	"Accounts": "Account",
+	"Cost Centres": "Cost Center",
+	"Warehouses": "Warehouse",
+	"Customers": "Customer",
+	"Suppliers": "Supplier",
+	"Items": "Item",
+	"Opening Balances": "Journal Entry",
+	"Opening Stock": "Stock Reconciliation",
+};
+
+function render_created(frm) {
+	const field = frm.get_field("created_view");
+	if (!field) return;
+	const wrapper = field.$wrapper;
+	wrapper.empty();
+
+	let created = {};
+	try {
+		created = JSON.parse(frm.doc.created_records || "{}");
+	} catch (e) {
+		created = {};
+	}
+	const entries = Object.entries(created).filter(([, names]) => (names || []).length);
+	if (!entries.length) return;
+
+	const esc = frappe.utils.escape_html;
+	const total = entries.reduce((n, [, names]) => n + names.length, 0);
+
+	const blocks = entries
+		.map(([label, names]) => {
+			const dt = CREATED_DOCTYPE[label];
+			const links = names
+				.map((nm) => {
+					const safe = esc(nm);
+					return dt
+						? `<a href="/app/${encodeURIComponent(
+								frappe.router.slug(dt)
+						  )}/${encodeURIComponent(nm)}" target="_blank">${safe}</a>`
+						: safe;
+				})
+				.join(", ");
+			return `
+				<div style="margin-bottom:8px;">
+					<div style="font-weight:600; margin-bottom:2px;">
+						${esc(label)} <span class="text-muted" style="font-weight:400;">(${names.length})</span>
+					</div>
+					<div class="small" style="line-height:1.8;">${links}</div>
+				</div>`;
+		})
+		.join("");
+
+	wrapper.html(`
+		<div style="border:1px solid #e0e6ed; border-radius:8px; padding:12px 16px;">
+			<div class="text-muted small" style="margin-bottom:8px;">
+				<strong>${total}</strong> ERPNext document(s) were created by this run.
+				Use these to review or reverse the migration.
 			</div>
 			${blocks}
 		</div>

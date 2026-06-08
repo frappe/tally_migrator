@@ -5,10 +5,11 @@ from tally_migrator.erpnext.importers import ImportResult
 from tally_migrator.migration.master_migrator import MigrationSummary
 
 
-def _result(doctype, created=0, skipped=0, errors=()):
+def _result(doctype, created=0, skipped=0, errors=(), created_names=()):
     r = ImportResult(doctype)
     r.created = created
     r.skipped = skipped
+    r.created_names = list(created_names)
     for name, reason in errors:
         r.add_error(name, reason)
     return r
@@ -55,6 +56,24 @@ class TestMigrationSummary(unittest.TestCase):
         self.assertIn(
             {"record_type": "Items", "record_name": "Widget", "reason": "bad UOM"},
             records)
+
+    def test_created_records_lists_only_nonempty_entities(self):
+        s = _summary(
+            _result("Warehouse", created=1, created_names=["Main - X"]),
+            _result("Customer", created=2, created_names=["Acme", "Bolt"]),
+            _result("Supplier"),                       # nothing created → omitted
+            _result("Item", created=1, created_names=["WIDGET"]),
+        )
+        cr = s.created_records()
+        self.assertEqual(set(cr), {"Warehouses", "Customers", "Items"})
+        self.assertEqual(cr["Customers"], ["Acme", "Bolt"])
+        self.assertNotIn("Suppliers", cr)
+
+    def test_add_created_increments_and_records_name(self):
+        r = ImportResult("Journal Entry")
+        r.add_created("ACC-JV-0001")
+        self.assertEqual(r.created, 1)
+        self.assertEqual(r.created_names, ["ACC-JV-0001"])
 
     def test_error_records_empty_when_clean(self):
         s = _summary(_result("Warehouse", created=1), _result("Customer", created=2), _result("Supplier"), _result("Item"))

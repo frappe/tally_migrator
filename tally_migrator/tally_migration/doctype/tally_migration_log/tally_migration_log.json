@@ -76,6 +76,27 @@
       "label": "Summary"
     },
     {
+      "fieldname": "section_created",
+      "fieldtype": "Section Break",
+      "label": "Records Created",
+      "collapsible": 1,
+      "depends_on": "eval:doc.created_records && doc.created_records != '{}'"
+    },
+    {
+      "fieldname": "created_view",
+      "fieldtype": "HTML",
+      "label": "Records Created"
+    },
+    {
+      "fieldname": "created_records",
+      "fieldtype": "Code",
+      "label": "Created Records (JSON)",
+      "options": "JSON",
+      "read_only": 1,
+      "hidden": 1,
+      "description": "Per-entity list of the ERPNext documents this run inserted, including the opening Journal Entry and Stock Reconciliation — the authoritative record of what was touched."
+    },
+    {
       "fieldname": "section_errors",
       "fieldtype": "Section Break",
       "label": "Records with Issues",

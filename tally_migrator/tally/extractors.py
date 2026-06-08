@@ -1,4 +1,4 @@
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from .mappings import DEBTOR_ROOTS, CREDITOR_ROOTS, TALLY_ROOT_PARENT, TALLY_SYSTEM_LEDGERS, classify_group
 from .resolver import ACCOUNT, LedgerResolver
 
@@ -15,7 +15,7 @@ LEDGER_FIELDS = [
 ITEM_FIELDS = [
     "Name", "Parent", "BaseUnits", "StandardCost", "StandardPrice",
     "OpeningBalance", "OpeningRate", "Description",
-    "HSNCode", "GST_Applicable", "GSTTypeName",
+    "HSNCode", "GST_Applicable", "GSTTypeName", "TypeOfSupply",
 ]
 
 GODOWN_FIELDS     = ["Name", "Parent", "Address"]
@@ -63,6 +63,10 @@ class CostCentreNode:
 class ExtractedCOA:
     accounts:     list[AccountNode]
     cost_centres: list[CostCentreNode]
+    # Ledgers deliberately or unavoidably left out of the COA, with a reason, so
+    # nothing is dropped silently. Parties (Customers/Suppliers) are NOT listed
+    # here — they are migrated through ``extract_all`` and counted there.
+    excluded:     list[dict] = field(default_factory=list)
 
     @property
     def summary(self) -> dict:
@@ -71,6 +75,7 @@ class ExtractedCOA:
             "account_groups":  groups,
             "ledger_accounts": len(self.accounts) - groups,
             "cost_centres":    len(self.cost_centres),
+            "excluded_ledgers": len(self.excluded),
         }
 
 
@@ -139,6 +144,7 @@ class TallyExtractor:
     def _build_coa(self, groups, ledgers, cost_centres) -> ExtractedCOA:
         resolver = LedgerResolver(groups, ledgers)
         accounts: list[AccountNode] = []
+        excluded: list[dict] = []
 
         # Group nodes (preserve the tree; account_type stays blank on groups).
         for g in groups:
@@ -157,9 +163,23 @@ class TallyExtractor:
         # system ledgers like "Profit & Loss A/c" that ERPNext derives itself).
         for l in ledgers:
             if l["_name"] in TALLY_SYSTEM_LEDGERS:
+                excluded.append({
+                    "name": l["_name"],
+                    "reason": "Tally system ledger — ERPNext maintains this account "
+                              "automatically (not imported).",
+                })
                 continue
             target = resolver.resolve(l["_name"])
-            if target is None or target.kind != ACCOUNT:
+            if target is None:
+                # No classification at all — should not happen for a real ledger,
+                # but if it does we record it rather than dropping it silently.
+                excluded.append({
+                    "name": l["_name"],
+                    "reason": "Could not classify this ledger — review it in Tally.",
+                })
+                continue
+            if target.kind != ACCOUNT:
+                # A party (Customer/Supplier): migrated via extract_all, not here.
                 continue
             ob, drcr = self._parse_opening(l.get("OpeningBalance", ""))
             accounts.append(AccountNode(
@@ -177,7 +197,7 @@ class TallyExtractor:
             CostCentreNode(name=c["_name"], parent=c.get("Parent", "").strip())
             for c in cost_centres
         ]
-        return ExtractedCOA(accounts=accounts, cost_centres=centres)
+        return ExtractedCOA(accounts=accounts, cost_centres=centres, excluded=excluded)
 
     @staticmethod
     def _norm_parent(parent) -> str:

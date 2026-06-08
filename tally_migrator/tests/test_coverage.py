@@ -2,7 +2,9 @@
     python -m unittest tally_migrator.tests.test_coverage
 """
 import unittest
+from unittest import mock
 
+from tally_migrator.migration import coverage as cov
 from tally_migrator.migration.coverage import coverage_report, MAPPED_FIELDS, _norm
 
 
@@ -58,6 +60,30 @@ class TestCoverage(unittest.TestCase):
         self.assertEqual(report["unmapped_field_count"], 2)
         kinds = {t["entity_type"] for t in report["types"]}
         self.assertEqual(kinds, {"Ledger", "Stock Item"})
+
+    def test_flags_read_but_not_written_field(self):
+        # A field the extractor fetches (mapped) but no importer persists (not in
+        # WRITTEN_FIELDS) must be reported as 'unwritten', not silently "clean".
+        patched = {**cov.WRITTEN_FIELDS, "Ledger": ["Name", "Parent"]}
+        with mock.patch.object(cov, "WRITTEN_FIELDS", patched):
+            report = coverage_report(_Src({
+                "Ledger": {"PARENT": _tag(), "OPENINGBALANCE": _tag(2, "5000 Dr", ["Cash"])},
+            }))
+        self.assertFalse(report["clean"])
+        self.assertEqual(report["unmapped_field_count"], 0)
+        self.assertEqual(report["unwritten_field_count"], 1)
+        led = report["types"][0]
+        self.assertEqual(led["unmapped"], [])
+        self.assertEqual(led["unwritten"][0]["field"], "OPENINGBALANCE")
+        self.assertEqual(led["unwritten"][0]["sample"], "5000 Dr")
+
+    def test_real_mapping_has_no_unwritten_gap(self):
+        # Guard: with the real WRITTEN_FIELDS, every fetched item field is written
+        # (regression guard for the GST_Applicable/GSTTypeName silent-drop bug).
+        tags = {_norm(f): _tag() for f in MAPPED_FIELDS["Stock Item"]}
+        report = coverage_report(_Src({"Stock Item": tags}))
+        self.assertEqual(report["unwritten_field_count"], 0)
+        self.assertTrue(report["clean"])
 
 
 if __name__ == "__main__":
