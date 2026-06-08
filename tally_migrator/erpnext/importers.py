@@ -168,8 +168,9 @@ class PartyImporter(BaseImporter):
 
     def _resolve_payment_terms(self, tally_credit_period: str) -> str:
         """
-        Tally stores a credit period as '30 Days' or '30'. Map to an ERPNext
-        Payment Terms record named 'Net <days>' when one exists.
+        Tally stores a credit period as '30 Days' or '30'. The Customer/Supplier
+        ``payment_terms`` field links to a **Payment Terms Template**, so map to a
+        template named 'Net <days>' when one exists (else leave blank).
         """
         if not tally_credit_period:
             return ""
@@ -177,7 +178,7 @@ class PartyImporter(BaseImporter):
         if not days:
             return ""
         candidate = f"Net {days}"
-        return candidate if frappe.db.exists("Payment Terms", candidate) else ""
+        return candidate if frappe.db.exists("Payment Terms Template", candidate) else ""
 
     def _save_address(self, link_name: str, link_type: str, data: dict) -> None:
         """Create a Billing Address linked to the party. Non-fatal on failure."""
