@@ -1,8 +1,57 @@
 from __future__ import annotations
 
+import re
 import xml.etree.ElementTree as ET
 
 import frappe
+
+
+# Real Tally Prime masters exports are UTF-16 (with a BOM) and contain XML-1.0
+# illegal control characters — both as literal bytes and as numeric character
+# references like ``&#4;`` (Tally prefixes "Not Applicable" values with one).
+# Python's XML parser rejects either, so a genuine export would otherwise fail to
+# import outright. These helpers normalise an upload before parsing.
+
+# Control chars XML 1.0 forbids (everything < 0x20 except TAB/LF/CR).
+_ILLEGAL_CHARS = re.compile(r"[\x00-\x08\x0b\x0c\x0e-\x1f]")
+_CHAR_REF = re.compile(r"&#(x[0-9a-fA-F]+|\d+);")
+
+
+def decode_tally_bytes(raw) -> str:
+    """Decode raw upload bytes to text, honouring Tally's UTF-16 export encoding.
+
+    Detects the byte-order mark (UTF-16 LE/BE or a UTF-8 BOM); falls back to
+    UTF-8, then UTF-16 / latin-1 for headerless oddities. A str passes through.
+    """
+    if not isinstance(raw, (bytes, bytearray)):
+        return raw
+    if raw[:2] in (b"\xff\xfe", b"\xfe\xff"):
+        return raw.decode("utf-16")
+    if raw[:3] == b"\xef\xbb\xbf":
+        return raw.decode("utf-8-sig")
+    try:
+        return raw.decode("utf-8")
+    except UnicodeDecodeError:
+        # Headerless UTF-16 shows interleaved NULs; otherwise fall back to latin-1.
+        if b"\x00" in raw[:64]:
+            return raw.decode("utf-16", errors="replace")
+        return raw.decode("latin-1")
+
+
+def _drop_illegal_ref(match: "re.Match") -> str:
+    body = match.group(1)
+    cp = int(body[1:], 16) if body[0] in "xX" else int(body)
+    legal = cp in (0x09, 0x0A, 0x0D) or 0x20 <= cp <= 0xD7FF or 0xE000 <= cp <= 0xFFFD
+    return match.group(0) if legal else ""
+
+
+def sanitize_tally_xml(text: str) -> str:
+    """Strip XML-1.0-illegal characters and numeric refs Tally emits, plus a
+    leading BOM, so ElementTree can parse a genuine export."""
+    if text and text[0] == "﻿":
+        text = text[1:]
+    text = _CHAR_REF.sub(_drop_illegal_ref, text)
+    return _ILLEGAL_CHARS.sub("", text)
 
 
 class FileTallySource:
@@ -28,7 +77,7 @@ class FileTallySource:
 
     def __init__(self, xml_text: str):
         try:
-            self._root = ET.fromstring(xml_text)
+            self._root = ET.fromstring(sanitize_tally_xml(xml_text))
         except ET.ParseError as e:
             frappe.throw(f"Uploaded file is not valid Tally XML: {e}")
 

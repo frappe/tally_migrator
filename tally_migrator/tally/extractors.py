@@ -38,12 +38,24 @@ UNIT_FIELDS       = [
 # (A candidate dict with ``join`` concatenates repeated nodes, e.g. address lines.)
 _ADDRESS_LIST = {"path": "ADDRESS.LIST/ADDRESS", "join": ", "}
 
+# A real Tally Prime *export* nests a party ledger's mailing + GST details inside
+# these containers; the flat tags after them are the import-schema / older-export
+# fallbacks the PDF documents. The parser tries each candidate in order and takes
+# the first that yields a value, so it handles both export shapes and degrades
+# gracefully when a field is absent. (Confirmed against real exports.)
+_MAIL = "LEDMAILINGDETAILS.LIST"      # address / state / pincode / mailing name / country
+_GSTREG = "LEDGSTREGDETAILS.LIST"     # GSTIN + registration type
+
 LEDGER_TAGS = {
-    "Address":       [_ADDRESS_LIST],
-    "LedgerEmail":   ["EMAIL"],
-    "LedgerState":   ["LEDSTATENAME", "STATENAME"],
+    "Address":     [{"path": f"{_MAIL}/ADDRESS.LIST/ADDRESS", "join": ", "}, _ADDRESS_LIST],
+    "LedgerState": [f"{_MAIL}/STATE", "LEDSTATENAME", "STATENAME"],
+    "PinCode":     [f"{_MAIL}/PINCODE", "PINCODE"],
+    "CountryName": [f"{_MAIL}/COUNTRY", "COUNTRYOFRESIDENCE", "COUNTRYNAME"],
+    "MailingName": [f"{_MAIL}/MAILINGNAME", "MAILINGNAME.LIST/MAILINGNAME"],
+    "LedgerEmail": [f"{_MAIL}/EMAIL", "EMAIL"],
+    "GSTRegistrationNumber": [f"{_GSTREG}/GSTIN", "GSTREGISTRATIONNUMBER", "PARTYGSTIN"],
+    "GSTRegistrationType":   [f"{_GSTREG}/GSTREGISTRATIONTYPE", "GSTREGISTRATIONTYPE"],
     "LedgerContact": ["LEDGERCONTACT", "CONTACTPERSON"],
-    "MailingName":   ["MAILINGNAME.LIST/MAILINGNAME"],
 }
 
 ITEM_TAGS = {

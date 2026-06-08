@@ -5,8 +5,10 @@ interop with TallyExtractor directly.
 """
 import unittest
 
-from tally_migrator.tally.file_source import FileTallySource
-from tally_migrator.tally.extractors import TallyExtractor
+from tally_migrator.tally.file_source import (
+    FileTallySource, decode_tally_bytes, sanitize_tally_xml,
+)
+from tally_migrator.tally.extractors import TallyExtractor, LEDGER_FIELDS, LEDGER_TAGS
 
 
 # A trimmed but structurally faithful Tally Prime "Export Masters (XML)" file.
@@ -131,6 +133,91 @@ class TestRealTallyTags(unittest.TestCase):
             "Stock Item", ["StandardPrice", "StandardCost"], self.ITEM_TAGS)[0]
         self.assertEqual(item["StandardPrice"], "99.50")
         self.assertEqual(item["StandardCost"], "72.00")
+
+
+# A faithful slice of a genuine Tally Prime *export*: party mailing + GST details
+# nested in LEDMAILINGDETAILS.LIST / LEDGSTREGDETAILS.LIST, and a Tally ``&#4;``
+# illegal control-char reference (it prefixes "Not Applicable" values). Modelled on
+# real files (Master New.xml / Moooor.xml).
+REAL_EXPORT_XML = """<ENVELOPE>
+  <BODY><IMPORTDATA><REQUESTDATA>
+    <TALLYMESSAGE>
+      <GROUP NAME="Sundry Debtors"><PARENT>Current Assets</PARENT></GROUP>
+    </TALLYMESSAGE>
+    <TALLYMESSAGE>
+      <LEDGER NAME="Garachh">
+        <PARENT>Sundry Debtors</PARENT>
+        <GSTTYPE>&#4; Not Applicable</GSTTYPE>
+        <OPENINGBALANCE>-100000.00</OPENINGBALANCE>
+        <LEDGSTREGDETAILS.LIST>
+          <GSTREGISTRATIONTYPE>Regular</GSTREGISTRATIONTYPE>
+          <GSTIN>24AAACC1206D1ZM</GSTIN>
+        </LEDGSTREGDETAILS.LIST>
+        <LEDMAILINGDETAILS.LIST>
+          <ADDRESS.LIST TYPE="String">
+            <ADDRESS>Testing</ADDRESS>
+            <ADDRESS>Addresss</ADDRESS>
+          </ADDRESS.LIST>
+          <PINCODE>400086</PINCODE>
+          <MAILINGNAME>Garachh</MAILINGNAME>
+          <STATE>Maharashtra</STATE>
+          <COUNTRY>India</COUNTRY>
+        </LEDMAILINGDETAILS.LIST>
+      </LEDGER>
+    </TALLYMESSAGE>
+  </REQUESTDATA></IMPORTDATA></BODY>
+</ENVELOPE>"""
+
+
+class TestDecode(unittest.TestCase):
+    def test_utf16_bom_is_decoded(self):
+        raw = REAL_EXPORT_XML.encode("utf-16")  # adds a UTF-16 LE BOM
+        self.assertTrue(raw[:2] in (b"\xff\xfe", b"\xfe\xff"))
+        text = decode_tally_bytes(raw)
+        self.assertIn("<LEDGER NAME=\"Garachh\">", text)
+
+    def test_utf8_passthrough(self):
+        raw = REAL_EXPORT_XML.encode("utf-8")
+        self.assertIn("Garachh", decode_tally_bytes(raw))
+
+    def test_str_passthrough(self):
+        self.assertEqual(decode_tally_bytes("already text"), "already text")
+
+    def test_sanitize_strips_illegal_char_ref(self):
+        self.assertNotIn("&#4;", sanitize_tally_xml("x &#4; y"))
+        # a legal reference is preserved
+        self.assertIn("&#65;", sanitize_tally_xml("&#65;"))
+
+
+class TestRealExportFormat(unittest.TestCase):
+    """A genuine export (UTF-16 + &#4; + nested .LIST containers) parses and the
+    party's mailing/GST fields extract from their real nested paths."""
+
+    def _ledger(self):
+        raw = REAL_EXPORT_XML.encode("utf-16")
+        source = FileTallySource(decode_tally_bytes(raw))
+        rows = source.get_collection("Ledger", LEDGER_FIELDS, LEDGER_TAGS)
+        return next(r for r in rows if r["_name"] == "Garachh")
+
+    def test_illegal_ref_does_not_break_parsing(self):
+        # If &#4; weren't stripped, FileTallySource() would raise.
+        self.assertEqual(self._ledger()["_name"], "Garachh")
+
+    def test_nested_gst_details(self):
+        led = self._ledger()
+        self.assertEqual(led["GSTRegistrationNumber"], "24AAACC1206D1ZM")
+        self.assertEqual(led["GSTRegistrationType"], "Regular")
+
+    def test_nested_mailing_details(self):
+        led = self._ledger()
+        self.assertEqual(led["LedgerState"], "Maharashtra")
+        self.assertEqual(led["PinCode"], "400086")
+        self.assertEqual(led["MailingName"], "Garachh")
+        self.assertEqual(led["CountryName"], "India")
+        self.assertEqual(led["Address"], "Testing, Addresss")
+
+    def test_opening_balance_top_level(self):
+        self.assertEqual(self._ledger()["OpeningBalance"], "-100000.00")
 
 
 if __name__ == "__main__":

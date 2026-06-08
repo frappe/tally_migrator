@@ -3,7 +3,7 @@ import json
 import frappe
 
 from tally_migrator.tally.config import TallyConfig
-from tally_migrator.tally.file_source import FileTallySource
+from tally_migrator.tally.file_source import FileTallySource, decode_tally_bytes
 from tally_migrator.tally.extractors import TallyExtractor, ITEM_FIELDS, ITEM_TAGS
 from tally_migrator.erpnext.uom_resolver import UomResolver
 from tally_migrator.validation.engine import (
@@ -214,7 +214,8 @@ def _run_and_summarize(config: TallyConfig, source, uom_overrides: dict | None =
 
 
 def _decode(content) -> str:
-    """Decode File.get_content() bytes/str to text."""
-    if isinstance(content, bytes):
-        return content.decode("utf-8", errors="replace")
-    return content
+    """Decode File.get_content() bytes/str to text.
+
+    Real Tally exports are UTF-16; ``decode_tally_bytes`` detects the BOM so they
+    don't arrive as mojibake (and fail to parse)."""
+    return decode_tally_bytes(content)
