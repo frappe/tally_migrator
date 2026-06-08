@@ -30,6 +30,17 @@ class _MockClient:
                 {"_name": "Main Store", "Parent": ""},
                 {"_name": "Shelf A", "Parent": "Main Store"},
             ]
+        if obj_type == "Stock Group":
+            return [
+                {"_name": "Electronics", "Parent": ""},
+                {"_name": "Phones", "Parent": "Electronics"},
+            ]
+        if obj_type == "Unit":
+            return [
+                {"_name": "Nos", "IsSimpleUnit": "Yes", "DecimalPlaces": "0"},
+                {"_name": "Doz of 12 Nos", "IsSimpleUnit": "No",
+                 "BaseUnits": "Doz", "AdditionalUnits": "Nos", "Conversion": "12"},
+            ]
         return []
 
 
@@ -57,6 +68,14 @@ class TestTallyExtractor(unittest.TestCase):
         masters = self.extractor.extract_all()
         self.assertEqual(len(masters.items), 1)
         self.assertEqual(len(masters.warehouses), 2)
+
+    def test_stock_groups_and_units_fetched(self):
+        masters = self.extractor.extract_all()
+        self.assertEqual({g["_name"] for g in masters.stock_groups},
+                         {"Electronics", "Phones"})
+        self.assertEqual(len(masters.units), 2)
+        self.assertEqual(masters.summary["stock_groups"], 2)
+        self.assertEqual(masters.summary["units"], 2)
 
     def test_summary_counts_correct(self):
         masters = self.extractor.extract_all()

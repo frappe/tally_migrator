@@ -183,6 +183,43 @@ class TestERPNextImporter(unittest.TestCase):
         self.assertEqual(result.failed, 0, msg=str(result.errors))
         self.assertEqual(result.created, 2)
 
+    # ── Stock Groups → nested Item Groups ───────────────────────────────────────
+
+    def test_stock_groups_create_nested_item_groups(self):
+        groups = [
+            {"_name": "_TMTest Phones", "Parent": "_TMTest Electronics"},
+            {"_name": "_TMTest Electronics", "Parent": ""},  # top-level
+        ]
+        result = self.importer.import_stock_groups(groups)
+        self.assertEqual(result.failed, 0, msg=str(result.errors))
+        self.assertEqual(result.created, 2)
+        # Child nests under its Tally parent; parent nests under the default root.
+        self.assertEqual(
+            frappe.db.get_value("Item Group", "_TMTest Phones", "parent_item_group"),
+            "_TMTest Electronics")
+
+    # ── Units → UOM (+ conversion factor) ───────────────────────────────────────
+
+    def test_simple_unit_creates_whole_number_uom(self):
+        units = [{"_name": "_TMTest Box", "IsSimpleUnit": "Yes", "DecimalPlaces": "0"}]
+        result = self.importer.import_units(units)
+        self.assertEqual(result.failed, 0, msg=str(result.errors))
+        self.assertTrue(frappe.db.exists("UOM", "_TMTest Box"))
+        self.assertEqual(frappe.db.get_value("UOM", "_TMTest Box", "must_be_whole_number"), 1)
+
+    def test_compound_unit_does_not_hard_fail(self):
+        """Conversion-factor creation is best-effort: a failure is a warning, the
+        run never errors out."""
+        units = [
+            {"_name": "_TMTest Doz", "IsSimpleUnit": "Yes", "DecimalPlaces": "0"},
+            {"_name": "_TMTest Pcs", "IsSimpleUnit": "Yes", "DecimalPlaces": "0"},
+            {"_name": "_TMTest Doz of 12", "IsSimpleUnit": "No",
+             "BaseUnits": "_TMTest Doz", "AdditionalUnits": "_TMTest Pcs", "Conversion": "12"},
+        ]
+        result = self.importer.import_units(units)
+        self.assertEqual(result.failed, 0, msg=str(result.errors))
+        self.assertTrue(frappe.db.exists("UOM", "_TMTest Doz"))
+
     # ── ImportResult helper ─────────────────────────────────────────────────────
 
     def test_import_result_as_dict_structure(self):

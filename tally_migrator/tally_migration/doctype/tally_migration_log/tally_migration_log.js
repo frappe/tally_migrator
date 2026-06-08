@@ -108,6 +108,8 @@ const CREATED_DOCTYPE = {
 	"Accounts": "Account",
 	"Cost Centres": "Cost Center",
 	"Warehouses": "Warehouse",
+	"Units": "UOM",
+	"Stock Groups": "Item Group",
 	"Customers": "Customer",
 	"Suppliers": "Supplier",
 	"Items": "Item",

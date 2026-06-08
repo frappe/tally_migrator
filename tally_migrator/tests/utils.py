@@ -19,6 +19,9 @@ _CLEANUP_TARGETS = [
     ("Supplier", "supplier_name"),
     ("Item", "item_code"),
     ("Warehouse", "warehouse_name"),
+    # UOM conversion factors reference UOMs, so delete them before the UOMs.
+    ("UOM Conversion Factor", "from_uom"),
+    ("UOM", "uom_name"),
     ("Item Group", "item_group_name"),
 ]
 

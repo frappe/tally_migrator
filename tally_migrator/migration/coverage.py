@@ -17,6 +17,7 @@ from __future__ import annotations
 
 from tally_migrator.tally.extractors import (
     LEDGER_FIELDS, ITEM_FIELDS, GODOWN_FIELDS, GROUP_FIELDS, COSTCENTRE_FIELDS,
+    STOCKGROUP_FIELDS, UNIT_FIELDS,
     LEDGER_ALIASES, ITEM_ALIASES, GODOWN_ALIASES,
 )
 
@@ -27,6 +28,8 @@ MAPPED_FIELDS: dict[str, list] = {
     "Stock Item": ITEM_FIELDS,
     "Godown": GODOWN_FIELDS,
     "Cost Centre": COSTCENTRE_FIELDS,
+    "Stock Group": STOCKGROUP_FIELDS,
+    "Unit": UNIT_FIELDS,
 }
 
 # Real-Tally tag variants the parser also reads for a mapped field (see
@@ -73,6 +76,11 @@ WRITTEN_FIELDS: dict[str, list] = {
     "Godown": GODOWN_FIELDS,
     # Cost Centre → name + parent (CostCentreImporter).
     "Cost Centre": COSTCENTRE_FIELDS,
+    # Stock Group → Item Group name + parent (StockGroupImporter).
+    "Stock Group": STOCKGROUP_FIELDS,
+    # Unit → UOM name/whole-number + compound conversion (UnitImporter); every
+    # fetched field feeds the UOM or its conversion factor.
+    "Unit": UNIT_FIELDS,
 }
 
 # Tally housekeeping/structural tags — present on most masters but not business

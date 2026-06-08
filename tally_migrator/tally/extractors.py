@@ -23,6 +23,11 @@ ITEM_FIELDS = [
 GODOWN_FIELDS     = ["Name", "Parent", "Address"]
 GROUP_FIELDS      = ["Name", "Parent"]
 COSTCENTRE_FIELDS = ["Name", "Parent"]
+STOCKGROUP_FIELDS = ["Name", "Parent"]
+UNIT_FIELDS       = [
+    "Name", "IsSimpleUnit", "OriginalName", "DecimalPlaces",
+    "BaseUnits", "AdditionalUnits", "Conversion",
+]
 
 
 # ── Real-Tally tag aliases ────────────────────────────────────────────────────
@@ -55,18 +60,25 @@ GODOWN_ALIASES = {
 
 @dataclass
 class ExtractedMasters:
-    customers:  list[dict]
-    suppliers:  list[dict]
-    items:      list[dict]
-    warehouses: list[dict]
+    customers:    list[dict]
+    suppliers:    list[dict]
+    items:        list[dict]
+    warehouses:   list[dict]
+    # Inventory structure masters that items depend on — imported before items so
+    # an item nests under its real (nested) group and uses a real UOM. Default to
+    # empty so older callers/tests constructing ExtractedMasters still work.
+    stock_groups: list[dict] = field(default_factory=list)
+    units:        list[dict] = field(default_factory=list)
 
     @property
     def summary(self) -> dict:
         return {
-            "customers":  len(self.customers),
-            "suppliers":  len(self.suppliers),
-            "items":      len(self.items),
-            "warehouses": len(self.warehouses),
+            "customers":    len(self.customers),
+            "suppliers":    len(self.suppliers),
+            "items":        len(self.items),
+            "warehouses":   len(self.warehouses),
+            "stock_groups": len(self.stock_groups),
+            "units":        len(self.units),
         }
 
 
@@ -133,10 +145,12 @@ class TallyExtractor:
         creditor_groups = self._descendants(groups, CREDITOR_ROOTS)
 
         return ExtractedMasters(
-            customers  = self._filter_ledgers(ledgers, debtor_groups),
-            suppliers  = self._filter_ledgers(ledgers, creditor_groups),
-            items      = self.client.get_collection("Stock Item", ITEM_FIELDS, ITEM_ALIASES),
-            warehouses = self.client.get_collection("Godown", GODOWN_FIELDS, GODOWN_ALIASES),
+            customers    = self._filter_ledgers(ledgers, debtor_groups),
+            suppliers    = self._filter_ledgers(ledgers, creditor_groups),
+            items        = self.client.get_collection("Stock Item", ITEM_FIELDS, ITEM_ALIASES),
+            warehouses   = self.client.get_collection("Godown", GODOWN_FIELDS, GODOWN_ALIASES),
+            stock_groups = self.client.get_collection("Stock Group", STOCKGROUP_FIELDS),
+            units        = self.client.get_collection("Unit", UNIT_FIELDS),
         )
 
     # ── Helpers ───────────────────────────────────────────────────────────────

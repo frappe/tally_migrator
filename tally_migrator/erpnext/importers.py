@@ -471,6 +471,183 @@ class WarehouseImporter(BaseImporter):
         return ordered
 
 
+# ── Stock Group importer (Tally Stock Groups → nested Item Groups) ────────────
+
+class StockGroupImporter:
+    """Recreate Tally's Stock Group tree as ERPNext Item Groups.
+
+    Without this, item groups are created flat from each item's ``Parent`` (see
+    ``ItemImporter._ensure_item_groups``), losing Tally's hierarchy. Importing the
+    Stock Group masters first gives items a real nested group to nest under; the
+    flat fallback then only fires for groups Tally didn't export as masters.
+
+    Item Groups are not company-scoped, so names are used verbatim. Standalone
+    (not a BaseImporter) because of parent resolution + parent-before-child order.
+    """
+
+    doctype = "Item Group"
+
+    def __init__(self, company: str, abbr: str):
+        self.company = company
+        self.abbr = abbr
+
+    def run(self, groups: list[dict]) -> ImportResult:
+        result = ImportResult(self.doctype)
+        names = {g["_name"] for g in groups}
+        for node in self._ordered(groups):
+            parent = node.get("Parent", "").strip()
+            parent_group = parent if parent in names else DEFAULT_ITEM_GROUP
+            self._upsert(result, node["_name"], parent_group)
+        return result
+
+    @staticmethod
+    def _ordered(groups: list[dict]) -> list[dict]:
+        """Parent-before-child (arbitrary depth)."""
+        index = {g["_name"]: g for g in groups}
+        ordered, visited = [], set()
+
+        def visit(name: str) -> None:
+            if name in visited or name not in index:
+                return
+            parent = index[name].get("Parent", "").strip()
+            if parent in index:
+                visit(parent)
+            visited.add(name)
+            ordered.append(index[name])
+
+        for g in groups:
+            visit(g["_name"])
+        return ordered
+
+    def _upsert(self, result: ImportResult, name: str, parent_group: str) -> None:
+        try:
+            if frappe.db.exists("Item Group", name):
+                result.skipped += 1
+                return
+            doc = frappe.get_doc({
+                "doctype": "Item Group",
+                "item_group_name": name,
+                "parent_item_group": parent_group,
+                "is_group": 1,
+            })
+            doc.insert(ignore_permissions=True)
+            frappe.db.commit()
+            result.add_created(doc.name)
+        except Exception as exc:
+            result.add_error(name, exc)
+            frappe.db.rollback()
+
+
+# ── Unit importer (Tally Units → ERPNext UOM + conversion factors) ────────────
+
+class UnitImporter:
+    """Create ERPNext UOMs (and compound conversions) from Tally Unit masters.
+
+    Today UOMs are only resolved by name when an item is imported; the Unit
+    masters themselves (formal name, decimal places, compound relations) are never
+    read. This imports them so a UOM carries Tally's formal name + whole-number
+    flag, and compound units (e.g. 1 Doz = 12 Nos) become a UOM Conversion Factor.
+
+    Conversion-factor creation is best-effort (it depends on the constituent UOMs
+    and a UOM Category): any failure is a non-fatal warning, never a hard error.
+    """
+
+    doctype = "UOM"
+
+    def __init__(self, company: str, abbr: str):
+        self.company = company
+        self.abbr = abbr
+
+    def run(self, units: list[dict]) -> ImportResult:
+        result = ImportResult(self.doctype)
+        for u in units:
+            self._ensure_uom(result, u)
+        # Compound conversions need both constituent UOMs to exist first, so do
+        # them in a second pass after every simple UOM is created.
+        for u in units:
+            if not self._is_simple(u):
+                self._ensure_conversion(result, u)
+        return result
+
+    @staticmethod
+    def _is_simple(u: dict) -> bool:
+        return (u.get("IsSimpleUnit") or "").strip().lower() not in ("no", "false", "0")
+
+    def _ensure_uom(self, result: ImportResult, u: dict) -> None:
+        name = u["_name"]
+        try:
+            if frappe.db.exists("UOM", name):
+                result.skipped += 1
+                return
+            decimals = (u.get("DecimalPlaces") or "").strip()
+            doc = frappe.get_doc({
+                "doctype": "UOM",
+                "uom_name": name,
+                # Tally decimalplaces=0 → quantity must be whole.
+                "must_be_whole_number": 1 if decimals in ("", "0") else 0,
+            })
+            doc.insert(ignore_permissions=True)
+            frappe.db.commit()
+            result.add_created(doc.name)
+        except Exception as exc:
+            result.add_error(name, exc)
+            frappe.db.rollback()
+
+    def _ensure_conversion(self, result: ImportResult, u: dict) -> None:
+        """Compound unit '1 BaseUnits = Conversion AdditionalUnits' → UOM
+        Conversion Factor. Non-fatal: warn if it can't be created."""
+        base = (u.get("BaseUnits") or "").strip()
+        additional = (u.get("AdditionalUnits") or "").strip()
+        factor = self._to_float(u.get("Conversion"))
+        if not (base and additional and factor > 0):
+            return
+        try:
+            exists = frappe.db.exists(
+                "UOM Conversion Factor", {"from_uom": base, "to_uom": additional})
+            if exists:
+                return
+            doc = {
+                "doctype": "UOM Conversion Factor",
+                "from_uom": base,
+                "to_uom": additional,
+                "value": factor,
+            }
+            category = self._uom_category()
+            if category:
+                doc["category"] = category
+            frappe.get_doc(doc).insert(ignore_permissions=True)
+            frappe.db.commit()
+        except Exception as exc:
+            frappe.log_error(f"UOM conversion failed for {u['_name']}: {exc}", "Tally Migrator")
+            result.add_warning(
+                u["_name"],
+                f"compound unit conversion (1 {base} = {factor:g} {additional}) "
+                f"not created: {exc}")
+            frappe.db.rollback()
+
+    @staticmethod
+    def _uom_category() -> str:
+        """A UOM Category to attach conversions to (required in recent ERPNext).
+        Reuse one if present, else create a 'Tally Imported' category."""
+        if not frappe.db.has_column("UOM Conversion Factor", "category"):
+            return ""
+        existing = frappe.get_all("UOM Category", pluck="name", limit=1)
+        if existing:
+            return existing[0]
+        try:
+            cat = frappe.get_doc({"doctype": "UOM Category", "category_name": "Tally Imported"})
+            cat.insert(ignore_permissions=True)
+            frappe.db.commit()
+            return cat.name
+        except Exception:
+            frappe.db.rollback()
+            return ""
+
+    @staticmethod
+    def _to_float(val) -> float:
+        return BaseImporter._to_float(val)
+
+
 # ── Chart of Accounts importer ───────────────────────────────────────────────
 
 class AccountImporter:
@@ -908,6 +1085,12 @@ class ERPNextImporter:
     def import_opening_stock(self, items: list, posting_date: str = "") -> ImportResult:
         return StockOpeningImporter(self.company, self.abbr).run(
             items, self._opening_date(posting_date))
+
+    def import_stock_groups(self, groups: list[dict]) -> ImportResult:
+        return StockGroupImporter(self.company, self.abbr).run(groups)
+
+    def import_units(self, units: list[dict]) -> ImportResult:
+        return UnitImporter(self.company, self.abbr).run(units)
 
     def import_warehouses(self, warehouses: list[dict]) -> ImportResult:
         return WarehouseImporter(self.company, self.abbr).run(warehouses)

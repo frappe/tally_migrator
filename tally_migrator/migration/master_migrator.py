@@ -198,8 +198,16 @@ class MasterMigrator:
             steps.append(PipelineStep("Accounts", 20, self.importer.import_accounts, coa.accounts))
         if coa.cost_centres:
             steps.append(PipelineStep("Cost Centres", 30, self.importer.import_cost_centres, coa.cost_centres))
+        steps.append(
+            PipelineStep("Warehouses", 40, self.importer.import_warehouses, masters.warehouses))
+        # Inventory structure masters before Items — an item references its group
+        # and UOM, so create the nested Item Groups and UOMs first.
+        if masters.units:
+            steps.append(PipelineStep("Units", 44, self.importer.import_units, masters.units))
+        if masters.stock_groups:
+            steps.append(PipelineStep(
+                "Stock Groups", 48, self.importer.import_stock_groups, masters.stock_groups))
         steps += [
-            PipelineStep("Warehouses", 40, self.importer.import_warehouses, masters.warehouses),
             PipelineStep("Customers", 55, self.importer.import_customers, masters.customers),
             PipelineStep("Suppliers", 65, self.importer.import_suppliers, masters.suppliers),
             PipelineStep("Items", 80, self.importer.import_items, masters.items),
