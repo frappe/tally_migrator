@@ -52,20 +52,33 @@ class ImportResult:
     created: int = 0
     skipped: int = 0
     errors: list[dict] = field(default_factory=list)
+    warnings: list[dict] = field(default_factory=list)
 
     def add_error(self, name: str, reason) -> None:
         self.errors.append({"name": name, "reason": str(reason)})
 
+    def add_warning(self, name: str, reason) -> None:
+        """Record a *non-fatal* partial drop — the main record imported, but a
+        dependent piece (e.g. its address) was lost. Surfaced in the log so the
+        loss is visible/auditable, but it does not mark the record as failed."""
+        self.warnings.append({"name": name, "reason": str(reason)})
+
     @property
     def failed(self) -> int:
         return len(self.errors)
+
+    @property
+    def warned(self) -> int:
+        return len(self.warnings)
 
     def as_dict(self) -> dict:
         return {
             "created": self.created,
             "skipped": self.skipped,
             "failed": self.failed,
+            "warned": self.warned,
             "errors": self.errors,
+            "warnings": self.warnings,
         }
 
 
@@ -97,7 +110,7 @@ class BaseImporter:
             # created records — otherwise a re-run duplicates side effects for
             # records that were skipped because they already exist.
             if name and created:
-                self.after_insert(name, record)
+                self.after_insert(name, record, result)
         return result
 
     # ── Overridable hooks ────────────────────────────────────────────────────
@@ -110,7 +123,7 @@ class BaseImporter:
     def build_doc(self, record: dict) -> dict:
         raise NotImplementedError
 
-    def after_insert(self, name: str, record: dict) -> None:
+    def after_insert(self, name: str, record: dict, result: "ImportResult") -> None:
         pass
 
     # ── Shared upsert ─────────────────────────────────────────────────────────
@@ -156,8 +169,8 @@ class BaseImporter:
 class PartyImporter(BaseImporter):
     """Shared behaviour for Customers and Suppliers: billing address + payment terms."""
 
-    def after_insert(self, name: str, record: dict) -> None:
-        self._save_address(name, self.doctype, record)
+    def after_insert(self, name: str, record: dict, result: "ImportResult") -> None:
+        self._save_address(name, self.doctype, record, result)
 
     @staticmethod
     def _gst_category(record: dict) -> str:
@@ -181,8 +194,11 @@ class PartyImporter(BaseImporter):
         candidate = f"Net {days}"
         return candidate if frappe.db.exists("Payment Terms Template", candidate) else ""
 
-    def _save_address(self, link_name: str, link_type: str, data: dict) -> None:
-        """Create a Billing Address linked to the party. Non-fatal on failure."""
+    def _save_address(self, link_name: str, link_type: str, data: dict,
+                      result: "ImportResult") -> None:
+        """Create a Billing Address linked to the party. Non-fatal on failure —
+        but a failure is recorded as a warning so the dropped address is visible
+        in the migration log rather than lost silently."""
         raw_address = (data.get("Address") or "").strip()
         if not raw_address:
             return
@@ -203,6 +219,7 @@ class PartyImporter(BaseImporter):
             frappe.db.commit()
         except Exception as exc:
             frappe.log_error(f"Address save failed for {link_name}: {exc}", "Tally Migrator")
+            result.add_warning(link_name, f"address not created: {exc}")
 
 
 class CustomerImporter(PartyImporter):
@@ -251,7 +268,7 @@ class ItemImporter(BaseImporter):
         self._uom_overrides = uom_overrides or {}
 
     def before_run(self, records: list[dict], result: ImportResult) -> None:
-        self._ensure_item_groups({r.get("Parent") for r in records if r.get("Parent")})
+        self._ensure_item_groups({r.get("Parent") for r in records if r.get("Parent")}, result)
 
     def build_doc(self, record: dict) -> dict:
         tally_uom = (record.get("BaseUnits") or "").strip()
@@ -270,8 +287,12 @@ class ItemImporter(BaseImporter):
             "gst_hsn_code": record.get("HSNCode") or "",
         }
 
-    def _ensure_item_groups(self, groups: set[str]) -> None:
-        """Create any missing Item Groups under the default parent group."""
+    def _ensure_item_groups(self, groups: set[str], result: ImportResult) -> None:
+        """Create any missing Item Groups under the default parent group.
+
+        A failure here means items in that group will fall back to the default
+        group, so it's recorded as a warning (visible loss of grouping) rather
+        than failing silently."""
         for group in groups:
             if group and not frappe.db.exists("Item Group", group):
                 try:
@@ -282,6 +303,7 @@ class ItemImporter(BaseImporter):
                     frappe.db.commit()
                 except Exception as exc:
                     frappe.log_error(f"Item Group creation failed: {group}: {exc}", "Tally Migrator")
+                    result.add_warning(group, f"item group not created: {exc}")
 
 
 # ── Warehouse importer ──────────────────────────────────────────────────────────

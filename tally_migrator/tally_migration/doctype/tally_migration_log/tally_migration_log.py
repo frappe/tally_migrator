@@ -11,6 +11,7 @@ class TallyMigrationLog(Document):
         TallyMigrationError,
     )
 
+    applied_edits: DF.Code | None
     company: DF.Link
     error_log: DF.LongText | None
     errors: DF.Table[TallyMigrationError]

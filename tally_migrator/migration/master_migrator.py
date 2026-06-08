@@ -47,21 +47,44 @@ class MigrationSummary:
     def has_errors(self) -> bool:
         return any(result.failed > 0 for result in self.results.values())
 
+    @property
+    def has_warnings(self) -> bool:
+        return any(result.warned > 0 for result in self.results.values())
+
     def error_lines(self) -> str:
-        """Flat, human-readable list of per-record failures for the log."""
-        return "\n".join(
+        """Flat, human-readable list of per-record failures + non-fatal drops."""
+        lines = [
             f"[{label}] {e['name']}: {e['reason']}"
             for label, result in self.results.items()
             for e in result.errors
-        )
+        ]
+        warns = [
+            f"[{label}] ⚠ {w['name']}: {w['reason']}"
+            for label, result in self.results.items()
+            for w in result.warnings
+        ]
+        if warns:
+            lines += ["", "Warnings (non-fatal — record imported, dependent data dropped):"] + warns
+        return "\n".join(lines)
 
     def error_records(self) -> list[dict]:
-        """Structured per-record failures for the log's child table."""
-        return [
+        """Structured per-record failures + non-fatal drops for the log's table.
+
+        Both land in the log's issues table so nothing is lost silently; warnings
+        are prefixed so they're distinguishable from hard failures and do not flip
+        the run status to 'Completed with Errors'."""
+        rows = [
             {"record_type": label, "record_name": e["name"], "reason": e["reason"]}
             for label, result in self.results.items()
             for e in result.errors
         ]
+        rows += [
+            {"record_type": f"{label} (warning)", "record_name": w["name"],
+             "reason": f"⚠ {w['reason']}"}
+            for label, result in self.results.items()
+            for w in result.warnings
+        ]
+        return rows
 
 
 class MasterMigrator:
@@ -115,6 +138,7 @@ class MasterMigrator:
             coa_mode=getattr(config, "coa_mode", "reuse"),
         )
         self.record_overrides = record_overrides or {}
+        self.applied_edits: list[dict] = []   # audit trail of effective pre-flight edits
         self.log = None
 
     # ── Public ────────────────────────────────────────────────────────────────
@@ -128,7 +152,7 @@ class MasterMigrator:
 
             self._progress(10)
             masters = self.extractor.extract_all()
-            apply_record_overrides(masters, self.record_overrides)
+            apply_record_overrides(masters, self.record_overrides, self.applied_edits)
             coa = self.extractor.extract_coa()
             frappe.logger().info(f"[Tally Migrator] Extracted: {masters.summary} | COA: {coa.summary}")
 
@@ -218,8 +242,9 @@ class MasterMigrator:
             self.log.status = "Completed with Errors" if summary.has_errors else "Completed"
             self.log.extracted_counts = frappe.as_json({**masters.summary, **coa.summary})
             self.log.import_summary = frappe.as_json(summary.as_dict())
+            self.log.applied_edits = frappe.as_json(self.applied_edits)
             self.log.set("errors", [])
-            if summary.has_errors:
+            if summary.has_errors or summary.has_warnings:
                 self.log.error_log = summary.error_lines()
                 for row in summary.error_records():
                     self.log.append("errors", row)

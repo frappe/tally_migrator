@@ -22,11 +22,16 @@ _BUCKETS = (
 )
 
 
-def apply_record_overrides(masters, overrides: dict | None):
+def apply_record_overrides(masters, overrides: dict | None, changelog: list | None = None):
     """Patch records in ``masters`` in place. Returns ``masters`` for chaining.
 
     Blank override values are ignored (treated as "no change"), so an empty input
     on the screen never wipes existing data.
+
+    If ``changelog`` is provided, every *effective* change (where the new value
+    actually differs from the extracted value) is appended as a dict
+    ``{entity_type, record_name, field, old, new}`` — an audit trail of exactly
+    what the user edited on the pre-flight screen before importing.
     """
     if not overrides:
         return masters
@@ -39,6 +44,18 @@ def apply_record_overrides(masters, overrides: dict | None):
             if not patch:
                 continue
             for field, value in patch.items():
-                if value not in (None, ""):
-                    record[field] = value
+                if value in (None, ""):
+                    continue
+                old = record.get(field, "")
+                if str(old) == str(value):
+                    continue  # no effective change — don't log a no-op
+                if changelog is not None:
+                    changelog.append({
+                        "entity_type": entity_type,
+                        "record_name": record.get("_name"),
+                        "field": field,
+                        "old": old,
+                        "new": value,
+                    })
+                record[field] = value
     return masters

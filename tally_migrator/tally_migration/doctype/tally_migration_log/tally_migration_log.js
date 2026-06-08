@@ -2,9 +2,66 @@ frappe.ui.form.on("Tally Migration Log", {
 	refresh(frm) {
 		render_summary(frm);
 		render_quality(frm);
+		render_edits(frm);
 		add_buttons(frm);
 	},
 });
+
+// ── Applied-edits audit trail ───────────────────────────────────────────────
+// Renders the exact pre-flight (step 3) edits that were applied to the data
+// before import: which field on which record changed, old → new. The source
+// XML is never modified, so this is the authoritative record of what changed.
+
+function render_edits(frm) {
+	const field = frm.get_field("edits_view");
+	if (!field) return;
+	const wrapper = field.$wrapper;
+	wrapper.empty();
+
+	let edits = [];
+	try {
+		edits = JSON.parse(frm.doc.applied_edits || "[]");
+	} catch (e) {
+		edits = [];
+	}
+	if (!edits.length) return;
+
+	const esc = frappe.utils.escape_html;
+	const blank = '<span class="text-muted">(blank)</span>';
+	const rows = edits
+		.map(
+			(e) => `
+			<tr>
+				<td><span class="text-muted">${esc(e.entity_type || "")}</span> · ${esc(e.record_name || "")}</td>
+				<td>${esc(e.field || "")}</td>
+				<td class="text-muted">${e.old ? esc(String(e.old)) : blank}</td>
+				<td>→</td>
+				<td class="text-success">${e.new ? esc(String(e.new)) : blank}</td>
+			</tr>`
+		)
+		.join("");
+
+	wrapper.html(`
+		<div style="border:1px solid #e0e6ed; border-radius:8px; padding:12px 16px;">
+			<div class="text-muted small" style="margin-bottom:6px;">
+				<strong>${edits.length}</strong> field edit(s) were applied on the pre-flight
+				screen before this run. The uploaded file was not modified.
+			</div>
+			<table class="table table-condensed" style="margin:0;">
+				<thead>
+					<tr>
+						<th style="border-top:0;">Record</th>
+						<th style="border-top:0;">Field</th>
+						<th style="border-top:0;">From</th>
+						<th style="border-top:0;"></th>
+						<th style="border-top:0;">To</th>
+					</tr>
+				</thead>
+				<tbody>${rows}</tbody>
+			</table>
+		</div>
+	`);
+}
 
 // ── Pre-flight data-quality report ──────────────────────────────────────────
 // Renders the stored grouped validation report (errors/warnings by rule code)

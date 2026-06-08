@@ -50,6 +50,24 @@ class TestApplyOverrides(unittest.TestCase):
         self.assertIs(apply_record_overrides(m, {}), m)
         self.assertIs(apply_record_overrides(m, None), m)
 
+    def test_changelog_records_effective_edits(self):
+        m = _masters(customers=[_party("X", LedgerState="")])
+        log = []
+        apply_record_overrides(m, {"Customer": {"X": {"LedgerState": "Gujarat"}}}, log)
+        self.assertEqual(len(log), 1)
+        self.assertEqual(
+            log[0],
+            {"entity_type": "Customer", "record_name": "X",
+             "field": "LedgerState", "old": "", "new": "Gujarat"},
+        )
+
+    def test_changelog_skips_noops(self):
+        # Value identical to the extracted one is not an edit — must not be logged.
+        m = _masters(customers=[_party("X", LedgerState="Maharashtra")])
+        log = []
+        apply_record_overrides(m, {"Customer": {"X": {"LedgerState": "Maharashtra"}}}, log)
+        self.assertEqual(log, [])
+
     def test_override_resolves_a_validation_error(self):
         # Missing state is an error; overriding the state should clear it.
         m = _masters(customers=[_party("X", LedgerState="")])

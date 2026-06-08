@@ -78,15 +78,36 @@
     {
       "fieldname": "section_errors",
       "fieldtype": "Section Break",
-      "label": "Failed Records",
+      "label": "Records with Issues",
       "depends_on": "eval:(doc.errors && doc.errors.length) || doc.status == 'Failed'"
     },
     {
       "fieldname": "errors",
       "fieldtype": "Table",
-      "label": "Failed Records",
+      "label": "Failed Records & Non-fatal Drops",
       "options": "Tally Migration Error",
-      "read_only": 1
+      "read_only": 1,
+      "description": "Hard failures, plus '(warning)' rows where a record imported but a dependent piece (e.g. its address or item group) was dropped."
+    },
+    {
+      "fieldname": "section_edits",
+      "fieldtype": "Section Break",
+      "label": "Edits Applied Before Import",
+      "collapsible": 1,
+      "depends_on": "eval:doc.applied_edits && doc.applied_edits != '[]'"
+    },
+    {
+      "fieldname": "edits_view",
+      "fieldtype": "HTML",
+      "label": "Applied Edits"
+    },
+    {
+      "fieldname": "applied_edits",
+      "fieldtype": "Code",
+      "label": "Applied Edits (JSON)",
+      "options": "JSON",
+      "read_only": 1,
+      "hidden": 1
     },
     {
       "fieldname": "section_quality",
