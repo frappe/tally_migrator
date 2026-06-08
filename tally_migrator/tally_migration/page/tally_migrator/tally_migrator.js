@@ -136,6 +136,9 @@ class TallyMigratorPage {
 						</div>
 					</div>
 
+					<!-- Field-coverage notice (read-only; informational) -->
+					<div id="coverage-section" style="display:none; margin-bottom:18px;"></div>
+
 					<div id="check-issues" style="display:none;">
 						<div class="alert alert-warning" style="margin-bottom:14px;">
 							<strong>⚠ Some Units of Measure in your file don't exist in ERPNext yet.</strong>
@@ -375,6 +378,7 @@ class TallyMigratorPage {
 		this.allUoms = [];
 		this.uomOverrides = {};
 		this.qualityReport = null;
+		this.coverageReport = null;
 		this.recordOverrides = {};
 		this.states = [];
 
@@ -382,6 +386,7 @@ class TallyMigratorPage {
 		$("#check-clean").hide();
 		$("#check-issues").hide();
 		$("#dq-section").hide();
+		$("#coverage-section").hide();
 		this.show("section-check");
 
 		// Two independent read-only scans run in parallel: data-quality (GST / HSN /
@@ -403,7 +408,9 @@ class TallyMigratorPage {
 			callback: (r) => {
 				this.qualityReport = r.message || null;
 				this.states = (r.message && r.message.states) || [];
+				this.coverageReport = (r.message && r.message.coverage) || null;
 				this.renderDataQuality();
+				this.renderCoverage();
 				done();
 			},
 			error: () => done(),  // non-fatal — importer still reports failures later
@@ -425,6 +432,53 @@ class TallyMigratorPage {
 			},
 			error: () => done(),
 		});
+	}
+
+	// Read-only notice: fields present in the file that we do NOT migrate (Tally
+	// UDFs / unmapped attributes). Informational — it never blocks Continue.
+	renderCoverage() {
+		const report = this.coverageReport;
+		const $sec = $("#coverage-section");
+		if (!report || report.clean || !(report.types || []).length) {
+			$sec.hide().empty();
+			return;
+		}
+		const esc = frappe.utils.escape_html;
+		const blocks = report.types
+			.map((t) => {
+				const rows = t.unmapped
+					.map(
+						(u) =>
+							`<tr>
+								<td style="font-family:monospace;">${esc(u.field)}</td>
+								<td class="text-right text-muted">${u.count}</td>
+								<td class="text-muted">${u.sample ? esc(String(u.sample)) : ""}</td>
+							</tr>`
+					)
+					.join("");
+				return `
+					<div style="margin-bottom:8px;">
+						<div style="font-weight:600; margin-bottom:3px;">${esc(t.entity_type)}</div>
+						<table class="table table-condensed" style="margin:0;">
+							<thead><tr>
+								<th style="border-top:0;">Field</th>
+								<th style="border-top:0;" class="text-right">Count</th>
+								<th style="border-top:0;">Sample value</th>
+							</tr></thead>
+							<tbody>${rows}</tbody>
+						</table>
+					</div>`;
+			})
+			.join("");
+		$sec.html(`
+			<div class="alert alert-info" style="margin:0;">
+				<strong>ℹ ${report.unmapped_field_count} field(s) in your file won't be migrated.</strong>
+				These are Tally custom fields / attributes outside the supported mapping. Your
+				records will still import — this is just so nothing is dropped without you knowing.
+				A copy is saved on the migration log for your records.
+				<div style="margin-top:10px;">${blocks}</div>
+			</div>
+		`).show();
 	}
 
 	static get DQ_LABELS() {
@@ -868,6 +922,7 @@ class TallyMigratorPage {
 		this.allUoms = [];
 		this.uomOverrides = {};
 		this.qualityReport = null;
+		this.coverageReport = null;
 		this.recordOverrides = {};
 		this.states = [];
 		$("#file-status").html("");
@@ -878,6 +933,7 @@ class TallyMigratorPage {
 		$("#check-issues").hide();
 		$("#uom-issue-list").html("");
 		$("#dq-section").hide();
+		$("#coverage-section").hide().empty();
 		$("#dq-consent").hide();
 		$("#dq-consent-check").prop("checked", false);
 		$("#btn-next-check").prop("disabled", false);

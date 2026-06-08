@@ -45,6 +45,34 @@ class FileTallySource:
             records.append(record)
         return records
 
+    def raw_tags(self, obj_type: str) -> dict:
+        """Enumerate every direct child tag present on records of ``obj_type``.
+
+        Used by the field-coverage report to find data in the file that the
+        extractor's fixed FETCH list never reads — Tally UDFs and any other
+        fields outside our mapping — so nothing is dropped silently.
+
+        Returns ``{TAGNAME: {"count": int, "sample": str, "records": [names]}}``
+        where ``TAGNAME`` is the upper-cased local tag name (namespace stripped,
+        so a ``UDF:`` field appears under its bare name).
+        """
+        tag = obj_type.upper().replace(" ", "")
+        out: dict = {}
+        for elem in self._root.iter(tag):
+            name = (elem.get("NAME") or elem.findtext("NAME") or "").strip()
+            if not name:
+                continue
+            for child in elem:
+                local = child.tag.split("}")[-1].upper()  # drop {namespace}
+                entry = out.setdefault(local, {"count": 0, "sample": "", "records": []})
+                entry["count"] += 1
+                text = (child.text or "").strip()
+                if not entry["sample"] and text:
+                    entry["sample"] = text
+                if len(entry["records"]) < 5 and name not in entry["records"]:
+                    entry["records"].append(name)
+        return out
+
     # Callers ping() the source before extracting; a loaded file is always ready.
     def ping(self) -> bool:
         return True

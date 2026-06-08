@@ -3,9 +3,80 @@ frappe.ui.form.on("Tally Migration Log", {
 		render_summary(frm);
 		render_quality(frm);
 		render_edits(frm);
+		render_coverage(frm);
 		add_buttons(frm);
 	},
 });
+
+// ── Field-coverage report ───────────────────────────────────────────────────
+// Lists fields present in the uploaded Tally file that the migrator does NOT
+// read (UDFs / unmapped attributes) — i.e. data that never entered the pipeline.
+// Read-only audit of what was intentionally left behind.
+
+function render_coverage(frm) {
+	const field = frm.get_field("coverage_view");
+	if (!field) return;
+	const wrapper = field.$wrapper;
+	wrapper.empty();
+
+	let report = null;
+	try {
+		report = JSON.parse(frm.doc.coverage_report || "null");
+	} catch (e) {
+		report = null;
+	}
+	if (!report || !report.types) return;
+
+	const esc = frappe.utils.escape_html;
+	if (report.clean || !report.types.length) {
+		wrapper.html(
+			`<div class="text-success" style="padding:6px 0;">
+				✓ Every field in your file maps to an ERPNext field — nothing was left behind.
+			</div>`
+		);
+		return;
+	}
+
+	const blocks = report.types
+		.map((t) => {
+			const rows = t.unmapped
+				.map(
+					(u) => `
+					<tr>
+						<td style="font-family:monospace;">${esc(u.field)}</td>
+						<td class="text-right text-muted">${u.count}</td>
+						<td class="text-muted">${u.sample ? esc(String(u.sample)) : ""}</td>
+						<td class="text-muted small">${(u.examples || []).map(esc).join(", ")}</td>
+					</tr>`
+				)
+				.join("");
+			return `
+				<div style="margin-bottom:10px;">
+					<div style="font-weight:600; margin-bottom:4px;">${esc(t.entity_type)}</div>
+					<table class="table table-condensed" style="margin:0;">
+						<thead><tr>
+							<th style="border-top:0;">Field</th>
+							<th style="border-top:0;" class="text-right">Count</th>
+							<th style="border-top:0;">Sample value</th>
+							<th style="border-top:0;">Example records</th>
+						</tr></thead>
+						<tbody>${rows}</tbody>
+					</table>
+				</div>`;
+		})
+		.join("");
+
+	wrapper.html(`
+		<div style="border:1px solid #e0e6ed; border-radius:8px; padding:12px 16px;">
+			<div class="text-muted small" style="margin-bottom:8px;">
+				<strong>${report.unmapped_field_count}</strong> field(s) in your file were
+				<strong>not migrated</strong> (Tally custom fields / attributes outside the
+				supported mapping). The records themselves still imported.
+			</div>
+			${blocks}
+		</div>
+	`);
+}
 
 // ── Applied-edits audit trail ───────────────────────────────────────────────
 // Renders the exact pre-flight (step 3) edits that were applied to the data

@@ -130,6 +130,26 @@
       "hidden": 1
     },
     {
+      "fieldname": "section_coverage",
+      "fieldtype": "Section Break",
+      "label": "Fields Not Migrated",
+      "collapsible": 1,
+      "depends_on": "eval:doc.coverage_report && doc.coverage_report != '{}'"
+    },
+    {
+      "fieldname": "coverage_view",
+      "fieldtype": "HTML",
+      "label": "Field Coverage"
+    },
+    {
+      "fieldname": "coverage_report",
+      "fieldtype": "Code",
+      "label": "Coverage Report (JSON)",
+      "options": "JSON",
+      "read_only": 1,
+      "hidden": 1
+    },
+    {
       "fieldname": "section_raw",
       "fieldtype": "Section Break",
       "label": "Raw Data (JSON)",

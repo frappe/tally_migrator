@@ -10,6 +10,7 @@ from tally_migrator.validation.engine import (
     validate_extraction, group_report, records_by_key, erpnext_states,
 )
 from tally_migrator.migration.overrides import apply_record_overrides
+from tally_migrator.migration.coverage import coverage_report
 from tally_migrator.migration.master_migrator import MasterMigrator
 
 ALLOWED_ROLES = ["System Manager", "Tally Migration Manager"]
@@ -68,6 +69,7 @@ def validate_masters_data(file_url, record_overrides=""):
     masters = apply_record_overrides(TallyExtractor(source).extract_all(), overrides)
     payload = group_report(validate_extraction(masters=masters), records_by_key(masters))
     payload["states"] = erpnext_states()
+    payload["coverage"] = coverage_report(source)
     return payload
 
 
@@ -129,6 +131,9 @@ def run_masters_migration_from_file(file_url, erpnext_company="", uom_overrides=
         tally_company=f"File: {file_doc.file_name or file_url}",
         source_file=file_url,
         validation_report=validation_report or "",
+        # Computed server-side from the actual file so the stored audit record of
+        # un-migrated fields is authoritative, not client-supplied.
+        coverage_report=frappe.as_json(coverage_report(source)),
         coa_mode=coa_mode if coa_mode in ("reuse", "mirror") else "reuse",
     )
     return _run_and_summarize(config, source, uom, records)

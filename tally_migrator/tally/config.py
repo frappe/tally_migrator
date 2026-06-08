@@ -14,4 +14,5 @@ class TallyConfig:
     erpnext_company: str = ""  # Target Company inside ERPNext
     source_file: str = ""      # file_url of the uploaded XML, stored on the log for re-runs
     validation_report: str = ""  # JSON of the pre-flight data-quality report, stored on the log
+    coverage_report: str = ""  # JSON of the field-coverage report (unmapped fields), stored on the log
     coa_mode: str = "reuse"    # Chart of Accounts: "reuse" ERPNext defaults | "mirror" Tally tree
