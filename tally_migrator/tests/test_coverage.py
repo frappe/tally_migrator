@@ -97,7 +97,7 @@ class TestCoverage(unittest.TestCase):
 
     def test_real_mapping_has_no_unwritten_gap(self):
         # Guard: with the real WRITTEN_FIELDS, every fetched item field is written
-        # (regression guard for the GST_Applicable/GSTTypeName silent-drop bug).
+        # (regression guard for the GST-treatment silent-drop bug).
         tags = {t: _tag() for t in read_tags("Stock Item")}
         report = coverage_report(_Src({"Stock Item": tags}))
         self.assertEqual(report["unwritten_field_count"], 0)

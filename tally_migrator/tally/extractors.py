@@ -17,7 +17,7 @@ LEDGER_FIELDS = [
 ITEM_FIELDS = [
     "Name", "Parent", "BaseUnits", "StandardCost", "StandardPrice",
     "OpeningBalance", "OpeningRate", "Description",
-    "HSNCode", "GST_Applicable", "GSTTypeName", "TypeOfSupply",
+    "HSNCode", "GSTTaxability", "TypeOfSupply",
 ]
 
 GODOWN_FIELDS     = ["Name", "Parent", "Address"]
@@ -62,6 +62,15 @@ ITEM_TAGS = {
     # Tally keeps standard price/cost as dated revision lists; take the latest.
     "StandardPrice": ["STANDARDPRICELIST.LIST/RATE"],
     "StandardCost":  ["STANDARDCOSTLIST.LIST/RATE"],
+    # Confirmed against a real Stock Item export: the HSN code lives nested in
+    # HSNDETAILS.LIST/HSNCODE (the sibling <HSN> tag holds the *description*, not
+    # the code). Taxability + Goods/Services nest under GSTDETAILS.LIST. The flat
+    # forms are version fallbacks. (Item GST *rate* is intentionally not read — it
+    # is nested per duty-head and usually inherited via SRCOFGSTDETAILS, so the
+    # item-level value is 0/unreliable; ERPNext models rate as a tax template.)
+    "HSNCode":       ["HSNDETAILS.LIST/HSNCODE", "HSNCODE"],
+    "GSTTaxability": ["GSTDETAILS.LIST/TAXABILITY"],
+    "TypeOfSupply":  ["GSTDETAILS.LIST/SUPPLYTYPE", "TYPEOFSUPPLY"],
 }
 
 GODOWN_TAGS = {

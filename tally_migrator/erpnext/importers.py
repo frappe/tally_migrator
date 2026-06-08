@@ -330,7 +330,7 @@ class ItemImporter(BaseImporter):
         # Surface any GST treatment we couldn't map so the loss is auditable rather
         # than silently defaulting the item to taxable.
         for r in records:
-            raw = (r.get("GSTTypeName") or "").strip()
+            raw = (r.get("GSTTaxability") or "").strip()
             if raw and self._gst_treatment(raw) is None:
                 result.add_warning(
                     r["_name"],
@@ -358,8 +358,9 @@ class ItemImporter(BaseImporter):
 
     @staticmethod
     def _is_stock_item(record: dict) -> int:
-        """Tally Prime tags service masters with TypeOfSupply='Services'. Those map
-        to non-stock items in ERPNext; everything else stays a stock item."""
+        """A Tally Stock Item whose GST supply type is 'Services' maps to a
+        non-stock Item in ERPNext (read from GSTDETAILS.LIST/SUPPLYTYPE); every
+        other supply type stays a stock item."""
         supply = (record.get("TypeOfSupply") or "").strip().lower()
         return 0 if supply in ("services", "service") else 1
 
@@ -385,16 +386,14 @@ class ItemImporter(BaseImporter):
         return table.get(key)
 
     def _gst_fields(self, record: dict) -> dict:
-        """Item-level GST attributes derived from Tally's GST_Applicable / GSTTypeName.
+        """Item-level GST attributes derived from Tally's GST taxability
+        (GSTDETAILS.LIST/TAXABILITY: Taxable / Nil Rated / Exempt / Non-GST).
 
         ``is_nil_exempt`` / ``is_non_gst`` are India-Compliance fields; setting them
         on the doc is harmless when that app isn't installed (Frappe ignores keys
         that aren't real docfields). Unrecognised values fall back to taxable and
         are flagged as a warning in ``before_run``."""
-        applicable = (record.get("GST_Applicable") or "").strip().lower()
-        if applicable in ("not applicable", "non gst", "non-gst", "no"):
-            return {"is_non_gst": 1}
-        return self._gst_treatment(record.get("GSTTypeName") or "") or {}
+        return self._gst_treatment(record.get("GSTTaxability") or "") or {}
 
     def _ensure_item_groups(self, groups: set[str], result: ImportResult) -> None:
         """Create any missing Item Groups under the default parent group.

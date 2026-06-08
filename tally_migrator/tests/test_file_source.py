@@ -8,7 +8,9 @@ import unittest
 from tally_migrator.tally.file_source import (
     FileTallySource, decode_tally_bytes, sanitize_tally_xml,
 )
-from tally_migrator.tally.extractors import TallyExtractor, LEDGER_FIELDS, LEDGER_TAGS
+from tally_migrator.tally.extractors import (
+    TallyExtractor, LEDGER_FIELDS, LEDGER_TAGS, ITEM_FIELDS, ITEM_TAGS,
+)
 
 
 # A trimmed but structurally faithful Tally Prime "Export Masters (XML)" file.
@@ -218,6 +220,51 @@ class TestRealExportFormat(unittest.TestCase):
 
     def test_opening_balance_top_level(self):
         self.assertEqual(self._ledger()["OpeningBalance"], "-100000.00")
+
+
+# A faithful slice of a genuine Stock Item export: the HSN code nests in
+# HSNDETAILS.LIST/HSNCODE while the sibling <HSN> holds the *description*;
+# taxability + supply type nest under GSTDETAILS.LIST. Modelled on a real
+# TallyPrime collection dump (full_MyStockItems2.xml).
+REAL_ITEM_XML = """<ENVELOPE>
+  <BODY><DATA><COLLECTION>
+    <STOCKITEM NAME="Wireless Mouse - Logitech M185">
+      <PARENT>Computer Accessories</PARENT>
+      <BASEUNITS>Nos</BASEUNITS>
+      <ADDITIONALUNITS>&#4; Not Applicable</ADDITIONALUNITS>
+      <HSNDETAILS.LIST>
+        <APPLICABLEFROM>20260401</APPLICABLEFROM>
+        <HSNCODE>847160</HSNCODE>
+        <HSN>Computer input devices</HSN>
+      </HSNDETAILS.LIST>
+      <GSTDETAILS.LIST>
+        <SUPPLYTYPE>Goods</SUPPLYTYPE>
+        <TAXABILITY>Taxable</TAXABILITY>
+        <SRCOFGSTDETAILS>As per Company/Stock Group</SRCOFGSTDETAILS>
+      </GSTDETAILS.LIST>
+    </STOCKITEM>
+  </COLLECTION></DATA></BODY>
+</ENVELOPE>"""
+
+
+class TestRealItemSchema(unittest.TestCase):
+    """The nested HSN/GST tags confirmed against a real Stock Item export."""
+
+    def _item(self):
+        source = FileTallySource(REAL_ITEM_XML)
+        return source.get_collection("Stock Item", ITEM_FIELDS, ITEM_TAGS)[0]
+
+    def test_hsn_code_from_nested_hsncode_not_description(self):
+        # The value must be the code (847160), never the sibling <HSN> description.
+        self.assertEqual(self._item()["HSNCode"], "847160")
+
+    def test_gst_taxability_and_supply_type(self):
+        item = self._item()
+        self.assertEqual(item["GSTTaxability"], "Taxable")
+        self.assertEqual(item["TypeOfSupply"], "Goods")
+
+    def test_base_unit_is_plain_string_reference(self):
+        self.assertEqual(self._item()["BaseUnits"], "Nos")
 
 
 if __name__ == "__main__":
