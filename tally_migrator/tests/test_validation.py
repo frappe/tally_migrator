@@ -167,6 +167,14 @@ class TestValidateMasters(unittest.TestCase):
         m = _masters(customers=[_party("Reliance Industries"), _party("Reliance Ind.")])
         self.assertIn("DUPLICATE_PARTY", self._codes(validate_masters(m)))
 
+    def test_duplicate_supplier_is_labelled_supplier(self):
+        # A duplicate among suppliers must report entity_type "Supplier", not the
+        # old hardcoded "Customer".
+        m = _masters(suppliers=[_party("Reliance Industries"), _party("Reliance Ind.")])
+        dupes = [i for i in validate_masters(m).issues if i.code == "DUPLICATE_PARTY"]
+        self.assertTrue(dupes)
+        self.assertEqual(dupes[0].entity_type, "Supplier")
+
     def test_clean_masters_no_issues(self):
         m = _masters(
             customers=[_party("Tata Steel", GSTRegistrationNumber=_valid_gstin())],

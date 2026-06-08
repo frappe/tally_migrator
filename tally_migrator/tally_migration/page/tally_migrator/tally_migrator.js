@@ -136,6 +136,9 @@ class TallyMigratorPage {
 						</div>
 					</div>
 
+					<!-- Company-readiness gate (blockers stop the run) -->
+					<div id="readiness-section" style="display:none; margin-bottom:18px;"></div>
+
 					<!-- Field-coverage notice (read-only; informational) -->
 					<div id="coverage-section" style="display:none; margin-bottom:18px;"></div>
 
@@ -242,7 +245,15 @@ class TallyMigratorPage {
 
 		// Step 3 — pre-flight check
 		$("#btn-back-check").on("click", () => this.show("section-configure"));
-		$("#btn-next-check").on("click", () => this.resolveUomsAndContinue());
+		$("#btn-next-check").on("click", () => {
+			if (this.readiness && this.readiness.ready === false) {
+				frappe.msgprint(
+					__("This company isn't ready to receive masters. Resolve the blockers shown above, then Re-check.")
+				);
+				return;
+			}
+			this.resolveUomsAndContinue();
+		});
 
 		// Step 4
 		$("#btn-back-3").on("click", () => this.show("section-check"));
@@ -379,6 +390,7 @@ class TallyMigratorPage {
 		this.uomOverrides = {};
 		this.qualityReport = null;
 		this.coverageReport = null;
+		this.readiness = null;
 		this.recordOverrides = {};
 		this.states = [];
 
@@ -386,6 +398,7 @@ class TallyMigratorPage {
 		$("#check-clean").hide();
 		$("#check-issues").hide();
 		$("#dq-section").hide();
+		$("#readiness-section").hide();
 		$("#coverage-section").hide();
 		this.show("section-check");
 
@@ -404,12 +417,14 @@ class TallyMigratorPage {
 
 		frappe.call({
 			method: "tally_migrator.api.validate_masters_data",
-			args: { file_url: this.fileUrl },
+			args: { file_url: this.fileUrl, erpnext_company: $("#erpnext-company").val() },
 			callback: (r) => {
 				this.qualityReport = r.message || null;
 				this.states = (r.message && r.message.states) || [];
 				this.coverageReport = (r.message && r.message.coverage) || null;
+				this.readiness = (r.message && r.message.readiness) || null;
 				this.renderDataQuality();
+				this.renderReadiness();
 				this.renderCoverage();
 				done();
 			},
@@ -431,6 +446,60 @@ class TallyMigratorPage {
 				done();
 			},
 			error: () => done(),
+		});
+	}
+
+	// Company-readiness gate. Blockers (a whole entity would fail) disable
+	// Continue; warnings (partial degradation) are shown but don't block.
+	renderReadiness() {
+		const report = this.readiness;
+		const $sec = $("#readiness-section");
+		const $btn = $("#btn-next-check");
+		if (!report || (report.ready && !(report.warnings || []).length)) {
+			$sec.hide().empty();
+			$btn.prop("disabled", false);
+			return;
+		}
+		const esc = frappe.utils.escape_html;
+		const row = (it, color) => `
+			<div style="padding:4px 0; border-top:1px solid rgba(0,0,0,0.06);">
+				<div style="font-weight:600; color:${color};">${esc(it.message)}</div>
+				<div class="text-muted small">Fix: ${esc(it.fix)}</div>
+			</div>`;
+		const blockers = (report.blockers || []).map((b) => row(b, "#c0392b")).join("");
+		const warnings = (report.warnings || []).map((w) => row(w, "#b8860b")).join("");
+
+		const hasBlockers = (report.blockers || []).length > 0;
+		const cls = hasBlockers ? "alert-danger" : "alert-warning";
+		const head = hasBlockers
+			? `<strong>✋ This company isn't ready — fix the items below before migrating.</strong>`
+			: `<strong>⚠ This company can receive masters, but some steps are degraded.</strong>`;
+
+		$sec.html(`
+			<div class="alert ${cls}" style="margin:0;">
+				${head}
+				${blockers ? `<div style="margin-top:10px;">${blockers}</div>` : ""}
+				${warnings ? `<div style="margin-top:10px;">${warnings}</div>` : ""}
+				<div style="margin-top:10px;">
+					<button class="btn btn-xs btn-default" id="btn-recheck-readiness">Re-check</button>
+				</div>
+			</div>
+		`).show();
+
+		$("#btn-recheck-readiness").on("click", () => this.recheckReadiness());
+		$btn.prop("disabled", hasBlockers);
+	}
+
+	// Re-run only the readiness check (after the user fixes setup in another tab),
+	// without re-scanning the whole file.
+	recheckReadiness() {
+		frappe.call({
+			method: "tally_migrator.api.company_readiness",
+			args: { erpnext_company: $("#erpnext-company").val() },
+			callback: (r) => {
+				this.readiness = r.message || null;
+				this.renderReadiness();
+			},
 		});
 	}
 
@@ -933,6 +1002,7 @@ class TallyMigratorPage {
 		$("#check-issues").hide();
 		$("#uom-issue-list").html("");
 		$("#dq-section").hide();
+		$("#readiness-section").hide().empty();
 		$("#coverage-section").hide().empty();
 		$("#dq-consent").hide();
 		$("#dq-consent-check").prop("checked", false);

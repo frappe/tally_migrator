@@ -659,7 +659,7 @@ class OpeningBalanceImporter:
         if not lines:
             return result  # nothing to post
 
-        self._balance(lines)
+        self._balance(lines, result)
         try:
             doc = frappe.get_doc({
                 "doctype": "Journal Entry",
@@ -722,7 +722,10 @@ class OpeningBalanceImporter:
         return {"account": account, "debit_in_account_currency": amount,
                 "credit_in_account_currency": 0.0}
 
-    def _balance(self, lines: list[dict]) -> None:
+    # A residual below this (currency units) is rounding noise, not a real gap.
+    PLUG_NOISE_THRESHOLD = 1.0
+
+    def _balance(self, lines: list[dict], result: "ImportResult | None" = None) -> None:
         total_dr = sum(l["debit_in_account_currency"] for l in lines)
         total_cr = sum(l["credit_in_account_currency"] for l in lines)
         diff = round(total_dr - total_cr, 2)
@@ -735,6 +738,17 @@ class OpeningBalanceImporter:
         else:
             lines.append({"account": temp, "debit_in_account_currency": abs(diff),
                           "credit_in_account_currency": 0.0})
+        # A non-trivial plug means the migrated balances don't net to zero on their
+        # own — usually only part of the trial balance was migrated. ERPNext still
+        # balances the entry against Temporary Opening, but that silently hides the
+        # gap, so flag it as a non-fatal warning for review.
+        if result is not None and abs(diff) >= self.PLUG_NOISE_THRESHOLD:
+            side = "credit" if diff > 0 else "debit"
+            result.add_warning(
+                "Opening Entry",
+                f"opening balances did not net to zero; {abs(diff):,.2f} was {side}ed "
+                f"to 'Temporary Opening - {self.abbr}' to balance the entry — review "
+                "whether the full trial balance was migrated.")
 
 
 # ── Opening stock importer ───────────────────────────────────────────────────

@@ -322,13 +322,15 @@ def _validate_items(items: list[dict], report: ValidationReport) -> None:
             seen_codes[code] = name
 
 
-def _validate_duplicates(parties: list[dict], report: ValidationReport) -> None:
+def _validate_duplicates(parties: list[dict], report: ValidationReport,
+                         entity_of: dict | None = None) -> None:
     """Flag likely-duplicate parties (customers + suppliers share the namespace)."""
+    entity_of = entity_of or {}
     for group in find_duplicate_groups(parties):
         primary = group[0]
         for dupe in group[1:]:
             report.add(ValidationIssue(
-                "Customer", dupe, WARNING, "DUPLICATE_PARTY",
+                entity_of.get(dupe, "Customer"), dupe, WARNING, "DUPLICATE_PARTY",
                 f"Looks like a duplicate of '{primary}'.",
                 "Merge in Tally, or pick one survivor before migrating."))
 
@@ -344,7 +346,9 @@ def validate_masters(masters, report: ValidationReport | None = None) -> Validat
     for s in masters.suppliers:
         _validate_party(s, "Supplier", report)
     _validate_items(masters.items, report)
-    _validate_duplicates(masters.customers + masters.suppliers, report)
+    entity_of = {c["_name"]: "Customer" for c in masters.customers}
+    entity_of.update({s["_name"]: "Supplier" for s in masters.suppliers})
+    _validate_duplicates(masters.customers + masters.suppliers, report, entity_of)
     return report
 
 

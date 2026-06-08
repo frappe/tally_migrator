@@ -117,3 +117,32 @@ class TestERPNextImporter(unittest.TestCase):
         self.assertEqual(d["skipped"], 2)
         self.assertEqual(d["failed"], 1)
         self.assertEqual(len(d["errors"]), 1)
+
+    # ── Opening-balance plug warning (no DB) ────────────────────────────────────
+
+    def test_opening_balance_plug_warns_when_unbalanced(self):
+        from tally_migrator.erpnext.importers import OpeningBalanceImporter, ImportResult
+
+        imp = OpeningBalanceImporter("_TMTest Co", "TC")
+        result = ImportResult("Journal Entry")
+        lines = [{"debit_in_account_currency": 5000.0, "credit_in_account_currency": 0.0}]
+        imp._balance(lines, result)
+        # A balancing Temporary Opening line is appended …
+        self.assertEqual(len(lines), 2)
+        self.assertEqual(lines[1]["credit_in_account_currency"], 5000.0)
+        # … and the gap is surfaced as a warning, not hidden.
+        self.assertEqual(result.warned, 1)
+        self.assertIn("Temporary Opening", result.warnings[0]["reason"])
+
+    def test_opening_balance_no_warn_when_balanced(self):
+        from tally_migrator.erpnext.importers import OpeningBalanceImporter, ImportResult
+
+        imp = OpeningBalanceImporter("_TMTest Co", "TC")
+        result = ImportResult("Journal Entry")
+        lines = [
+            {"debit_in_account_currency": 5000.0, "credit_in_account_currency": 0.0},
+            {"debit_in_account_currency": 0.0, "credit_in_account_currency": 5000.0},
+        ]
+        imp._balance(lines, result)
+        self.assertEqual(len(lines), 2)          # no plug line added
+        self.assertEqual(result.warned, 0)

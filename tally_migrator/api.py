@@ -11,6 +11,7 @@ from tally_migrator.validation.engine import (
 )
 from tally_migrator.migration.overrides import apply_record_overrides
 from tally_migrator.migration.coverage import coverage_report
+from tally_migrator.migration.readiness import check_readiness
 from tally_migrator.migration.master_migrator import MasterMigrator
 
 ALLOWED_ROLES = ["System Manager", "Tally Migration Manager"]
@@ -51,7 +52,18 @@ def validate_masters_file(file_url):
 
 
 @frappe.whitelist()
-def validate_masters_data(file_url, record_overrides=""):
+def company_readiness(erpnext_company=""):
+    """Pre-flight: is the target ERPNext company set up to receive masters?
+
+    Read-only. Returns blockers (an entire entity would fail) and warnings
+    (partial degradation) so the UI can stop a doomed run before it starts.
+    """
+    frappe.only_for(ALLOWED_ROLES)
+    return check_readiness(erpnext_company)
+
+
+@frappe.whitelist()
+def validate_masters_data(file_url, record_overrides="", erpnext_company=""):
     """Pre-flight data-quality scan of an uploaded Tally Masters XML.
 
     Read-only — extracts and inspects, writes nothing. Returns a grouped,
@@ -70,6 +82,8 @@ def validate_masters_data(file_url, record_overrides=""):
     payload = group_report(validate_extraction(masters=masters), records_by_key(masters))
     payload["states"] = erpnext_states()
     payload["coverage"] = coverage_report(source)
+    if erpnext_company:
+        payload["readiness"] = check_readiness(erpnext_company)
     return payload
 
 
