@@ -1,6 +1,6 @@
 from dataclasses import dataclass, field
-from .mappings import DEBTOR_ROOTS, CREDITOR_ROOTS, TALLY_ROOT_PARENT, TALLY_SYSTEM_LEDGERS, classify_group
-from .resolver import ACCOUNT, LedgerResolver
+from .mappings import TALLY_ROOT_PARENT, TALLY_SYSTEM_LEDGERS, classify_group
+from .resolver import ACCOUNT, CUSTOMER, SUPPLIER, LedgerResolver
 
 
 # ── Field lists sent to Tally via TDL FETCH ───────────────────────────────────
@@ -140,36 +140,18 @@ class TallyExtractor:
         groups  = self.client.get_collection("Group", GROUP_FIELDS)
         ledgers = self.client.get_collection("Ledger", LEDGER_FIELDS, LEDGER_TAGS)
 
-        debtor_groups   = self._descendants(groups, DEBTOR_ROOTS)
-        creditor_groups = self._descendants(groups, CREDITOR_ROOTS)
-
+        # One resolver classifies every ledger (customer / supplier / account) by
+        # its group ancestry — the single source of truth also used by COA
+        # extraction, so customer/supplier splitting needs no parallel BFS here.
+        resolver = LedgerResolver(groups, ledgers)
         return ExtractedMasters(
-            customers    = self._filter_ledgers(ledgers, debtor_groups),
-            suppliers    = self._filter_ledgers(ledgers, creditor_groups),
+            customers    = [l for l in ledgers if resolver.kind_of(l["_name"]) == CUSTOMER],
+            suppliers    = [l for l in ledgers if resolver.kind_of(l["_name"]) == SUPPLIER],
             items        = self.client.get_collection("Stock Item", ITEM_FIELDS, ITEM_TAGS),
             warehouses   = self.client.get_collection("Godown", GODOWN_FIELDS, GODOWN_TAGS),
             stock_groups = self.client.get_collection("Stock Group", STOCKGROUP_FIELDS),
             units        = self.client.get_collection("Unit", UNIT_FIELDS),
         )
-
-    # ── Helpers ───────────────────────────────────────────────────────────────
-
-    def _descendants(self, groups: list[dict], roots: set[str]) -> set[str]:
-        """
-        BFS over the Group tree to collect all groups under the given roots.
-        Handles arbitrary nesting depth (e.g. Sundry Debtors → Retail → Wholesale).
-        """
-        result, changed = set(roots), True
-        while changed:
-            changed = False
-            for g in groups:
-                if g["_name"] not in result and g.get("Parent", "").strip() in result:
-                    result.add(g["_name"])
-                    changed = True
-        return result
-
-    def _filter_ledgers(self, ledgers: list[dict], groups: set[str]) -> list[dict]:
-        return [l for l in ledgers if l.get("Parent", "").strip() in groups]
 
     # ── Chart of Accounts ──────────────────────────────────────────────────────
 

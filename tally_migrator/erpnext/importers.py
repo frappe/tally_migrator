@@ -598,7 +598,7 @@ class UnitImporter:
         Conversion Factor. Non-fatal: warn if it can't be created."""
         base = (u.get("BaseUnits") or "").strip()
         additional = (u.get("AdditionalUnits") or "").strip()
-        factor = self._to_float(u.get("Conversion"))
+        factor = BaseImporter._to_float(u.get("Conversion"))
         if not (base and additional and factor > 0):
             return
         try:
@@ -642,10 +642,6 @@ class UnitImporter:
         except Exception:
             frappe.db.rollback()
             return ""
-
-    @staticmethod
-    def _to_float(val) -> float:
-        return BaseImporter._to_float(val)
 
 
 # ── Chart of Accounts importer ───────────────────────────────────────────────

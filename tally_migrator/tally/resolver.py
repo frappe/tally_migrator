@@ -55,10 +55,6 @@ class LedgerResolver:
         target = self._by_name.get(ledger_name)
         return target.kind if target else None
 
-    @property
-    def party_groups(self) -> set[str]:
-        return self._debtor_groups | self._creditor_groups
-
     def group_nature(self, group_name: str) -> dict:
         """Classify a group by walking up to its nearest reserved ancestor."""
         seen: set[str] = set()

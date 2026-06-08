@@ -36,6 +36,22 @@
       "description": "The Tally Masters XML this run imported from. Kept so the run can be repeated."
     },
     {
+      "fieldname": "coa_mode",
+      "fieldtype": "Data",
+      "label": "COA Mode",
+      "read_only": 1,
+      "hidden": 1,
+      "description": "Chart-of-Accounts mode used (reuse/mirror). Kept so a re-run repeats it faithfully."
+    },
+    {
+      "fieldname": "posting_date",
+      "fieldtype": "Date",
+      "label": "Opening Posting Date",
+      "read_only": 1,
+      "hidden": 1,
+      "description": "Opening-balance posting date used. Kept so a re-run repeats it faithfully."
+    },
+    {
       "fieldname": "col_break_1",
       "fieldtype": "Column Break"
     },

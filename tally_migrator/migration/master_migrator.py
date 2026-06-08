@@ -16,7 +16,6 @@ def _has_opening(raw) -> bool:
     reusing the extractor's own parser, so the pipeline-gating check agrees
     exactly with what the importer will post.
     """
-    from tally_migrator.tally.extractors import TallyExtractor
     return TallyExtractor._parse_opening(raw)[0] != 0.0
 
 
@@ -270,6 +269,10 @@ class MasterMigrator:
             log.validation_report = self.config.validation_report
         if getattr(self.config, "coverage_report", ""):
             log.coverage_report = self.config.coverage_report
+        # Persisted so a re-run from this log repeats the original options faithfully.
+        log.coa_mode = getattr(self.config, "coa_mode", "reuse") or "reuse"
+        if self.posting_date:
+            log.posting_date = self.posting_date
         log.insert(ignore_permissions=True)
         frappe.db.commit()
         return log

@@ -177,6 +177,13 @@ def rerun_from_log(log_name):
         erpnext_company=log.company,
         tally_company=log.tally_company,
         source_file=log.source_file,
+        validation_report=log.validation_report or "",
+        # Recomputed from the (unchanged) source so the new log's coverage is current.
+        coverage_report=frappe.as_json(coverage_report(source)),
+        # Repeat the original run's options rather than silently reverting to
+        # defaults (reuse / fiscal-year start).
+        coa_mode=log.coa_mode or "reuse",
+        posting_date=str(log.posting_date or ""),
     )
     return _run_and_summarize(config, source)
 

@@ -5,7 +5,7 @@ import unittest
 
 from tally_migrator.tally.extractors import TallyExtractor
 from tally_migrator.tally.mappings import classify_group
-from tally_migrator.tally.resolver import LedgerResolver, CUSTOMER, SUPPLIER, ACCOUNT
+from tally_migrator.tally.resolver import LedgerResolver, CUSTOMER, ACCOUNT
 
 
 class _Src:
@@ -73,8 +73,10 @@ class TestResolver(unittest.TestCase):
     def test_group_nature_walks_to_reserved_ancestor(self):
         self.assertEqual(self.r.group_nature("Telecom Expenses")["root"], "Expense")
 
-    def test_party_groups_include_custom_descendants(self):
-        self.assertIn("Retail Customers", self.r.party_groups)
+    def test_custom_descendant_classified_as_party(self):
+        # "Acme Corp" sits under "Retail Customers", a custom group nested under
+        # Sundry Debtors — it must still resolve as a customer (deep descendants).
+        self.assertEqual(self.r.kind_of("Acme Corp"), CUSTOMER)
 
 
 class TestBuildCOA(unittest.TestCase):

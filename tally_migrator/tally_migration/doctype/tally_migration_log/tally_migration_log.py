@@ -12,6 +12,7 @@ class TallyMigrationLog(Document):
     )
 
     applied_edits: DF.Code | None
+    coa_mode: DF.Data | None
     company: DF.Link
     coverage_report: DF.Code | None
     created_records: DF.Code | None
@@ -21,6 +22,7 @@ class TallyMigrationLog(Document):
     import_summary: DF.Code | None
     migration_date: DF.Datetime | None
     migration_type: DF.Literal["Masters", "Transactions"]
+    posting_date: DF.Date | None
     source_file: DF.Attach | None
     status: DF.Literal["", "Running", "Completed", "Completed with Errors", "Failed"]
     tally_company: DF.Data
