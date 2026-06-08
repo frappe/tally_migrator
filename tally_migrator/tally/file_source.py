@@ -34,19 +34,19 @@ class FileTallySource:
 
     # The single method TallyExtractor depends on.
     def get_collection(self, obj_type: str, fields: list[str],
-                       aliases: dict | None = None) -> list[dict]:
+                       tag_map: dict | None = None) -> list[dict]:
         """Read one Tally object type into ``[{_name, <field>: value, ...}]``.
 
-        For each requested field the parser tries, in order:
-          1. the canonical tag ``FIELD.upper()`` (matches a hand-authored export),
-          2. each fallback in ``aliases[field]`` — the tag names a *real* Tally
-             Prime export actually emits (e.g. ``LEDSTATENAME`` for state), and
-             nested ``.LIST`` paths (e.g. ``ADDRESS.LIST/ADDRESS``).
-        The first candidate that yields a value wins, so genuine Tally output and
-        the legacy flat-tag sample both import without per-field guesswork.
+        For each requested field the tag(s) to read are, in order:
+          - ``tag_map[field]`` when given — the exact tag name(s) a real Tally
+            Prime export emits, including nested ``.LIST`` paths (e.g.
+            ``LEDSTATENAME`` for state, ``ADDRESS.LIST/ADDRESS`` for the address);
+          - otherwise the field name itself (``FIELD.upper()``), which for most
+            fields already equals the real Tally tag (NAME, PARENT, PINCODE, …).
+        The first candidate that yields a value wins.
         """
         tag = obj_type.upper().replace(" ", "")
-        aliases = aliases or {}
+        tag_map = tag_map or {}
         records: list[dict] = []
         for elem in self._root.iter(tag):
             name = (elem.get("NAME") or elem.findtext("NAME") or "").strip()
@@ -54,12 +54,12 @@ class FileTallySource:
                 continue
             record = {"_name": name}
             for f in fields:
-                candidates = [f.upper().replace(" ", ""), *aliases.get(f, [])]
+                candidates = tag_map.get(f) or [f.upper().replace(" ", "")]
                 record[f] = self._resolve_field(elem, candidates)
             records.append(record)
         return records
 
-    # ── Field resolution (tag aliases + nested .LIST descent) ──────────────────
+    # ── Field resolution (tag overrides + nested .LIST descent) ────────────────
     @classmethod
     def _resolve_field(cls, elem, candidates: list) -> str:
         """First candidate that yields a non-empty value wins.

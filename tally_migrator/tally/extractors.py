@@ -30,30 +30,29 @@ UNIT_FIELDS       = [
 ]
 
 
-# ── Real-Tally tag aliases ────────────────────────────────────────────────────
-# A genuine Tally Prime "Export Masters (XML)" emits different tag names than the
-# flat ones above for several standard fields — and wraps some in ``.LIST``
-# containers. The parser tries the canonical tag first, then these fallbacks, so
-# both a real export and the legacy hand-authored sample import correctly. Each
-# entry maps a FETCH field → extra tag-path candidates (a dict with ``join``
-# concatenates repeated nodes, e.g. multi-line addresses).
+# ── Tag overrides for fields whose real Tally tag ≠ FIELD.upper() ─────────────
+# A genuine Tally Prime "Export Masters (XML)" names several fields differently
+# from the field key and wraps some in ``.LIST`` containers. These maps give the
+# *exact* tag(s) the parser reads for such a field; every other field falls back
+# to FIELD.upper(), which already equals the real Tally tag (NAME, PARENT, …).
+# (A candidate dict with ``join`` concatenates repeated nodes, e.g. address lines.)
 _ADDRESS_LIST = {"path": "ADDRESS.LIST/ADDRESS", "join": ", "}
 
-LEDGER_ALIASES = {
-    "Address":     [_ADDRESS_LIST],
-    "LedgerEmail": ["EMAIL"],            # real Tally uses <EMAIL>, not <LEDGEREMAIL>
-    "LedgerState": ["LEDSTATENAME", "STATENAME"],  # not <LEDGERSTATE>
-    "LedgerContact": ["CONTACTPERSON"],  # contact-person name on the ledger
-    "MailingName": ["MAILINGNAME.LIST/MAILINGNAME"],  # billing/display name
+LEDGER_TAGS = {
+    "Address":       [_ADDRESS_LIST],
+    "LedgerEmail":   ["EMAIL"],
+    "LedgerState":   ["LEDSTATENAME", "STATENAME"],
+    "LedgerContact": ["LEDGERCONTACT", "CONTACTPERSON"],
+    "MailingName":   ["MAILINGNAME.LIST/MAILINGNAME"],
 }
 
-ITEM_ALIASES = {
+ITEM_TAGS = {
     # Tally keeps standard price/cost as dated revision lists; take the latest.
     "StandardPrice": ["STANDARDPRICELIST.LIST/RATE"],
     "StandardCost":  ["STANDARDCOSTLIST.LIST/RATE"],
 }
 
-GODOWN_ALIASES = {
+GODOWN_TAGS = {
     "Address": [_ADDRESS_LIST],
 }
 
@@ -139,7 +138,7 @@ class TallyExtractor:
 
     def extract_all(self) -> ExtractedMasters:
         groups  = self.client.get_collection("Group", GROUP_FIELDS)
-        ledgers = self.client.get_collection("Ledger", LEDGER_FIELDS, LEDGER_ALIASES)
+        ledgers = self.client.get_collection("Ledger", LEDGER_FIELDS, LEDGER_TAGS)
 
         debtor_groups   = self._descendants(groups, DEBTOR_ROOTS)
         creditor_groups = self._descendants(groups, CREDITOR_ROOTS)
@@ -147,8 +146,8 @@ class TallyExtractor:
         return ExtractedMasters(
             customers    = self._filter_ledgers(ledgers, debtor_groups),
             suppliers    = self._filter_ledgers(ledgers, creditor_groups),
-            items        = self.client.get_collection("Stock Item", ITEM_FIELDS, ITEM_ALIASES),
-            warehouses   = self.client.get_collection("Godown", GODOWN_FIELDS, GODOWN_ALIASES),
+            items        = self.client.get_collection("Stock Item", ITEM_FIELDS, ITEM_TAGS),
+            warehouses   = self.client.get_collection("Godown", GODOWN_FIELDS, GODOWN_TAGS),
             stock_groups = self.client.get_collection("Stock Group", STOCKGROUP_FIELDS),
             units        = self.client.get_collection("Unit", UNIT_FIELDS),
         )
@@ -181,7 +180,7 @@ class TallyExtractor:
         Customers/Suppliers (handled separately), not as ledger Accounts.
         """
         groups       = self.client.get_collection("Group", GROUP_FIELDS)
-        ledgers      = self.client.get_collection("Ledger", LEDGER_FIELDS, LEDGER_ALIASES)
+        ledgers      = self.client.get_collection("Ledger", LEDGER_FIELDS, LEDGER_TAGS)
         cost_centres = self.client.get_collection("Cost Centre", COSTCENTRE_FIELDS)
         return self._build_coa(groups, ledgers, cost_centres)
 

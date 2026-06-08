@@ -64,14 +64,15 @@ class TestFileTallySource(unittest.TestCase):
             FileTallySource("<ENVELOPE><not-closed>")
 
 
-# A record using the tag names a *genuine* Tally Prime export emits: state under
-# <LEDSTATENAME>, email under <EMAIL>, a multi-line <ADDRESS.LIST>, and price/cost
-# as <STANDARDPRICELIST.LIST> revision lists — none of which the flat canonical
-# tags would match.
+# Two records: one in real Tally tags (state <LEDSTATENAME>, email <EMAIL>,
+# multi-line <ADDRESS.LIST>, price/cost <STANDARDPRICELIST.LIST> revision lists),
+# and one using the OLD invented flat tags (<LEDGERSTATE>/<LEDGEREMAIL>/flat
+# <ADDRESS>/<STANDARDPRICE>) which the parser must now IGNORE — only real Tally
+# tags are read.
 REAL_TALLY_XML = """<ENVELOPE>
   <BODY><IMPORTDATA><REQUESTDATA>
     <TALLYMESSAGE>
-      <LEDGER NAME="Canonical Co"><PARENT>Sundry Debtors</PARENT>
+      <LEDGER NAME="Invented Tag Co"><PARENT>Sundry Debtors</PARENT>
         <LEDGERSTATE>Gujarat</LEDGERSTATE>
         <LEDGEREMAIL>flat@example.com</LEDGEREMAIL>
         <ADDRESS>12 Flat Road</ADDRESS></LEDGER>
@@ -95,28 +96,28 @@ REAL_TALLY_XML = """<ENVELOPE>
 </ENVELOPE>"""
 
 
-class TestRealTallyTagAliases(unittest.TestCase):
-    """Genuine Tally tag variants must resolve to the same FETCH fields the flat
-    canonical tags do — otherwise standard fields silently drop into 'not migrated'."""
+class TestRealTallyTags(unittest.TestCase):
+    """Only genuine Tally tags are read; the old invented flat tags are ignored."""
 
     def setUp(self):
-        from tally_migrator.tally.extractors import LEDGER_ALIASES, ITEM_ALIASES
+        from tally_migrator.tally.extractors import LEDGER_TAGS, ITEM_TAGS
         self.source = FileTallySource(REAL_TALLY_XML)
-        self.LEDGER_ALIASES = LEDGER_ALIASES
-        self.ITEM_ALIASES = ITEM_ALIASES
+        self.LEDGER_TAGS = LEDGER_TAGS
+        self.ITEM_TAGS = ITEM_TAGS
 
     def _ledgers(self):
         rows = self.source.get_collection(
-            "Ledger", ["Address", "LedgerEmail", "LedgerState"], self.LEDGER_ALIASES)
+            "Ledger", ["Address", "LedgerEmail", "LedgerState"], self.LEDGER_TAGS)
         return {r["_name"]: r for r in rows}
 
-    def test_canonical_flat_tags_still_win(self):
-        row = self._ledgers()["Canonical Co"]
-        self.assertEqual(row["LedgerState"], "Gujarat")
-        self.assertEqual(row["LedgerEmail"], "flat@example.com")
-        self.assertEqual(row["Address"], "12 Flat Road")
+    def test_invented_flat_tags_are_ignored(self):
+        # <LEDGERSTATE>/<LEDGEREMAIL>/flat <ADDRESS> are no longer read.
+        row = self._ledgers()["Invented Tag Co"]
+        self.assertEqual(row["LedgerState"], "")
+        self.assertEqual(row["LedgerEmail"], "")
+        self.assertEqual(row["Address"], "")
 
-    def test_real_tally_state_and_email_aliases(self):
+    def test_real_tally_state_and_email(self):
         row = self._ledgers()["Real Tally Co"]
         self.assertEqual(row["LedgerState"], "Karnataka")   # <LEDSTATENAME>
         self.assertEqual(row["LedgerEmail"], "real@example.com")  # <EMAIL>
@@ -127,7 +128,7 @@ class TestRealTallyTagAliases(unittest.TestCase):
 
     def test_standard_price_and_cost_revision_lists(self):
         item = self.source.get_collection(
-            "Stock Item", ["StandardPrice", "StandardCost"], self.ITEM_ALIASES)[0]
+            "Stock Item", ["StandardPrice", "StandardCost"], self.ITEM_TAGS)[0]
         self.assertEqual(item["StandardPrice"], "99.50")
         self.assertEqual(item["StandardCost"], "72.00")
 

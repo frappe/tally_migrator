@@ -5,7 +5,7 @@ import unittest
 from unittest import mock
 
 from tally_migrator.migration import coverage as cov
-from tally_migrator.migration.coverage import coverage_report, MAPPED_FIELDS, _norm
+from tally_migrator.migration.coverage import coverage_report, read_tags
 
 
 class _Src:
@@ -23,8 +23,8 @@ def _tag(count=1, sample="", records=None):
 
 class TestCoverage(unittest.TestCase):
     def test_clean_when_only_mapped_fields(self):
-        # Every Ledger tag is a mapped field → nothing unmapped.
-        tags = {_norm(f): _tag() for f in MAPPED_FIELDS["Ledger"]}
+        # Every real Ledger tag the extractor reads → nothing unmapped.
+        tags = {t: _tag() for t in read_tags("Ledger")}
         report = coverage_report(_Src({"Ledger": tags}))
         self.assertTrue(report["clean"])
         self.assertEqual(report["unmapped_field_count"], 0)
@@ -77,7 +77,7 @@ class TestCoverage(unittest.TestCase):
         self.assertEqual(led["unwritten"][0]["field"], "OPENINGBALANCE")
         self.assertEqual(led["unwritten"][0]["sample"], "5000 Dr")
 
-    def test_real_tally_alias_tags_are_not_flagged(self):
+    def test_real_tally_tags_are_not_flagged(self):
         # A genuine export uses LEDSTATENAME / EMAIL / ADDRESS.LIST instead of the
         # flat canonical tags — the parser reads them, so coverage must treat them
         # as covered, not "not migrated".
@@ -98,7 +98,7 @@ class TestCoverage(unittest.TestCase):
     def test_real_mapping_has_no_unwritten_gap(self):
         # Guard: with the real WRITTEN_FIELDS, every fetched item field is written
         # (regression guard for the GST_Applicable/GSTTypeName silent-drop bug).
-        tags = {_norm(f): _tag() for f in MAPPED_FIELDS["Stock Item"]}
+        tags = {t: _tag() for t in read_tags("Stock Item")}
         report = coverage_report(_Src({"Stock Item": tags}))
         self.assertEqual(report["unwritten_field_count"], 0)
         self.assertTrue(report["clean"])

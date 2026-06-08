@@ -7,7 +7,7 @@ from tally_migrator.tally.extractors import TallyExtractor
 class _MockClient:
     """Returns deterministic fixture data without hitting Tally."""
 
-    def get_collection(self, obj_type, fields, aliases=None):
+    def get_collection(self, obj_type, fields, tag_map=None):
         if obj_type == "Group":
             return [
                 {"_name": "Primary", "Parent": ""},
@@ -89,7 +89,7 @@ class TestTallyExtractor(unittest.TestCase):
         """Groups 3 levels deep must still be recognised as Debtors."""
 
         class DeepClient(_MockClient):
-            def get_collection(self, obj_type, fields, aliases=None):
+            def get_collection(self, obj_type, fields, tag_map=None):
                 if obj_type == "Group":
                     return [
                         {"_name": "Sundry Debtors", "Parent": "Primary"},

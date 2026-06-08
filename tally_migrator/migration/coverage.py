@@ -18,7 +18,7 @@ from __future__ import annotations
 from tally_migrator.tally.extractors import (
     LEDGER_FIELDS, ITEM_FIELDS, GODOWN_FIELDS, GROUP_FIELDS, COSTCENTRE_FIELDS,
     STOCKGROUP_FIELDS, UNIT_FIELDS,
-    LEDGER_ALIASES, ITEM_ALIASES, GODOWN_ALIASES,
+    LEDGER_TAGS, ITEM_TAGS, GODOWN_TAGS,
 )
 
 # Tally object type → the fields the extractor fetches (what CAN enter the pipeline).
@@ -32,29 +32,34 @@ MAPPED_FIELDS: dict[str, list] = {
     "Unit": UNIT_FIELDS,
 }
 
-# Real-Tally tag variants the parser also reads for a mapped field (see
-# extractors.*_ALIASES). These resolve to fields that ARE written, so the report
-# must treat their container tag as covered — otherwise a genuine export's
-# <LEDSTATENAME>/<EMAIL>/<ADDRESS.LIST>/<STANDARDPRICELIST.LIST> would be wrongly
-# flagged "not migrated" even though we now import them.
-_ALIASES_BY_TYPE: dict[str, dict] = {
-    "Ledger": LEDGER_ALIASES,
-    "Stock Item": ITEM_ALIASES,
-    "Godown": GODOWN_ALIASES,
+# Per-type tag overrides the extractor uses for fields whose real Tally tag isn't
+# FIELD.upper() (see extractors.*_TAGS). The report derives the *actual* tag each
+# field reads from these, so a genuine export's <LEDSTATENAME>/<EMAIL>/
+# <ADDRESS.LIST>/<STANDARDPRICELIST.LIST> is counted as covered.
+_TAGS_BY_TYPE: dict[str, dict] = {
+    "Ledger": LEDGER_TAGS,
+    "Stock Item": ITEM_TAGS,
+    "Godown": GODOWN_TAGS,
 }
 
 
-def _alias_tags(obj_type: str) -> set[str]:
-    """Top-level container tag (uppercased) of every alias candidate for a type.
-
-    ``raw_tags`` enumerates each record's *direct* children, so a nested path
-    like ``ADDRESS.LIST/ADDRESS`` surfaces as the container ``ADDRESS.LIST``."""
+def _read_tags(obj_type: str, fields: list) -> set[str]:
+    """The set of top-level tags the parser actually reads for these fields —
+    exactly mirroring ``FileTallySource.get_collection``: a field's tag override
+    when one exists, else ``FIELD.upper()``. Nested ``.LIST`` paths surface as
+    their container tag (``raw_tags`` only sees each record's direct children)."""
+    overrides = _TAGS_BY_TYPE.get(obj_type, {})
     out: set[str] = set()
-    for candidates in _ALIASES_BY_TYPE.get(obj_type, {}).values():
-        for cand in candidates:
+    for f in fields:
+        for cand in (overrides.get(f) or [_norm(f)]):
             path = cand["path"] if isinstance(cand, dict) else cand
-            out.add(path.split("/")[0].upper())
+            out.add(_norm(path.split("/")[0]))
     return out
+
+
+def read_tags(obj_type: str) -> set[str]:
+    """Public: every tag the extractor reads for an object type (for tests)."""
+    return _read_tags(obj_type, MAPPED_FIELDS.get(obj_type, []))
 
 # The fields an importer actually PERSISTS onto an ERPNext doc. Fetching a field
 # (MAPPED_FIELDS) is not the same as writing it: a field can be in the FETCH list
@@ -123,9 +128,8 @@ def coverage_report(source) -> dict:
     unmapped_total = 0
     unwritten_total = 0
     for obj_type, fields in MAPPED_FIELDS.items():
-        alias_tags = _alias_tags(obj_type)  # real-Tally variants → read AND written
-        mapped = {_norm(f) for f in fields} | alias_tags | {"NAME"}
-        written = {_norm(f) for f in WRITTEN_FIELDS.get(obj_type, fields)} | alias_tags | {"NAME"}
+        mapped = _read_tags(obj_type, fields) | {"NAME"}
+        written = _read_tags(obj_type, WRITTEN_FIELDS.get(obj_type, fields)) | {"NAME"}
         read_not_written = mapped - written
         tags = source.raw_tags(obj_type)
 
