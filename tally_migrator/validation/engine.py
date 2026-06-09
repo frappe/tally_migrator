@@ -335,7 +335,82 @@ def _validate_duplicates(parties: list[dict], report: ValidationReport,
                 "Merge in Tally, or pick one survivor before migrating."))
 
 
-def validate_masters(masters, report: ValidationReport | None = None) -> ValidationReport:
+def _validate_name_collisions(masters, report: ValidationReport) -> None:
+    """Flag two records of the same master type whose names collide.
+
+    Parties are handled by the fuzzy de-duplication above; this covers the
+    inventory masters (Items, Warehouses, Units, Stock Groups), which had no
+    collision check at all. Two records sharing a name silently *merge* on import
+    — the second is skipped as "already exists" — so surface them beforehand.
+    """
+    groups = [
+        ("Item", masters.items),
+        ("Warehouse", masters.warehouses),
+        ("Unit", getattr(masters, "units", [])),
+        ("Stock Group", getattr(masters, "stock_groups", [])),
+    ]
+    for entity_type, records in groups:
+        seen: dict[str, str] = {}
+        for r in records:
+            original = (r.get("_name") or "").strip()
+            key = original.casefold()
+            if not key:
+                continue
+            if key in seen:
+                report.add(ValidationIssue(
+                    entity_type, original, WARNING, "DUPLICATE_NAME",
+                    f"Another {entity_type} named '{seen[key]}' is already in this file — "
+                    "they will merge into one record on import.",
+                    "Rename one in Tally before migrating, or accept the merge."))
+            else:
+                seen[key] = original
+
+
+def _cycle_nodes(edges: list[tuple[str, str]]) -> list[str]:
+    """Return the names that sit on a parent→child cycle (order-stable).
+
+    ``edges`` is ``(name, parent)`` pairs; a parent not present as a node is a
+    root, not a cycle. Mirrors the importer's own cycle guard so the warning and
+    the runtime behaviour agree.
+    """
+    parent_of = {name: parent for name, parent in edges}
+    on_cycle: list[str] = []
+    for start in parent_of:
+        seen, cur = set(), start
+        while cur in parent_of and cur not in seen:
+            seen.add(cur)
+            cur = parent_of[cur]
+        if cur in seen:  # re-entered a node we already walked → cycle
+            on_cycle.append(start)
+    return on_cycle
+
+
+def _validate_hierarchy(masters, coa, report: ValidationReport) -> None:
+    """Warn about circular parent chains in the hierarchical masters.
+
+    The importer now breaks cycles instead of crashing, but the resulting tree is
+    arbitrary, so the user should know their source has a loop before they rely on
+    the migrated hierarchy.
+    """
+    checks: list[tuple[str, list[tuple[str, str]]]] = [
+        ("Warehouse", [(w["_name"], (w.get("Parent") or "").strip()) for w in masters.warehouses]),
+        ("Stock Group", [(g["_name"], (g.get("Parent") or "").strip())
+                         for g in getattr(masters, "stock_groups", [])]),
+    ]
+    if coa is not None:
+        checks.append(("Account", [(a.name, a.parent) for a in getattr(coa, "accounts", [])]))
+        checks.append(("Cost Center", [(c.name, c.parent)
+                                        for c in getattr(coa, "cost_centres", [])]))
+    for entity_type, edges in checks:
+        for name in _cycle_nodes(edges):
+            report.add(ValidationIssue(
+                entity_type, name, WARNING, "CIRCULAR_PARENT",
+                "This record's parent chain forms a loop — its hierarchy can't be "
+                "built faithfully.",
+                "Fix the parent in Tally so the tree has no cycles."))
+
+
+def validate_masters(masters, report: ValidationReport | None = None, coa=None) -> ValidationReport:
     report = report or ValidationReport()
     report.count("Customer", len(masters.customers))
     report.count("Supplier", len(masters.suppliers))
@@ -349,14 +424,16 @@ def validate_masters(masters, report: ValidationReport | None = None) -> Validat
     entity_of = {c["_name"]: "Customer" for c in masters.customers}
     entity_of.update({s["_name"]: "Supplier" for s in masters.suppliers})
     _validate_duplicates(masters.customers + masters.suppliers, report, entity_of)
+    _validate_name_collisions(masters, report)
+    _validate_hierarchy(masters, coa, report)
     return report
 
 
-def validate_extraction(masters=None) -> ValidationReport:
+def validate_extraction(masters=None, coa=None) -> ValidationReport:
     """Run every applicable masters rule over whatever was extracted."""
     report = ValidationReport()
     if masters is not None:
-        validate_masters(masters, report)
+        validate_masters(masters, report, coa)
     return report
 
 

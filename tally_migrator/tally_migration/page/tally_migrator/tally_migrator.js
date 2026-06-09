@@ -542,18 +542,22 @@ class TallyMigratorPage {
 			return;
 		}
 		const esc = frappe.utils.escape_html;
+		const row = (u, status) => `<tr>
+				<td style="font-family:monospace;">${esc(u.field)}</td>
+				<td class="text-right text-muted">${u.count}</td>
+				<td class="text-muted">${u.sample ? esc(String(u.sample)) : ""}</td>
+				<td class="text-muted">${status}</td>
+			</tr>`;
 		const blocks = report.types
 			.map((t) => {
-				const rows = t.unmapped
-					.map(
-						(u) =>
-							`<tr>
-								<td style="font-family:monospace;">${esc(u.field)}</td>
-								<td class="text-right text-muted">${u.count}</td>
-								<td class="text-muted">${u.sample ? esc(String(u.sample)) : ""}</td>
-							</tr>`
-					)
-					.join("");
+				// Both kinds are reported: "Not mapped" (a Tally custom field we never
+				// read) and "Read, not imported" (a field we parse but no importer
+				// persists). The second used to be hidden, making the count read 0.
+				const rows = [
+					...(t.unmapped || []).map((u) => row(u, "Not mapped")),
+					...(t.unwritten || []).map((u) => row(u, "Read, not imported")),
+				].join("");
+				if (!rows) return "";
 				return `
 					<div style="margin-bottom:8px;">
 						<div style="font-weight:600; margin-bottom:3px;">${esc(t.entity_type)}</div>
@@ -562,18 +566,22 @@ class TallyMigratorPage {
 								<th style="border-top:0;">Field</th>
 								<th style="border-top:0;" class="text-right">Count</th>
 								<th style="border-top:0;">Sample value</th>
+								<th style="border-top:0;">Status</th>
 							</tr></thead>
 							<tbody>${rows}</tbody>
 						</table>
 					</div>`;
 			})
 			.join("");
+		const total =
+			(report.unmapped_field_count || 0) + (report.unwritten_field_count || 0);
 		$sec.html(`
 			<div class="alert alert-info" style="margin:0;">
-				<strong>ℹ ${report.unmapped_field_count} field(s) in your file won't be migrated.</strong>
-				These are Tally custom fields / attributes outside the supported mapping. Your
-				records will still import — this is just so nothing is dropped without you knowing.
-				A copy is saved on the migration log for your records.
+				<strong>ℹ ${total} field(s) in your file won't be migrated.</strong>
+				These are either Tally custom fields outside the supported mapping
+				("Not mapped"), or fields we read but don't import ("Read, not imported").
+				Your records will still import — this is just so nothing is dropped without
+				you knowing. A copy is saved on the migration log for your records.
 				<div style="margin-top:10px;">${blocks}</div>
 			</div>
 		`).show();
@@ -588,6 +596,8 @@ class TallyMigratorPage {
 			HSN_MISSING: "HSN code missing",
 			ITEM_CODE_COLLISION: "Item code collision",
 			DUPLICATE_PARTY: "Possible duplicate party",
+			DUPLICATE_NAME: "Duplicate name (will merge)",
+			CIRCULAR_PARENT: "Circular parent hierarchy",
 		};
 	}
 
@@ -940,17 +950,28 @@ class TallyMigratorPage {
 		// Pull out the per-entity results (everything except our own log_name key)
 		const entries = Object.entries(summary).filter(([key]) => key !== "log_name");
 		const hasErrors = entries.some(([, r]) => r.failed > 0);
+		const totalWarnings = entries.reduce((a, [, r]) => a + (r.warned || 0), 0);
 		const totalCreated = entries.reduce((a, [, r]) => a + (r.created || 0), 0);
 
-		// Headline
-		let html = `
-			<div class="alert ${hasErrors ? "alert-warning" : "alert-success"}">
-				${
-					hasErrors
-						? "⚠ Migration finished — most records imported, but some need your attention (see Failed below)."
-						: `✓ All done! <strong>${totalCreated}</strong> new record${totalCreated === 1 ? "" : "s"} imported into ERPNext.`
-				}
-			</div>`;
+		// Headline — three states so non-fatal drops (addresses, contacts, opening
+		// balances, excluded ledgers) are never hidden behind a green "All done".
+		let headlineClass = "alert-success";
+		let headlineMsg = `✓ All done! <strong>${totalCreated}</strong> new record${
+			totalCreated === 1 ? "" : "s"
+		} imported into ERPNext.`;
+		if (hasErrors) {
+			headlineClass = "alert-warning";
+			headlineMsg =
+				"⚠ Migration finished — most records imported, but some need your attention (see Failed below).";
+		} else if (totalWarnings) {
+			headlineClass = "alert-warning";
+			headlineMsg = `✓ <strong>${totalCreated}</strong> record${
+				totalCreated === 1 ? "" : "s"
+			} imported, but <strong>${totalWarnings}</strong> warning${
+				totalWarnings === 1 ? "" : "s"
+			} need a look — some dependent data (e.g. an address, contact, or opening balance) was dropped. See Warnings below and the migration log.`;
+		}
+		let html = `<div class="alert ${headlineClass}">${headlineMsg}</div>`;
 
 		// Results table
 		html += `
@@ -960,16 +981,21 @@ class TallyMigratorPage {
 						<th>Record type</th>
 						<th class="text-right">Imported</th>
 						<th class="text-right">Already there</th>
+						<th class="text-right">Warnings</th>
 						<th class="text-right">Failed</th>
 					</tr>
 				</thead>
 				<tbody>`;
 		for (const [label, result] of entries) {
+			const warned = result.warned || 0;
 			html += `
 				<tr>
 					<td>${label}</td>
 					<td class="text-right text-success"><strong>${result.created}</strong></td>
 					<td class="text-right text-muted">${result.skipped}</td>
+					<td class="text-right ${warned > 0 ? "text-warning" : "text-muted"}">
+						${warned > 0 ? `<strong>${warned}</strong>` : warned}
+					</td>
 					<td class="text-right ${result.failed > 0 ? "text-danger" : "text-muted"}">
 						${result.failed > 0 ? `<strong>${result.failed}</strong>` : result.failed}
 					</td>
@@ -982,6 +1008,7 @@ class TallyMigratorPage {
 			<div class="text-muted small" style="margin-top:6px; line-height:1.6;">
 				<strong>Imported</strong> = newly created in ERPNext &nbsp;·&nbsp;
 				<strong>Already there</strong> = skipped because it already existed (safe, nothing changed) &nbsp;·&nbsp;
+				<strong>Warnings</strong> = imported, but a dependent piece (address, contact, opening balance…) was dropped${totalWarnings ? " — see the log" : ""} &nbsp;·&nbsp;
 				<strong>Failed</strong> = couldn't be imported${hasErrors ? " — see the log for the reason" : ""}.
 			</div>`;
 
@@ -994,8 +1021,8 @@ class TallyMigratorPage {
 				<button class="btn btn-primary btn-sm" id="btn-view-log">${logBtnLabel}</button>
 			</div>`;
 		html += `<p class="text-muted small" style="margin-top:10px;">
-				The migration log lists every record this run touched${hasErrors ? ", including exactly why each failed one didn't import" : ""}.
-				${hasErrors ? "Fix the source in Tally (or in ERPNext), then upload again — records that already imported will simply be skipped." : ""}
+				The migration log lists every record this run touched${hasErrors ? ", including exactly why each failed one didn't import" : ""}${totalWarnings ? ", and each warning where a record imported but a dependent piece was dropped" : ""}.
+				${hasErrors || totalWarnings ? "Fix the source in Tally (or in ERPNext), then upload again — records that already imported will simply be skipped." : ""}
 			</p>`;
 		html += `<div style="margin-top:16px;">
 				<button id="btn-restart" class="btn btn-default btn-sm">↺ Migrate another file</button>

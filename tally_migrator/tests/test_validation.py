@@ -227,5 +227,63 @@ class TestGroupReport(unittest.TestCase):
         self.assertEqual(out["groups"], [])
 
 
+# ── Name collisions + hierarchy cycles (H5 / H2) ──────────────────────────────
+
+import types  # noqa: E402
+
+
+def _coa(accounts=None, cost_centres=None):
+    mk = lambda pairs: [types.SimpleNamespace(name=n, parent=p) for n, p in pairs]
+    return types.SimpleNamespace(
+        accounts=mk(accounts or []), cost_centres=mk(cost_centres or []))
+
+
+def _full_masters(items=None, warehouses=None, units=None, stock_groups=None):
+    return ExtractedMasters(
+        customers=[], suppliers=[], items=items or [], warehouses=warehouses or [],
+        units=units or [], stock_groups=stock_groups or [])
+
+
+class TestNameCollisions(unittest.TestCase):
+    def test_duplicate_item_names_flagged(self):
+        m = _full_masters(items=[_item("Widget"), _item("Widget")])
+        codes = [(i.code, i.entity_type) for i in validate_masters(m).issues]
+        self.assertIn(("DUPLICATE_NAME", "Item"), codes)
+
+    def test_case_insensitive_collision(self):
+        m = _full_masters(warehouses=[{"_name": "Store"}, {"_name": "store"}])
+        self.assertTrue(any(i.code == "DUPLICATE_NAME" for i in validate_masters(m).issues))
+
+    def test_unique_names_clean(self):
+        m = _full_masters(items=[_item("A"), _item("B")],
+                          warehouses=[{"_name": "WH1"}, {"_name": "WH2"}])
+        self.assertFalse(any(i.code == "DUPLICATE_NAME" for i in validate_masters(m).issues))
+
+    def test_blank_names_not_collided(self):
+        m = _full_masters(units=[{"_name": ""}, {"_name": "  "}])
+        self.assertFalse(any(i.code == "DUPLICATE_NAME" for i in validate_masters(m).issues))
+
+
+class TestHierarchyCycles(unittest.TestCase):
+    def test_warehouse_cycle_flagged(self):
+        m = _full_masters(warehouses=[{"_name": "A", "Parent": "B"},
+                                      {"_name": "B", "Parent": "A"}])
+        codes = [(i.code, i.entity_type) for i in validate_masters(m).issues]
+        self.assertIn(("CIRCULAR_PARENT", "Warehouse"), codes)
+
+    def test_account_cycle_flagged_via_coa(self):
+        m = _full_masters()
+        coa = _coa(accounts=[("A", "B"), ("B", "A")])
+        codes = [(i.code, i.entity_type) for i in validate_masters(m, coa=coa).issues]
+        self.assertIn(("CIRCULAR_PARENT", "Account"), codes)
+
+    def test_acyclic_tree_clean(self):
+        m = _full_masters(stock_groups=[{"_name": "Root", "Parent": ""},
+                                        {"_name": "Child", "Parent": "Root"}])
+        coa = _coa(accounts=[("Cash", "Assets"), ("Assets", "")])
+        self.assertFalse(any(i.code == "CIRCULAR_PARENT"
+                             for i in validate_masters(m, coa=coa).issues))
+
+
 if __name__ == "__main__":
     unittest.main()

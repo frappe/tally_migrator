@@ -78,8 +78,13 @@ def validate_masters_data(file_url, record_overrides="", erpnext_company=""):
     frappe.only_for(ALLOWED_ROLES)
     overrides = json.loads(record_overrides) if record_overrides else {}
     _, source = _source_from_file(file_url)
-    masters = apply_record_overrides(TallyExtractor(source).extract_all(), overrides)
-    payload = group_report(validate_extraction(masters=masters), records_by_key(masters))
+    extractor = TallyExtractor(source)
+    masters = apply_record_overrides(extractor.extract_all(), overrides)
+    # COA is extracted too so hierarchy checks (cycles) can cover accounts and cost
+    # centres, not just the inventory masters carried on ``masters``.
+    coa = extractor.extract_coa()
+    payload = group_report(
+        validate_extraction(masters=masters, coa=coa), records_by_key(masters))
     payload["states"] = erpnext_states()
     payload["coverage"] = coverage_report(source)
     if erpnext_company:

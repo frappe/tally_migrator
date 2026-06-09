@@ -100,22 +100,24 @@ class TestOpeningBalanceGuards(unittest.TestCase):
         parties = [{"_name": "Acme", "OpeningBalance": "1000 Dr"}]
         with mock.patch("frappe.get_cached_value", return_value="Debtors - TC"), \
                 mock.patch("frappe.db") as db:
-            db.exists.return_value = False
+            db.get_value.return_value = None  # not created
             lines = imp._party_lines(parties, "Customer", "default_receivable_account", result)
         self.assertEqual(lines, [])
         self.assertEqual(result.warned, 1)
         self.assertEqual(result.failed, 0)
 
-    def test_party_line_kept_when_party_exists(self):
+    def test_party_line_uses_resolved_docname(self):
+        # H1: the JE party must be the actual document name (e.g. a naming series),
+        # not the Tally display name.
         imp = self._imp()
         result = ImportResult("Journal Entry")
         parties = [{"_name": "Acme", "OpeningBalance": "1000 Dr"}]
         with mock.patch("frappe.get_cached_value", return_value="Debtors - TC"), \
                 mock.patch("frappe.db") as db:
-            db.exists.return_value = True
+            db.get_value.return_value = "CUST-0001"  # resolved docname differs from name
             lines = imp._party_lines(parties, "Customer", "default_receivable_account", result)
         self.assertEqual(len(lines), 1)
-        self.assertEqual(lines[0]["party"], "Acme")
+        self.assertEqual(lines[0]["party"], "CUST-0001")
         self.assertEqual(result.warned, 0)
 
 

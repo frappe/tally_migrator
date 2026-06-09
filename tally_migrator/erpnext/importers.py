@@ -937,11 +937,17 @@ class OpeningBalanceImporter:
             lines.append(self._line(account, node.opening_balance, node.opening_dr_cr))
         return lines
 
+    # Tally party name → the field ERPNext stores it under; the document's own
+    # ``name`` can differ (e.g. a naming series), so we resolve it rather than
+    # assuming ``name == display name``.
+    _PARTY_KEY_FIELD = {"Customer": "customer_name", "Supplier": "supplier_name"}
+
     def _party_lines(self, parties: list, party_type: str, company_field: str,
                      result: ImportResult) -> list[dict]:
         if not parties:
             return []
         control = frappe.get_cached_value("Company", self.company, company_field)
+        key_field = self._PARTY_KEY_FIELD[party_type]
         lines, missing_control = [], False
         for record in parties:
             amount, drcr = TallyExtractor._parse_opening(record.get("OpeningBalance", ""))
@@ -950,14 +956,19 @@ class OpeningBalanceImporter:
             if not control:
                 missing_control = True
                 continue
-            if not frappe.db.exists(party_type, record["_name"]):
+            # Resolve the actual document name (handles naming series and any
+            # existing party matched on display name but stored under another id).
+            # A missing name means the party wasn't created — skip with a warning
+            # rather than posting against, or failing the whole entry on, a bad id.
+            party_name = frappe.db.get_value(party_type, {key_field: record["_name"]}, "name")
+            if not party_name:
                 result.add_warning(
                     record["_name"],
                     f"opening balance skipped — {party_type} '{record['_name']}' was "
                     "not created (its import failed earlier). Fix it and re-run.")
                 continue
             line = self._line(control, amount, drcr)
-            line.update({"party_type": party_type, "party": record["_name"]})
+            line.update({"party_type": party_type, "party": party_name})
             lines.append(line)
         if missing_control:
             result.add_error(
