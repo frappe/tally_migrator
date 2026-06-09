@@ -131,6 +131,10 @@ _NO_TARGET_TAGS = {
     "COSTINGMETHOD", "VALUATIONMETHOD",      # only unmapped at stock-GROUP level
     "JOBNAME", "TAXUNITNAME",                # excise job-work / tax unit (pre-GST)
     "ARE1SERIALMASTER", "ARE2SERIALMASTER", "ARE3SERIALMASTER",  # excise ARE forms
+    "BANKINGCONFIGBANKID",                   # Tally-internal id for the bank-config row
+                                             # (the bank itself is imported via BANKINGCONFIGBANK)
+    "STARTINGFROM",                          # "effective from" date stamped on Tally config
+                                             # .LIST rows; a config marker, not business data
 }
 
 

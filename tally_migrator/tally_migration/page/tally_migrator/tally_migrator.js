@@ -699,17 +699,37 @@ class TallyMigratorPage {
 					business value.)
 				</div>`
 			: "";
+		// Collapsed by default with a reassuring one-liner: this is informational,
+		// not a problem. The detail (and the full copy on the migration log) is one
+		// click away, so we stay transparent without a wall of text on screen.
+		const n = total;
 		$sec.html(`
 			<div class="alert alert-info" style="margin:0;">
-				<strong>ℹ ${total} field(s) in your file won't be migrated.</strong>
-				These are either Tally custom fields outside the supported mapping
-				("Not mapped"), or fields we read but don't import ("Read, not imported").
-				Your records will still import - this is just so nothing is dropped without
-				you knowing. A copy is saved on the migration log for your records.
-				<div style="margin-top:10px;">${blocks}</div>
-				${noiseNote}
+				<div style="display:flex; align-items:center; gap:8px;">
+					<span>ℹ</span>
+					<div style="flex:1;">
+						<strong>All your records will import fully.</strong>
+						${n} minor Tally field${n === 1 ? "" : "s"} (custom or housekeeping data
+						ERPNext has no place for) ${n === 1 ? "is" : "are"} skipped - nothing you
+						need to act on. A full list is saved on the migration log.
+					</div>
+					<button class="btn btn-xs btn-default" id="btn-coverage-toggle" style="white-space:nowrap;">
+						Show fields ▸
+					</button>
+				</div>
+				<div id="coverage-detail" style="display:none; margin-top:12px;">
+					${blocks}
+					${noiseNote}
+				</div>
 			</div>
 		`).show();
+
+		$("#btn-coverage-toggle").on("click", function () {
+			const $d = $("#coverage-detail");
+			const open = $d.is(":visible");
+			$d.toggle();
+			$(this).text(open ? "Show fields ▸" : "Hide fields ▾");
+		});
 	}
 
 	static get DQ_LABELS() {

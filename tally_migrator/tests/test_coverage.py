@@ -30,6 +30,20 @@ class TestCoverage(unittest.TestCase):
         self.assertEqual(report["unmapped_field_count"], 0)
         self.assertEqual(report["types"], [])
 
+    def test_internal_bank_config_tags_are_noise(self):
+        # Tally-internal bank-config id + config effective-from date carry a real-
+        # looking value but no business meaning; they must be hidden (counted as
+        # noise), not listed as "won't migrate".
+        tags = {
+            "NAME": _tag(),
+            "BANKINGCONFIGBANKID": _tag(11, "0", ["Acme"]),
+            "STARTINGFROM": _tag(11, "20260401", ["Acme"]),
+        }
+        report = coverage_report(_Src({"Ledger": tags}))
+        self.assertTrue(report["clean"])
+        self.assertEqual(report["unmapped_field_count"], 0)
+        self.assertEqual(report["noise_field_count"], 2)
+
     def test_flags_udf_field(self):
         tags = {
             "NAME": _tag(),
