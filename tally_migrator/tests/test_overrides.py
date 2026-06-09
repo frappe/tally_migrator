@@ -62,7 +62,7 @@ class TestApplyOverrides(unittest.TestCase):
         )
 
     def test_changelog_skips_noops(self):
-        # Value identical to the extracted one is not an edit — must not be logged.
+        # Value identical to the extracted one is not an edit - must not be logged.
         m = _masters(customers=[_party("X", LedgerState="Maharashtra")])
         log = []
         apply_record_overrides(m, {"Customer": {"X": {"LedgerState": "Maharashtra"}}}, log)

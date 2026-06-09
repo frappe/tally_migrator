@@ -1,6 +1,6 @@
 """Resolve the Units of Measure used in a Tally file against ERPNext.
 
-Pure logic, no Frappe — the endpoint supplies the set of existing ERPNext UOM
+Pure logic, no Frappe - the endpoint supplies the set of existing ERPNext UOM
 names; this class diffs the Tally units against them. Kept out of the API layer
 so the whitelisted endpoint stays thin (mirrors validation/engine.py).
 """

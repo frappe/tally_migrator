@@ -11,7 +11,7 @@ import frappe
 
 TEST_PREFIX = "_TMTest"
 
-# (doctype, field that holds the human name) — order matters for FK-safe deletes.
+# (doctype, field that holds the human name) - order matters for FK-safe deletes.
 _CLEANUP_TARGETS = [
     ("Contact", "first_name"),
     ("Address", "address_title"),

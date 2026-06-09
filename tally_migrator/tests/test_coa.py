@@ -75,7 +75,7 @@ class TestResolver(unittest.TestCase):
 
     def test_custom_descendant_classified_as_party(self):
         # "Acme Corp" sits under "Retail Customers", a custom group nested under
-        # Sundry Debtors — it must still resolve as a customer (deep descendants).
+        # Sundry Debtors - it must still resolve as a customer (deep descendants).
         self.assertEqual(self.r.kind_of("Acme Corp"), CUSTOMER)
 
 
@@ -121,7 +121,7 @@ class TestBuildCOA(unittest.TestCase):
         self.assertEqual(self.coa.summary["excluded_ledgers"], 1)
 
     def test_parties_not_in_excluded(self):
-        # Parties migrate as Customers/Suppliers — they are not "excluded" losses.
+        # Parties migrate as Customers/Suppliers - they are not "excluded" losses.
         names = [e["name"] for e in self.coa.excluded]
         self.assertNotIn("Acme Corp", names)
 

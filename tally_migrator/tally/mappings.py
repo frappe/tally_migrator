@@ -93,7 +93,7 @@ TALLY_STATE_MAP: dict[str, str] = {
 }
 
 # ── ERPNext defaults ──────────────────────────────────────────────────────────
-# Customer Group MUST be a non-group (leaf) node — ERPNext rejects assigning a
+# Customer Group MUST be a non-group (leaf) node - ERPNext rejects assigning a
 # group node ("All Customer Groups") to a Customer. "Commercial" is a standard
 # ERPNext leaf group present on every install.
 DEFAULT_CUSTOMER_GROUP = "Commercial"
@@ -110,9 +110,9 @@ DEFAULT_WAREHOUSE      = "All Warehouses"
 # Tally ships ~28 reserved "primary" groups whose meaning is fixed. Every other
 # group/ledger inherits its nature from the nearest reserved ancestor. Each entry
 # maps a reserved Tally group to:
-#   root          — ERPNext root_type (Asset/Liability/Income/Expense/Equity)
-#   account_type  — ERPNext account_type ("" = ordinary group/ledger)
-#   erpnext_group — the ERPNext standard-COA group to reuse in coa_mode="reuse"
+#   root          - ERPNext root_type (Asset/Liability/Income/Expense/Equity)
+#   account_type  - ERPNext account_type ("" = ordinary group/ledger)
+#   erpnext_group - the ERPNext standard-COA group to reuse in coa_mode="reuse"
 
 ASSET, LIABILITY, INCOME, EXPENSE, EQUITY = (
     "Asset", "Liability", "Income", "Expense", "Equity",
@@ -176,16 +176,16 @@ TALLY_GROUP_ALIASES: dict[str, str] = {
 PARTY_ROOT_GROUPS = DEBTOR_ROOTS | CREDITOR_ROOTS
 
 # Tally marks every top-level (primary) group/ledger with the sentinel parent
-# "Primary". It has no ERPNext equivalent — such nodes attach directly under the
-# relevant root group — so it must be normalised to "" (no parent) on extraction.
+# "Primary". It has no ERPNext equivalent - such nodes attach directly under the
+# relevant root group - so it must be normalised to "" (no parent) on extraction.
 TALLY_ROOT_PARENT = "Primary"
 
-# Tally system ledgers ERPNext derives itself (it computes its own P&L) — never
+# Tally system ledgers ERPNext derives itself (it computes its own P&L) - never
 # migrated as ledger Accounts.
 TALLY_SYSTEM_LEDGERS = {"Profit & Loss A/c"}
 
 # Tally's explicit GST registration type → ERPNext GST Category. Tally states this
-# on the party ledger, so when present it is authoritative — unlike inferring the
+# on the party ledger, so when present it is authoritative - unlike inferring the
 # category from the GSTIN/country, it distinguishes Composition / SEZ / consumer.
 # Unmapped/blank values fall back to GSTIN+country inference (infer_gst_category).
 GST_REGISTRATION_TYPE_MAP: dict[str, str] = {

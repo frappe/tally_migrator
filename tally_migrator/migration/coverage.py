@@ -1,8 +1,8 @@
 """Field-coverage report: what's in the Tally file that we DON'T migrate.
 
 The extractor reads a fixed allow-list of fields per object type (see the
-``*_FIELDS`` lists in ``tally.extractors``). Anything outside that list — Tally
-UDFs, extra ledger/item attributes, custom columns — is never read, so it can
+``*_FIELDS`` lists in ``tally.extractors``). Anything outside that list - Tally
+UDFs, extra ledger/item attributes, custom columns - is never read, so it can
 never reach ERPNext. That's a silent loss.
 
 This module compares the tags actually present in the uploaded file against the
@@ -44,7 +44,7 @@ _TAGS_BY_TYPE: dict[str, dict] = {
 
 
 def _read_tags(obj_type: str, fields: list) -> set[str]:
-    """The set of top-level tags the parser actually reads for these fields —
+    """The set of top-level tags the parser actually reads for these fields -
     exactly mirroring ``FileTallySource.get_collection``: a field's tag override
     when one exists, else ``FIELD.upper()``. Nested ``.LIST`` paths surface as
     their container tag (``raw_tags`` only sees each record's direct children)."""
@@ -64,7 +64,7 @@ def read_tags(obj_type: str) -> set[str]:
 # The fields an importer actually PERSISTS onto an ERPNext doc. Fetching a field
 # (MAPPED_FIELDS) is not the same as writing it: a field can be in the FETCH list
 # yet never reach ERPNext. Anything mapped-but-not-written is a silent loss that
-# the plain "is it in the allow-list" check would mask — so we track it explicitly.
+# the plain "is it in the allow-list" check would mask - so we track it explicitly.
 # Keep this in lock-step with the importers (tally_migrator.erpnext.importers).
 WRITTEN_FIELDS: dict[str, list] = {
     # Groups → Account name + parent (AccountImporter).
@@ -88,7 +88,7 @@ WRITTEN_FIELDS: dict[str, list] = {
     "Unit": UNIT_FIELDS,
 }
 
-# Tally housekeeping/structural tags — present on most masters but not business
+# Tally housekeeping/structural tags - present on most masters but not business
 # data, so flagging them as "unmapped" would only be noise.
 IGNORED_TAGS = {
     "NAME", "GUID", "MASTERID", "ALTERID", "ALTERID.LIST",
@@ -111,12 +111,12 @@ _LEGACY_TAX_PREFIXES = (
     "EXCISE", "VAT", "SERVICETAX", "STX", "TDS", "TCS", "SCHVI", "XBRL",
     "LBT", "FBT", "SALESTAX", "CVD",
 )
-# Tags that DO carry a value but have no ERPNext destination — Tally-internal
+# Tags that DO carry a value but have no ERPNext destination - Tally-internal
 # pointers, data redundant with a field we already import, pre-GST excise
 # scaffolding, or attributes that only exist at a level ERPNext doesn't model.
 # Suppressed from the per-field tables (still counted in ``noise_field_count``)
 # so the report shows only fields with a real, fixable target. NOTE: a tag here is
-# only hidden where it's *unmapped* — e.g. VALUATIONMETHOD is a real mapped field
+# only hidden where it's *unmapped* - e.g. VALUATIONMETHOD is a real mapped field
 # on a Stock Item (→ Item.valuation_method) yet has no home at Stock-Group level,
 # so it stays visible on items and is hidden only on groups.
 _NO_TARGET_TAGS = {
@@ -169,8 +169,8 @@ def coverage_report(source) -> dict:
         }
 
     Two distinct losses are reported:
-      • **unmapped**  — a tag in the file that the extractor never fetches (UDFs).
-      • **unwritten** — a tag the extractor *does* fetch but no importer persists,
+      • **unmapped**  - a tag in the file that the extractor never fetches (UDFs).
+      • **unwritten** - a tag the extractor *does* fetch but no importer persists,
         so it's silently dropped despite looking "covered". This is the subtle
         gap the allow-list-only check used to miss.
     """

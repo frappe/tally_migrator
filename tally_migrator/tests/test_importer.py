@@ -1,7 +1,7 @@
 """
 Integration tests for the ERPNext importers.
 
-These hit a real Frappe/ERPNext database — run via ``bench run-tests``. Records
+These hit a real Frappe/ERPNext database - run via ``bench run-tests``. Records
 are cleaned up explicitly (the importer commits per record, so rollback alone is
 insufficient). Warehouse import requires a configured Company and skips without one.
 """
@@ -264,10 +264,29 @@ class TestERPNextImporter(unittest.TestCase):
         self.assertEqual(len(lines), 2)          # no plug line added
         self.assertEqual(result.warned, 0)
 
+    # ── Item-code collision (L-B) ───────────────────────────────────────────────
+
+    def test_item_code_collision_detected(self):
+        """Two distinct Tally names that reduce to the same item_code are reported,
+        with the first kept and the rest listed as colliding."""
+        from tally_migrator.erpnext.importers import ItemImporter
+
+        recs = [{"_name": "A/B"}, {"_name": "A-B"}, {"_name": "Unique"}]
+        collisions = ItemImporter._code_collisions(recs)
+        self.assertEqual(collisions, {"A-B": ["A/B", "A-B"]})
+
+    def test_item_code_collision_on_truncation(self):
+        from tally_migrator.erpnext.importers import ItemImporter
+
+        long_a, long_b = "x" * 200, "x" * 200 + "DIFFERENT"
+        collisions = ItemImporter._code_collisions([{"_name": long_a}, {"_name": long_b}])
+        self.assertEqual(len(collisions), 1)
+        self.assertEqual(len(next(iter(collisions.values()))), 2)
+
     # ── GST category by country (M-A) ───────────────────────────────────────────
 
     def test_gst_category_overseas_when_country_not_india(self):
-        """A party whose ledger country isn't India is 'Overseas' — its GSTIN field
+        """A party whose ledger country isn't India is 'Overseas' - its GSTIN field
         is never inspected and India is never assumed."""
         from tally_migrator.erpnext.importers import CustomerImporter
 
@@ -294,7 +313,7 @@ class TestERPNextImporter(unittest.TestCase):
             cat = imp._gst_category({"CountryName": "", "GSTRegistrationNumber": ""})
         self.assertEqual(cat, "Overseas")
 
-    # ── Re-run idempotency guards (no DB — guard stubbed) ───────────────────────
+    # ── Re-run idempotency guards (no DB - guard stubbed) ───────────────────────
 
     def test_opening_balance_skipped_when_entry_exists(self):
         """A second run must NOT post a second Opening Entry (would double the books).
@@ -395,7 +414,7 @@ class TestERPNextImporter(unittest.TestCase):
         self.assertEqual(result.warned, 1)
         self.assertIn("negative", result.warnings[0]["reason"].lower())
 
-    # ── Opening-balance batching (no DB — residual maths only) ──────────────────
+    # ── Opening-balance batching (no DB - residual maths only) ──────────────────
 
     def test_warn_residual_only_fires_above_threshold(self):
         """The aggregate 'did not net to zero' warning is raised once, and only for

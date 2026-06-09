@@ -7,8 +7,8 @@ import xml.etree.ElementTree as ET
 import frappe
 
 # The Tally master record elements we extract. The streaming parser keeps only
-# these (every other element — TALLYMESSAGE wrappers, COMPANY headers, voucher
-# data when present — is discarded as it is parsed), so peak memory stays
+# these (every other element - TALLYMESSAGE wrappers, COMPANY headers, voucher
+# data when present - is discarded as it is parsed), so peak memory stays
 # proportional to the records we actually use rather than the whole document.
 # Normalised the same way ``get_collection`` derives a tag from an obj_type
 # (``upper().replace(" ", "")``), so "Stock Item" → STOCKITEM, etc.
@@ -19,7 +19,7 @@ MASTER_RECORD_TAGS = (
 
 
 # Real Tally Prime masters exports are UTF-16 (with a BOM) and contain XML-1.0
-# illegal control characters — both as literal bytes and as numeric character
+# illegal control characters - both as literal bytes and as numeric character
 # references like ``&#4;`` (Tally prefixes "Not Applicable" values with one).
 # Python's XML parser rejects either, so a genuine export would otherwise fail to
 # import outright. These helpers normalise an upload before parsing.
@@ -27,7 +27,7 @@ MASTER_RECORD_TAGS = (
 # Control chars XML 1.0 forbids (everything < 0x20 except TAB/LF/CR).
 _ILLEGAL_CHARS = re.compile(r"[\x00-\x08\x0b\x0c\x0e-\x1f]")
 _CHAR_REF = re.compile(r"&#(x[0-9a-fA-F]+|\d+);")
-# A DTD or custom entity declaration — the vector for entity-expansion
+# A DTD or custom entity declaration - the vector for entity-expansion
 # ("billion laughs") denial-of-service against the parser.
 _DTD_DECL = re.compile(r"<!(DOCTYPE|ENTITY)\b", re.IGNORECASE)
 
@@ -88,8 +88,8 @@ def reject_unsafe_xml(text: str) -> None:
 class FileTallySource:
     """Offline master source: reads a Tally Prime *Masters* XML export.
 
-    Duck-types the single method ``TallyExtractor`` depends on —
-    ``get_collection(obj_type, fields)`` — so it drops into the existing
+    Duck-types the single method ``TallyExtractor`` depends on -
+    ``get_collection(obj_type, fields)`` - so it drops into the existing
     extraction pipeline with no change to ``TallyExtractor`` or the importers.
 
     Why a file
@@ -112,7 +112,7 @@ class FileTallySource:
         self._keep = {t.upper().replace(" ", "") for t in record_tags}
         # Stream the document once, retaining only the master record elements
         # (bucketed by tag) and dropping everything else as it is parsed. Avoids
-        # building — and holding — the whole DOM the way ET.fromstring would.
+        # building - and holding - the whole DOM the way ET.fromstring would.
         self._by_tag = self._stream_records(cleaned, self._keep)
         # extract_all() and extract_coa() both ask for the Group and Ledger
         # collections, so memoise each (obj_type, fields) result to avoid
@@ -154,7 +154,7 @@ class FileTallySource:
         """Read one Tally object type into ``[{_name, <field>: value, ...}]``.
 
         For each requested field the tag(s) to read are, in order:
-          - ``tag_map[field]`` when given — the exact tag name(s) a real Tally
+          - ``tag_map[field]`` when given - the exact tag name(s) a real Tally
             Prime export emits, including nested ``.LIST`` paths (e.g.
             ``LEDSTATENAME`` for state, ``ADDRESS.LIST/ADDRESS`` for the address);
           - otherwise the field name itself (``FIELD.upper()``), which for most
@@ -188,7 +188,7 @@ class FileTallySource:
         A candidate is either a tag-path string (``"EMAIL"`` or
         ``"ADDRESS.LIST/ADDRESS"``) or ``{"path": ..., "join": ", "}`` to join
         repeated nodes (e.g. multi-line addresses). Single-valued paths return the
-        last matched node's text — for revision lists like ``STANDARDPRICELIST``
+        last matched node's text - for revision lists like ``STANDARDPRICELIST``
         that is the most recent value."""
         for cand in candidates:
             path = cand["path"] if isinstance(cand, dict) else cand
@@ -213,8 +213,8 @@ class FileTallySource:
         """Enumerate every direct child tag present on records of ``obj_type``.
 
         Used by the field-coverage report to find data in the file that the
-        extractor's fixed FETCH list never reads — Tally UDFs and any other
-        fields outside our mapping — so nothing is dropped silently.
+        extractor's fixed FETCH list never reads - Tally UDFs and any other
+        fields outside our mapping - so nothing is dropped silently.
 
         Returns ``{TAGNAME: {"count": int, "sample": str, "records": [names]}}``
         where ``TAGNAME`` is the upper-cased local tag name (namespace stripped,
@@ -238,7 +238,7 @@ class FileTallySource:
         return out
 
     def approx_record_count(self) -> int:
-        """Total kept master records — a cheap volume signal (already parsed).
+        """Total kept master records - a cheap volume signal (already parsed).
 
         Used to decide whether a migration is large enough to run as a background
         job instead of synchronously inside the web request."""

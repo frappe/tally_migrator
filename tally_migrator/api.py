@@ -38,7 +38,7 @@ def validate_masters_file(file_url):
 
     Returns a list of issues (one per unique Tally UOM that maps to a missing
     ERPNext UOM) and the full list of existing ERPNext UOMs so the frontend
-    can render a resolution dropdown. Read-only — creates nothing.
+    can render a resolution dropdown. Read-only - creates nothing.
     """
     frappe.only_for(ALLOWED_ROLES)
     _, source = _source_from_file(file_url)
@@ -53,21 +53,22 @@ def validate_masters_file(file_url):
 
 
 @frappe.whitelist()
-def company_readiness(erpnext_company=""):
+def company_readiness(erpnext_company="", posting_date=""):
     """Pre-flight: is the target ERPNext company set up to receive masters?
 
     Read-only. Returns blockers (an entire entity would fail) and warnings
     (partial degradation) so the UI can stop a doomed run before it starts.
+    ``posting_date`` (optional) is checked against frozen periods / fiscal years.
     """
     frappe.only_for(ALLOWED_ROLES)
-    return check_readiness(erpnext_company)
+    return check_readiness(erpnext_company, posting_date)
 
 
 @frappe.whitelist()
-def validate_masters_data(file_url, record_overrides="", erpnext_company=""):
+def validate_masters_data(file_url, record_overrides="", erpnext_company="", posting_date=""):
     """Pre-flight data-quality scan of an uploaded Tally Masters XML.
 
-    Read-only — extracts and inspects, writes nothing. Returns a grouped,
+    Read-only - extracts and inspects, writes nothing. Returns a grouped,
     UI-ready report (issues collapsed by rule code, errors first) plus the inline
     editor metadata (editable fields + current values + the state list) so the user
     can fix flagged fields and decide (fix / proceed anyway) before any migration.
@@ -89,7 +90,7 @@ def validate_masters_data(file_url, record_overrides="", erpnext_company=""):
     payload["states"] = erpnext_states()
     payload["coverage"] = coverage_report(source)
     if erpnext_company:
-        payload["readiness"] = check_readiness(erpnext_company)
+        payload["readiness"] = check_readiness(erpnext_company, posting_date)
     return payload
 
 
@@ -170,7 +171,7 @@ def get_draft():
     if not name:
         return None
     d = frappe.get_doc(_DRAFT_DOCTYPE, name)
-    # Only offer a resume if the uploaded file still exists — a draft pointing at a
+    # Only offer a resume if the uploaded file still exists - a draft pointing at a
     # deleted File is stale and would just fail on resume.
     if not d.file_url or not frappe.db.exists("File", {"file_url": d.file_url}):
         return None
@@ -239,7 +240,7 @@ def run_masters_migration_from_file(file_url, erpnext_company="", uom_overrides=
 def rerun_from_log(log_name):
     """Re-run a migration from the source file stored on an existing log.
 
-    The import is idempotent — records that already exist are skipped — so a full
+    The import is idempotent - records that already exist are skipped - so a full
     re-run effectively retries only the records that failed last time (typically
     once their underlying issue, e.g. a missing UOM, has been resolved). A fresh
     log is created so the run history is preserved.
@@ -307,7 +308,7 @@ def _assert_file_access(file_doc) -> None:
     The whitelisted handlers accept an arbitrary ``file_url``; without this a
     Tally Migration Manager could pass another user's File URL (the wizard's own
     uploads are private, but a manager could also point at any *public* File on the
-    site) and have the server read its bytes — an IDOR. The migrator only ever needs
+    site) and have the server read its bytes - an IDOR. The migrator only ever needs
     the file the current user uploaded, which they own, so access is limited to the
     owner (plus System Manager / Administrator for support and cross-user re-runs).
     """
@@ -325,7 +326,7 @@ def _assert_file_access(file_doc) -> None:
 def _source_from_file(file_url):
     """Load the uploaded File and wrap it as a FileTallySource.
 
-    Returns ``(file_doc, source)`` — most callers only need the source, but the
+    Returns ``(file_doc, source)`` - most callers only need the source, but the
     migration run also reads ``file_doc.file_name`` for the log label. Access is
     checked (see ``_assert_file_access``) and the parse is cached per file version.
     """
@@ -348,7 +349,7 @@ def _raw_file_bytes(file_doc) -> bytes:
     decodes text uploads as UTF-8 with replacement). That destroys the byte-order
     mark on a genuine UTF-16 Tally export, so our own encoding detection in
     ``decode_tally_bytes`` never runs and the parser dies at byte 0. Reading binary
-    keeps the real bytes — and the BOM — intact.
+    keeps the real bytes - and the BOM - intact.
     """
     content = file_doc.get_content()
     raw = bytes(content) if isinstance(content, (bytes, bytearray)) else None
@@ -380,7 +381,7 @@ def _assert_within_size_limit(num_bytes: int) -> None:
             frappe._(
                 "This file is {0} MB, above the {1} MB limit for a single import. "
                 "Export your Tally masters in smaller batches (for example a few "
-                "ledger groups at a time) and import them one after another — the "
+                "ledger groups at a time) and import them one after another - the "
                 "migration is idempotent, so already-imported records are skipped."
             ).format(round(num_bytes / (1024 * 1024), 1), max_mb)
         )

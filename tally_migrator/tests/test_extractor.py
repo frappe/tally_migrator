@@ -1,4 +1,4 @@
-"""Unit tests for TallyExtractor (no Tally connection required — uses mock data)."""
+"""Unit tests for TallyExtractor (no Tally connection required - uses mock data)."""
 import unittest
 
 from tally_migrator.tally.extractors import TallyExtractor
@@ -98,7 +98,7 @@ class TestTallyExtractor(unittest.TestCase):
         self.assertEqual(pq(""), 0.0)
         self.assertEqual(pq(None), 0.0)
         self.assertEqual(pq("Nos"), 0.0)
-        # The amount parser genuinely cannot read these — confirms why we needed a
+        # The amount parser genuinely cannot read these - confirms why we needed a
         # separate quantity parser.
         self.assertEqual(TallyExtractor._parse_opening(" 55 Nos")[0], 0.0)
 

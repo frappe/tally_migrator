@@ -1,12 +1,12 @@
 """
-Ledger resolver — the single source of truth for "what does this Tally ledger
+Ledger resolver - the single source of truth for "what does this Tally ledger
 become in ERPNext".
 
 Built once from the Tally group tree + ledgers, then consulted by COA extraction
 to classify non-party ledgers into Accounts with a nature (root_type +
 account_type), and to walk a group up to its nearest reserved ancestor.
 
-Pure — no Frappe. Classification only; turning a target into a concrete ERPNext
+Pure - no Frappe. Classification only; turning a target into a concrete ERPNext
 name is the importer's job (it needs the company abbreviation, known only at
 import time).
 

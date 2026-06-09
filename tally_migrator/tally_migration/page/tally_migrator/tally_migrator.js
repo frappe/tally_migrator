@@ -45,7 +45,7 @@ class TallyMigratorPage {
 					<div id="resume-banner" style="display:none;"></div>
 					<h4>Bring your Tally data into ERPNext</h4>
 					<p class="text-muted" style="margin-bottom:18px;">
-						This tool copies your master records — Customers, Suppliers, Items and Warehouses —
+						This tool copies your master records - Customers, Suppliers, Items and Warehouses -
 						from Tally into ERPNext. It takes a few short steps.
 					</p>
 
@@ -138,7 +138,7 @@ class TallyMigratorPage {
 					<h4>Quick check before we begin</h4>
 					<p class="text-muted">
 						We compare the data in your file against what already exists in ERPNext, so you can
-						decide how to handle anything that doesn't match — nothing is changed automatically.
+						decide how to handle anything that doesn't match - nothing is changed automatically.
 					</p>
 
 					<div id="check-loading" class="text-muted" style="margin:18px 0;">
@@ -171,7 +171,7 @@ class TallyMigratorPage {
 						<div class="alert alert-warning" style="margin-bottom:14px;">
 							<strong>⚠ Some Units of Measure in your file don't exist in ERPNext yet.</strong>
 							By default we'll create each one as a new unit. Change any row below if you'd
-							rather map it to a unit you already use — then click Continue.
+							rather map it to a unit you already use - then click Continue.
 						</div>
 						<div id="uom-issue-list"></div>
 					</div>
@@ -217,12 +217,12 @@ class TallyMigratorPage {
 
 	// ── Persistent stepper ──────────────────────────────────────────────────────
 	// Frappe default (near-black) for the active step, green for completed,
-	// light grey for steps still ahead — matches standard Frappe desk styling.
+	// light grey for steps still ahead - matches standard Frappe desk styling.
 
 	renderStepper(activeId) {
 		const activeIdx = STEPS.findIndex((s) => s.id === activeId);
 		// Use Frappe design tokens (with hex fallbacks) so the stepper matches the
-		// active desk theme — including dark mode — instead of hardcoded colours.
+		// active desk theme - including dark mode - instead of hardcoded colours.
 		const ACTIVE = "var(--text-color, #1f272e)";    // desk ink / near-black
 		const DONE = "var(--green-500, #28a745)";       // Frappe success green
 		const PENDING = "var(--gray-300, #d1d8dd)";     // muted fill
@@ -251,7 +251,7 @@ class TallyMigratorPage {
 	}
 
 	bindEvents() {
-		// Step 1 — upload + advance
+		// Step 1 - upload + advance
 		$("#btn-pick-file").on("click", () => this.pickFile());
 		$("#btn-next-upload").on("click", () => {
 			if (!this.fileUrl) {
@@ -279,7 +279,7 @@ class TallyMigratorPage {
 			this.proceedToCheck();
 		});
 
-		// Step 3 — pre-flight check
+		// Step 3 - pre-flight check
 		$("#btn-back-check").on("click", () => this.show("section-configure"));
 		$("#btn-startover-check").on("click", () => this.confirmStartOver());
 		$("#btn-next-check").on("click", () => {
@@ -401,8 +401,8 @@ class TallyMigratorPage {
 	}
 
 	// ── Draft persistence (server-side, one per user) ───────────────────────────
-	// Survives reload and logout so a half-finished migration — and every inline
-	// fix the user made — isn't lost. Debounced; only saves once a file is chosen.
+	// Survives reload and logout so a half-finished migration - and every inline
+	// fix the user made - isn't lost. Debounced; only saves once a file is chosen.
 
 	saveDraft() {
 		if (!this.fileUrl) return;
@@ -438,7 +438,7 @@ class TallyMigratorPage {
 						<div class="alert alert-warning" style="display:flex; gap:10px; align-items:center; justify-content:space-between;">
 							<div style="font-size:13px;">
 								<strong>You have an unfinished migration.</strong>
-								File <strong>${frappe.utils.escape_html(d.file_name || d.file_url)}</strong>${when ? ` — last saved ${when}` : ""}.
+								File <strong>${frappe.utils.escape_html(d.file_name || d.file_url)}</strong>${when ? ` - last saved ${when}` : ""}.
 								Your fixes are saved.
 							</div>
 							<div style="white-space:nowrap;">
@@ -473,7 +473,7 @@ class TallyMigratorPage {
 		if (this._restore.coa) $("#coa-mode").val(this._restore.coa).trigger("change");
 		if (this._restore.posting) $("#opening-date").val(this._restore.posting);
 		frappe.show_alert({
-			message: __("Resumed your in-progress migration — your fixes are saved."),
+			message: __("Resumed your in-progress migration - your fixes are saved."),
 			indicator: "green",
 		});
 	}
@@ -573,7 +573,7 @@ class TallyMigratorPage {
 				this.renderCoverage();
 				done();
 			},
-			error: () => done(),  // non-fatal — importer still reports failures later
+			error: () => done(),  // non-fatal - importer still reports failures later
 		});
 
 		frappe.call({
@@ -617,7 +617,7 @@ class TallyMigratorPage {
 		const hasBlockers = (report.blockers || []).length > 0;
 		const cls = hasBlockers ? "alert-danger" : "alert-warning";
 		const head = hasBlockers
-			? `<strong>✋ This company isn't ready — fix the items below before migrating.</strong>`
+			? `<strong>✋ This company isn't ready - fix the items below before migrating.</strong>`
 			: `<strong>⚠ This company can receive masters, but some steps are degraded.</strong>`;
 
 		$sec.html(`
@@ -649,7 +649,7 @@ class TallyMigratorPage {
 	}
 
 	// Read-only notice: fields present in the file that we do NOT migrate (Tally
-	// UDFs / unmapped attributes). Informational — it never blocks Continue.
+	// UDFs / unmapped attributes). Informational - it never blocks Continue.
 	renderCoverage() {
 		const report = this.coverageReport;
 		const $sec = $("#coverage-section");
@@ -694,8 +694,8 @@ class TallyMigratorPage {
 		const noise = report.noise_field_count || 0;
 		const noiseNote = noise
 			? `<div style="margin-top:8px; font-size:12px; color:#888;">
-					(${noise} Tally internal field${noise === 1 ? "" : "s"} — config flags,
-					empty containers, audit/legacy-tax data — were hidden as they carry no
+					(${noise} Tally internal field${noise === 1 ? "" : "s"} - config flags,
+					empty containers, audit/legacy-tax data - were hidden as they carry no
 					business value.)
 				</div>`
 			: "";
@@ -704,7 +704,7 @@ class TallyMigratorPage {
 				<strong>ℹ ${total} field(s) in your file won't be migrated.</strong>
 				These are either Tally custom fields outside the supported mapping
 				("Not mapped"), or fields we read but don't import ("Read, not imported").
-				Your records will still import — this is just so nothing is dropped without
+				Your records will still import - this is just so nothing is dropped without
 				you knowing. A copy is saved on the migration log for your records.
 				<div style="margin-top:10px;">${blocks}</div>
 				${noiseNote}
@@ -729,7 +729,7 @@ class TallyMigratorPage {
 	// Render the grouped data-quality report: stat cards + one expandable row per
 	// rule code. Editable rules show inline inputs (pre-filled) so the user can fix
 	// flagged fields; "Re-check" re-validates the fixes against the same engine.
-	// Edits never touch the source file — they ride along as in-memory overrides.
+	// Edits never touch the source file - they ride along as in-memory overrides.
 	// Errors that remain gate Continue via an explicit consent checkbox.
 	renderDataQuality() {
 		const report = this.qualityReport;
@@ -772,7 +772,7 @@ class TallyMigratorPage {
 		const hasEditable = report.groups.some((g) => (g.editable_fields || []).length);
 		const toolbar = hasEditable
 			? `<div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:8px;">
-					<span class="text-muted small">Fix a value below, then re-check — or continue anyway.</span>
+					<span class="text-muted small">Fix a value below, then re-check - or continue anyway.</span>
 					<button class="btn btn-default btn-xs" id="btn-dq-recheck">↻ Re-check</button>
 				</div>`
 			: "";
@@ -817,7 +817,7 @@ class TallyMigratorPage {
 		return `
 			<div style="border-top:1px solid #f0f4f7;">
 				<div class="dq-head" data-idx="${idx}" style="cursor:pointer; padding:8px 0; display:flex; align-items:center; gap:6px;">
-					<span style="color:${dot};">■</span>
+					<span style="color:${dot};" title="${g.severity === "error" ? "Error" : "Warning"}" aria-label="${g.severity === "error" ? "Error" : "Warning"}">${g.severity === "error" ? "✗" : "⚠"}</span>
 					<strong>${esc(label)}</strong>
 					<span class="text-muted">(${g.items.length})</span>
 					<span class="text-muted" style="margin-left:auto;" id="dq-caret-${idx}">▸</span>
@@ -847,7 +847,7 @@ class TallyMigratorPage {
 			data-etype="${esc(it.entity_type)}" data-name="${esc(it.entity_name)}" data-field="${esc(f.field)}"`;
 		const lbl = `<span class="text-muted small" style="margin-right:4px;">${esc(f.label)}:</span>`;
 		if (f.type === "state") {
-			const opts = ['<option value="">— select —</option>']
+			const opts = ['<option value="">- select -</option>']
 				.concat(this.states.map((s) => `<option value="${esc(s)}" ${s === cur ? "selected" : ""}>${esc(s)}</option>`))
 				.join("");
 			return `<label style="margin:0; font-weight:400;">${lbl}<select ${attrs}>${opts}</select></label>`;
@@ -874,7 +874,7 @@ class TallyMigratorPage {
 		this.saveDraft();          // persist each inline fix as it's made
 	}
 
-	// Re-validate with the in-memory edits applied — fixes are confirmed by the same
+	// Re-validate with the in-memory edits applied - fixes are confirmed by the same
 	// engine, so resolved issues drop off and any remaining ones stay visible.
 	recheck() {
 		frappe.dom.freeze(__("Re-checking…"));
@@ -883,9 +883,10 @@ class TallyMigratorPage {
 			args: {
 				file_url: this.fileUrl,
 				record_overrides: JSON.stringify(this.recordOverrides),
-				// Pass the company so the readiness panel is recomputed alongside the
-				// data fixes, instead of showing a stale readiness state.
+				// Pass the company + date so the readiness panel (incl. frozen-period
+				// checks) is recomputed alongside the data fixes, not left stale.
 				erpnext_company: $("#erpnext-company").val() || "",
+				posting_date: $("#opening-date").val() || "",
 			},
 			callback: (r) => {
 				frappe.dom.unfreeze();
@@ -1036,6 +1037,7 @@ class TallyMigratorPage {
 		if (!this._onProgress) {
 			this._onProgress = (data) => {
 				if (data.title !== "Tally Masters Migration") return;
+				this._lastProgress = Date.now();
 				const pct = data.percent || 0;
 				$("#progress-bar").css("width", pct + "%").text(pct + "%");
 				$("#progress-desc").text(data.description || "");
@@ -1043,6 +1045,22 @@ class TallyMigratorPage {
 		}
 		frappe.realtime.off("progress", this._onProgress);
 		frappe.realtime.on("progress", this._onProgress);
+
+		// Heartbeat: if no progress event arrives for a while (e.g. the realtime
+		// socket dropped), the striped bar would look frozen even though the run is
+		// still going. Show an "elapsed" reassurance so the user isn't left guessing;
+		// the authoritative result still arrives via the call's callback / log poll.
+		this._lastProgress = Date.now();
+		this._runStart = Date.now();
+		this.stopHeartbeat();
+		this._heartbeat = setInterval(() => {
+			if (Date.now() - this._lastProgress < 8000) return;
+			const secs = Math.round((Date.now() - this._runStart) / 1000);
+			$("#progress-desc").text(
+				`Still working… ${secs}s elapsed. Live updates may have paused; the ` +
+				`result will appear here when the migration finishes.`
+			);
+		}, 5000);
 
 		frappe.call({
 			method: "tally_migrator.api.run_masters_migration_from_file",
@@ -1068,13 +1086,14 @@ class TallyMigratorPage {
 					this.pollLog(summary.log_name);
 					return;
 				}
+				this.stopHeartbeat();
 				frappe.realtime.off("progress", this._onProgress);
 				$("#progress-bar")
 					.removeClass("active progress-bar-striped")
 					.css("width", "100%")
 					.text("100%");
 				if (summary) {
-					this.clearDraft();   // migration ran — the draft is now obsolete
+					this.clearDraft();   // migration ran - the draft is now obsolete
 					this.renderResults(summary);
 					$("#run-actions").hide();
 				} else {
@@ -1084,6 +1103,7 @@ class TallyMigratorPage {
 			},
 			error: (err) => {
 				frappe.realtime.off("progress", this._onProgress);
+				this.stopHeartbeat();
 				$("#btn-run").prop("disabled", false);
 				$("#btn-back-3").prop("disabled", false);
 				const detail =
@@ -1092,7 +1112,7 @@ class TallyMigratorPage {
 				$("#error-section")
 					.html(
 						`<strong>Migration failed.</strong> ${frappe.utils.escape_html(detail)}` +
-							`<br><span style="font-size:12px;">Records imported before the failure are kept (each step is committed as it completes), so it's safe to run again — already-imported records are skipped. ` +
+							`<br><span style="font-size:12px;">Records imported before the failure are kept (each step is committed as it completes), so it's safe to run again - already-imported records are skipped. ` +
 							`Open <a href="#" class="err-logs-link">the migration log</a> to see exactly what happened.</span>`
 					)
 					.show();
@@ -1104,11 +1124,19 @@ class TallyMigratorPage {
 		});
 	}
 
+	stopHeartbeat() {
+		if (this._heartbeat) {
+			clearInterval(this._heartbeat);
+			this._heartbeat = null;
+		}
+	}
+
 	// Track a backgrounded run by polling its log until it leaves 'Running',
 	// then render the same results table from the log's stored summary.
 	pollLog(logName) {
 		const finishFromLog = (doc) => {
 			frappe.realtime.off("progress", this._onProgress);
+			this.stopHeartbeat();
 			$("#progress-bar").removeClass("active progress-bar-striped").css("width", "100%").text("100%");
 			if (doc.status === "Failed") {
 				$("#btn-run").prop("disabled", false);
@@ -1160,7 +1188,7 @@ class TallyMigratorPage {
 		const totalWarnings = entries.reduce((a, [, r]) => a + (r.warned || 0), 0);
 		const totalCreated = entries.reduce((a, [, r]) => a + (r.created || 0), 0);
 
-		// Headline — three states so non-fatal drops (addresses, contacts, opening
+		// Headline - three states so non-fatal drops (addresses, contacts, opening
 		// balances, excluded ledgers) are never hidden behind a green "All done".
 		let headlineClass = "alert-success";
 		let headlineMsg = `✓ All done! <strong>${totalCreated}</strong> new record${
@@ -1169,14 +1197,14 @@ class TallyMigratorPage {
 		if (hasErrors) {
 			headlineClass = "alert-warning";
 			headlineMsg =
-				"⚠ Migration finished — most records imported, but some need your attention (see Failed below).";
+				"⚠ Migration finished - most records imported, but some need your attention (see Failed below).";
 		} else if (totalWarnings) {
 			headlineClass = "alert-warning";
 			headlineMsg = `✓ <strong>${totalCreated}</strong> record${
 				totalCreated === 1 ? "" : "s"
 			} imported, but <strong>${totalWarnings}</strong> warning${
 				totalWarnings === 1 ? "" : "s"
-			} need a look — some dependent data (e.g. an address, contact, or opening balance) was dropped. See Warnings below and the migration log.`;
+			} need a look - some dependent data (e.g. an address, contact, or opening balance) was dropped. See Warnings below and the migration log.`;
 		}
 		let html = `<div class="alert ${headlineClass}">${headlineMsg}</div>`;
 
@@ -1200,11 +1228,13 @@ class TallyMigratorPage {
 					<td>${label}</td>
 					<td class="text-right text-success"><strong>${result.created}</strong></td>
 					<td class="text-right text-muted">${result.skipped}</td>
-					<td class="text-right ${warned > 0 ? "text-warning" : "text-muted"}">
-						${warned > 0 ? `<strong>${warned}</strong>` : warned}
+					<td class="text-right ${warned > 0 ? "text-warning" : "text-muted"}"
+						${warned > 0 ? `title="${warned} warning${warned === 1 ? "" : "s"}" aria-label="${warned} warnings"` : ""}>
+						${warned > 0 ? `<strong>⚠ ${warned}</strong>` : warned}
 					</td>
-					<td class="text-right ${result.failed > 0 ? "text-danger" : "text-muted"}">
-						${result.failed > 0 ? `<strong>${result.failed}</strong>` : result.failed}
+					<td class="text-right ${result.failed > 0 ? "text-danger" : "text-muted"}"
+						${result.failed > 0 ? `title="${result.failed} failed" aria-label="${result.failed} failed"` : ""}>
+						${result.failed > 0 ? `<strong>✗ ${result.failed}</strong>` : result.failed}
 					</td>
 				</tr>`;
 		}
@@ -1215,8 +1245,8 @@ class TallyMigratorPage {
 			<div class="text-muted small" style="margin-top:6px; line-height:1.6;">
 				<strong>Imported</strong> = newly created in ERPNext &nbsp;·&nbsp;
 				<strong>Already there</strong> = skipped because it already existed (safe, nothing changed) &nbsp;·&nbsp;
-				<strong>Warnings</strong> = imported, but a dependent piece (address, contact, opening balance…) was dropped${totalWarnings ? " — see the log" : ""} &nbsp;·&nbsp;
-				<strong>Failed</strong> = couldn't be imported${hasErrors ? " — see the log for the reason" : ""}.
+				<strong>Warnings</strong> = imported, but a dependent piece (address, contact, opening balance…) was dropped${totalWarnings ? " - see the log" : ""} &nbsp;·&nbsp;
+				<strong>Failed</strong> = couldn't be imported${hasErrors ? " - see the log for the reason" : ""}.
 			</div>`;
 
 		// What's next
@@ -1229,7 +1259,7 @@ class TallyMigratorPage {
 			</div>`;
 		html += `<p class="text-muted small" style="margin-top:10px;">
 				The migration log lists every record this run touched${hasErrors ? ", including exactly why each failed one didn't import" : ""}${totalWarnings ? ", and each warning where a record imported but a dependent piece was dropped" : ""}.
-				${hasErrors || totalWarnings ? "Fix the source in Tally (or in ERPNext), then upload again — records that already imported will simply be skipped." : ""}
+				${hasErrors || totalWarnings ? "Fix the source in Tally (or in ERPNext), then upload again - records that already imported will simply be skipped." : ""}
 			</p>`;
 		html += `<div style="margin-top:16px;">
 				<button id="btn-restart" class="btn btn-default btn-sm">↺ Migrate another file</button>

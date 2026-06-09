@@ -1,5 +1,5 @@
 """
-Read-only data-quality validation for extracted Tally masters — the pre-flight
+Read-only data-quality validation for extracted Tally masters - the pre-flight
 "measure" pass.
 
 Pure logic, no network, no Frappe, no writes. Runs against the dicts that
@@ -156,7 +156,7 @@ def validate_gstin(gstin: str) -> tuple[bool, str]:
 def infer_gst_category(gstin: str, country: str) -> str:
     """Best-effort ERPNext GST Category. Composition/SEZ are NOT encoded in a
     GSTIN, so a structurally valid GSTIN can only be inferred as Registered
-    Regular — flagged elsewhere when ambiguous."""
+    Regular - flagged elsewhere when ambiguous."""
     g = (gstin or "").strip()
     if g:
         ok, _ = validate_gstin(g)
@@ -166,7 +166,7 @@ def infer_gst_category(gstin: str, country: str) -> str:
 
 
 # ── PIN ↔ state (coarse postal-circle prefixes; warnings only) ────────────────
-# First two PIN digits map to a postal circle ≈ state. Deliberately coarse — we
+# First two PIN digits map to a postal circle ≈ state. Deliberately coarse - we
 # only warn on a confident mismatch, never block, to avoid eroding trust.
 PIN_PREFIX_STATE: dict[str, str] = {
     "11": "Delhi", "12": "Haryana", "13": "Haryana", "14": "Punjab",
@@ -287,10 +287,10 @@ def _validate_party(rec: dict, entity_type: str, report: ValidationReport) -> No
                 report.add(ValidationIssue(
                     entity_type, name, WARNING, "GSTIN_STATE_MISMATCH",
                     f"GSTIN state code maps to {code_state} but ledger state is {state}.",
-                    "Verify the party's state — wrong state flips CGST/SGST vs IGST."))
+                    "Verify the party's state - wrong state flips CGST/SGST vs IGST."))
 
     # GST state: it lives on the party's *address* and is used at invoicing time to
-    # decide CGST/SGST vs IGST — it is NOT required to create the Customer/Supplier,
+    # decide CGST/SGST vs IGST - it is NOT required to create the Customer/Supplier,
     # so a missing state never fails the import (hence a warning, not an error). When
     # the party has a valid GSTIN we derive the state from its state code (the
     # importer does the same), so there's nothing to flag at all.
@@ -299,7 +299,7 @@ def _validate_party(rec: dict, entity_type: str, report: ValidationReport) -> No
         if not derived:
             report.add(ValidationIssue(
                 entity_type, name, WARNING, "GST_STATE_MISSING",
-                "No GST state — the party imports fine, but set one so its GST "
+                "No GST state - the party imports fine, but set one so its GST "
                 "invoices compute CGST/SGST vs IGST correctly.",
                 "Fill the state here, or set it in Tally. (Auto-filled when the "
                 "party has a valid GSTIN.)"))
@@ -320,14 +320,14 @@ def _validate_items(items: list[dict], report: ValidationReport) -> None:
         if not (it.get("HSNCode") or "").strip():
             report.add(ValidationIssue(
                 "Item", name, WARNING, "HSN_MISSING",
-                "No HSN/SAC code — GST invoices for this item won't be compliant.",
+                "No HSN/SAC code - GST invoices for this item won't be compliant.",
                 "Add the HSN code in Tally before invoicing."))
         code = safe_item_code(name)
         if code in seen_codes:
             report.add(ValidationIssue(
                 "Item", name, ERROR, "ITEM_CODE_COLLISION",
                 f"item_code '{code}' collides with '{seen_codes[code]}'.",
-                "Rename one item in Tally — ERPNext item codes must be unique."))
+                "Rename one item in Tally - ERPNext item codes must be unique."))
         else:
             seen_codes[code] = name
 
@@ -351,7 +351,7 @@ def _validate_name_collisions(masters, report: ValidationReport) -> None:
     Parties are handled by the fuzzy de-duplication above; this covers the
     inventory masters (Items, Warehouses, Units, Stock Groups), which had no
     collision check at all. Two records sharing a name silently *merge* on import
-    — the second is skipped as "already exists" — so surface them beforehand.
+    - the second is skipped as "already exists" - so surface them beforehand.
     """
     groups = [
         ("Item", masters.items),
@@ -369,7 +369,7 @@ def _validate_name_collisions(masters, report: ValidationReport) -> None:
             if key in seen:
                 report.add(ValidationIssue(
                     entity_type, original, WARNING, "DUPLICATE_NAME",
-                    f"Another {entity_type} named '{seen[key]}' is already in this file — "
+                    f"Another {entity_type} named '{seen[key]}' is already in this file - "
                     "they will merge into one record on import.",
                     "Rename one in Tally before migrating, or accept the merge."))
             else:
@@ -415,7 +415,7 @@ def _validate_hierarchy(masters, coa, report: ValidationReport) -> None:
         for name in _cycle_nodes(edges):
             report.add(ValidationIssue(
                 entity_type, name, WARNING, "CIRCULAR_PARENT",
-                "This record's parent chain forms a loop — its hierarchy can't be "
+                "This record's parent chain forms a loop - its hierarchy can't be "
                 "built faithfully.",
                 "Fix the parent in Tally so the tree has no cycles."))
 
@@ -448,7 +448,7 @@ def validate_extraction(masters=None, coa=None) -> ValidationReport:
 
 
 # Per-rule fields the user can fix inline on the pre-flight screen. The edits
-# become in-memory record overrides (see migration/overrides.py) — the source XML
+# become in-memory record overrides (see migration/overrides.py) - the source XML
 # is never mutated. ``type`` drives the input widget: "text" or "state" (dropdown).
 EDITABLE_FIELDS: dict[str, list[dict]] = {
     "GSTIN_INVALID":        [{"field": "GSTRegistrationNumber", "label": "GSTIN", "type": "text"}],
@@ -481,7 +481,7 @@ def records_by_key(masters) -> dict:
 def group_report(report: ValidationReport, lookup: dict | None = None) -> dict:
     """Shape a ValidationReport into grouped-by-code rows for the frontend.
 
-    Collapses repetitive issues (e.g. "GST state missing — 13 suppliers") into one
+    Collapses repetitive issues (e.g. "GST state missing - 13 suppliers") into one
     expandable group instead of N rows. Errors are ordered before warnings.
 
     When ``lookup`` (from :func:`records_by_key`) is supplied, each group carries
@@ -515,7 +515,7 @@ def group_report(report: ValidationReport, lookup: dict | None = None) -> dict:
         # Affected-record counts (magnitude), shown per-group in the rows.
         "error_count": len(report.errors),
         "warning_count": len(report.warnings),
-        # Distinct issue *types* — the headline number, matching the rows shown.
+        # Distinct issue *types* - the headline number, matching the rows shown.
         "error_group_count": sum(1 for g in ordered if g["severity"] == "error"),
         "warning_group_count": sum(1 for g in ordered if g["severity"] == "warning"),
         "clean": not report.issues,

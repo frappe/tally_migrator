@@ -1,7 +1,7 @@
 """Shared ERPNext name transforms.
 
 Single authority so that validation (collision detection) and import compute the
-*same* item_code — otherwise the ITEM_CODE_COLLISION check would lie about what
+*same* item_code - otherwise the ITEM_CODE_COLLISION check would lie about what
 the importer is actually going to create.
 """
 

@@ -1,6 +1,6 @@
 """Tests for the offline data-quality validation engine.
 
-Pure logic, no Frappe — runnable locally:
+Pure logic, no Frappe - runnable locally:
     python -m unittest tally_migrator.tests.test_validation
 """
 import unittest

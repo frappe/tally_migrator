@@ -3,7 +3,7 @@ Regression tests for the Phase-1 critical fixes. Run via ``bench run-tests``
 (they import ``tally_migrator.erpnext.importers``, which imports ``frappe``).
 
 Covered:
-- C2: opening balances skip — not fail — when a referenced account/party is missing.
+- C2: opening balances skip - not fail - when a referenced account/party is missing.
 - C3: hierarchy sorters break circular parents instead of recursing forever.
 
 C1 (override persistence on re-run) and C4 (company-scoped warehouse idempotency)

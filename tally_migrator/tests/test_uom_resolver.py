@@ -1,4 +1,4 @@
-"""Tests for UomResolver — pure logic, no Frappe. Runnable locally:
+"""Tests for UomResolver - pure logic, no Frappe. Runnable locally:
     python -m unittest tally_migrator.tests.test_uom_resolver
 """
 import unittest

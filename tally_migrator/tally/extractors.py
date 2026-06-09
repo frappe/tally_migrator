@@ -62,7 +62,7 @@ LEDGER_TAGS = {
     "GSTRegistrationNumber": [f"{_GSTREG}/GSTIN", "GSTREGISTRATIONNUMBER", "PARTYGSTIN"],
     "GSTRegistrationType":   [f"{_GSTREG}/GSTREGISTRATIONTYPE", "GSTREGISTRATIONTYPE"],
     "LedgerContact": ["LEDGERCONTACT", "CONTACTPERSON"],
-    # Bank details — flat tags on the party ledger in a real export.
+    # Bank details - flat tags on the party ledger in a real export.
     "BankAccountNo":     ["BANKDETAILS"],
     "BankIFSC":          ["IFSCODE"],
     "BankAccountHolder": ["BANKACCHOLDERNAME"],
@@ -77,7 +77,7 @@ ITEM_TAGS = {
     # Confirmed against a real Stock Item export: the HSN code lives nested in
     # HSNDETAILS.LIST/HSNCODE (the sibling <HSN> tag holds the *description*, not
     # the code). Taxability + Goods/Services nest under GSTDETAILS.LIST. The flat
-    # forms are version fallbacks. (Item GST *rate* is intentionally not read — it
+    # forms are version fallbacks. (Item GST *rate* is intentionally not read - it
     # is nested per duty-head and usually inherited via SRCOFGSTDETAILS, so the
     # item-level value is 0/unreliable; ERPNext models rate as a tax template.)
     "HSNCode":       ["HSNDETAILS.LIST/HSNCODE", "HSNCODE"],
@@ -101,7 +101,7 @@ class ExtractedMasters:
     suppliers:    list[dict]
     items:        list[dict]
     warehouses:   list[dict]
-    # Inventory structure masters that items depend on — imported before items so
+    # Inventory structure masters that items depend on - imported before items so
     # an item nests under its real (nested) group and uses a real UOM. Default to
     # empty so older callers/tests constructing ExtractedMasters still work.
     stock_groups: list[dict] = field(default_factory=list)
@@ -121,7 +121,7 @@ class ExtractedMasters:
 
 @dataclass
 class AccountNode:
-    """One ERPNext Account to create — a Tally group (is_group) or ledger."""
+    """One ERPNext Account to create - a Tally group (is_group) or ledger."""
     name: str
     parent: str            # immediate Tally parent group ("" for a primary group)
     is_group: bool
@@ -149,7 +149,7 @@ class ExtractedCOA:
     cost_centres: list[CostCentreNode]
     # Ledgers deliberately or unavoidably left out of the COA, with a reason, so
     # nothing is dropped silently. Parties (Customers/Suppliers) are NOT listed
-    # here — they are migrated through ``extract_all`` and counted there.
+    # here - they are migrated through ``extract_all`` and counted there.
     excluded:     list[dict] = field(default_factory=list)
 
     @property
@@ -176,7 +176,7 @@ class TallyExtractor:
 
     def __init__(self, client):
         # ``client`` is any source exposing ``get_collection(obj_type, fields)``
-        # — currently FileTallySource (an uploaded Tally masters XML export).
+        # - currently FileTallySource (an uploaded Tally masters XML export).
         self.client = client
 
     def extract_all(self) -> ExtractedMasters:
@@ -184,7 +184,7 @@ class TallyExtractor:
         ledgers = self.client.get_collection("Ledger", LEDGER_FIELDS, LEDGER_TAGS)
 
         # One resolver classifies every ledger (customer / supplier / account) by
-        # its group ancestry — the single source of truth also used by COA
+        # its group ancestry - the single source of truth also used by COA
         # extraction, so customer/supplier splitting needs no parallel BFS here.
         resolver = LedgerResolver(groups, ledgers)
         return ExtractedMasters(
@@ -201,7 +201,7 @@ class TallyExtractor:
     def extract_coa(self) -> ExtractedCOA:
         """Extract the full Chart of Accounts + Cost Centres.
 
-        Ledgers under Sundry Debtors/Creditors are excluded — they migrate as
+        Ledgers under Sundry Debtors/Creditors are excluded - they migrate as
         Customers/Suppliers (handled separately), not as ledger Accounts.
         """
         groups       = self.client.get_collection("Group", GROUP_FIELDS)
@@ -227,23 +227,23 @@ class TallyExtractor:
                 is_reserved=classify_group(name) is not None,
             ))
 
-        # Ledger nodes (skip parties — handled as Customers/Suppliers — and Tally
+        # Ledger nodes (skip parties - handled as Customers/Suppliers - and Tally
         # system ledgers like "Profit & Loss A/c" that ERPNext derives itself).
         for l in ledgers:
             if l["_name"] in TALLY_SYSTEM_LEDGERS:
                 excluded.append({
                     "name": l["_name"],
-                    "reason": "Tally system ledger — ERPNext maintains this account "
+                    "reason": "Tally system ledger - ERPNext maintains this account "
                               "automatically (not imported).",
                 })
                 continue
             target = resolver.resolve(l["_name"])
             if target is None:
-                # No classification at all — should not happen for a real ledger,
+                # No classification at all - should not happen for a real ledger,
                 # but if it does we record it rather than dropping it silently.
                 excluded.append({
                     "name": l["_name"],
-                    "reason": "Could not classify this ledger — review it in Tally.",
+                    "reason": "Could not classify this ledger - review it in Tally.",
                 })
                 continue
             if target.kind != ACCOUNT:

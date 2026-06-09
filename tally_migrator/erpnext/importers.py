@@ -1,5 +1,5 @@
 """
-ERPNext importers — Tally masters → ERPNext via Frappe's ORM.
+ERPNext importers - Tally masters → ERPNext via Frappe's ORM.
 
 Design
 ------
@@ -14,7 +14,7 @@ facade::
     └── WarehouseImporter            parent-before-child topological order
 
 Adding a new entity in Phase 2 (e.g. Account, Cost Center) means adding one
-subclass — no existing code changes (Open/Closed).
+subclass - no existing code changes (Open/Closed).
 
 Insert rules (shared by every importer)
 ---------------------------------------
@@ -56,7 +56,7 @@ class ImportResult:
     skipped: int = 0
     errors: list[dict] = field(default_factory=list)
     warnings: list[dict] = field(default_factory=list)
-    # ERPNext names of the docs this importer actually inserted — the authoritative
+    # ERPNext names of the docs this importer actually inserted - the authoritative
     # "what did this run touch" record (incl. the opening JE / Stock Reconciliation),
     # so a migration can be reviewed or reversed by inspection.
     created_names: list[str] = field(default_factory=list)
@@ -70,7 +70,7 @@ class ImportResult:
         self.errors.append({"name": name, "reason": str(reason)})
 
     def add_warning(self, name: str, reason) -> None:
-        """Record a *non-fatal* partial drop — the main record imported, but a
+        """Record a *non-fatal* partial drop - the main record imported, but a
         dependent piece (e.g. its address) was lost. Surfaced in the log so the
         loss is visible/auditable, but it does not mark the record as failed."""
         self.warnings.append({"name": name, "reason": str(reason)})
@@ -109,7 +109,7 @@ class BaseImporter:
     key_field: str = ""
     # When set, the duplicate-detection lookup is also filtered by this field =
     # ``self.company``. Required for company-scoped doctypes (e.g. Warehouse), where
-    # the same ``key_field`` value can legitimately exist in another company —
+    # the same ``key_field`` value can legitimately exist in another company -
     # without it, a same-named record in Company A makes Company B's get skipped.
     scope_field: str = ""
 
@@ -119,7 +119,7 @@ class BaseImporter:
 
     @property
     def company_country(self) -> str:
-        """The target ERPNext Company's country — the correct default for records
+        """The target ERPNext Company's country - the correct default for records
         whose Tally ledger leaves country blank, instead of assuming India."""
         return frappe.get_cached_value("Company", self.company, "country") or "India"
 
@@ -130,7 +130,7 @@ class BaseImporter:
         for record in self.iter_records(records):
             name, created = self._upsert(result, self.build_doc(record))
             # after_insert (e.g. address creation) must run ONLY for newly
-            # created records — otherwise a re-run duplicates side effects for
+            # created records - otherwise a re-run duplicates side effects for
             # records that were skipped because they already exist.
             if name and created:
                 self.after_insert(name, record, result)
@@ -166,7 +166,7 @@ class BaseImporter:
         -------------------------------------
         This commits once per record, so a run is *not* one transaction: an
         interrupted run leaves every record committed so far in place. That is
-        intentional — the import is idempotent (existing records are skipped), so
+        intentional - the import is idempotent (existing records are skipped), so
         a resumed/re-run picks up exactly where it stopped instead of redoing
         thousands of rows or rolling them all back. The cost is one COMMIT plus a
         duplicate-check round-trip per record, which is the dominant per-row cost
@@ -233,7 +233,7 @@ def _insert_bank_account(*, account_name: str, bank: str, account_no: str,
     Both paths build the same doc (account name + bank + account no + IFSC) and
     differ only in how it's linked: a party account points at a Customer/Supplier
     (``party_type``/``party``), a company account at the GL account and sets
-    ``is_company_account`` (``gl_account``/``is_company``). Non-fatal — a failure
+    ``is_company_account`` (``gl_account``/``is_company``). Non-fatal - a failure
     is logged, recorded as a warning, rolled back, and "" returned so a Bank
     Account quirk never aborts the party/account that was just created.
     """
@@ -302,7 +302,7 @@ class PartyImporter(BaseImporter):
 
     def _save_address(self, link_name: str, link_type: str, data: dict,
                       result: "ImportResult") -> None:
-        """Create a Billing Address linked to the party. Non-fatal on failure —
+        """Create a Billing Address linked to the party. Non-fatal on failure -
         but a failure is recorded as a warning so the dropped address is visible
         in the migration log rather than lost silently."""
         raw_address = (data.get("Address") or "").strip()
@@ -315,7 +315,7 @@ class PartyImporter(BaseImporter):
             addr.address_line1 = raw_address
             # ERPNext requires a city, but Tally's party ledger has no city field
             # (the PIN has its own field below). Use a real city if one ever appears,
-            # otherwise a clear placeholder — never the PIN, which only looked like a
+            # otherwise a clear placeholder - never the PIN, which only looked like a
             # city and produced visibly wrong addresses.
             addr.city = (data.get("City") or "").strip() or "Not Specified"
             addr.state = self._resolve_state(data)
@@ -335,7 +335,7 @@ class PartyImporter(BaseImporter):
     def _resolve_state(data: dict) -> str:
         """The party's ERPNext state. Prefer Tally's ledger state; when it's blank
         but the party has a structurally valid GSTIN, derive the state from the
-        GSTIN's state code — the same fallback the pre-flight check assumes, so a
+        GSTIN's state code - the same fallback the pre-flight check assumes, so a
         registered party never lands with an empty (and GST-breaking) state."""
         state = TALLY_STATE_MAP.get((data.get("LedgerState") or "").strip(), "")
         if state:
@@ -350,7 +350,7 @@ class PartyImporter(BaseImporter):
         """Create a Contact (phone / mobile / email) linked to the party.
 
         Tally keeps these on the ledger, but ERPNext stores them on a Contact, not
-        on the Customer/Supplier itself — so without this they'd survive only as
+        on the Customer/Supplier itself - so without this they'd survive only as
         Address fields and be lost entirely when the party has no street address.
         Non-fatal: a failure is recorded as a warning so the dropped contact is
         visible in the migration log rather than lost silently."""
@@ -387,7 +387,7 @@ class PartyImporter(BaseImporter):
         """Create a Bank Account (account no + IFSC) linked to the party.
 
         Tally stores a party's bank details on the ledger; ERPNext keeps them on a
-        Bank Account doc linked to the Customer/Supplier. Non-fatal — a failure is a
+        Bank Account doc linked to the Customer/Supplier. Non-fatal - a failure is a
         warning, so the dropped bank detail is visible in the log, not lost."""
         acc_no = (data.get("BankAccountNo") or "").strip()
         if not acc_no:
@@ -461,6 +461,19 @@ class ItemImporter(BaseImporter):
 
     def before_run(self, records: list[dict], result: ImportResult) -> None:
         self._ensure_item_groups({r.get("Parent") for r in records if r.get("Parent")}, result)
+        # Two distinct Tally items can collapse to the same ERPNext item_code once
+        # it is truncated to 140 chars and '/' is replaced. The generic upsert keys
+        # on item_code, so the later one is skipped as "already there" - which looks
+        # like a harmless duplicate. Flag the collision here so the dropped item is
+        # visible in the log, matching the pre-flight ITEM_CODE_COLLISION check.
+        for code, names in self._code_collisions(records).items():
+            kept, dropped = names[0], names[1:]
+            for name in dropped:
+                result.add_warning(
+                    name,
+                    f"item not imported - its code '{code}' collides with item "
+                    f"'{kept}' (both reduce to the same ERPNext item_code after "
+                    "truncation/'/' replacement). Rename one in Tally and re-run.")
         # Surface any GST treatment we couldn't map so the loss is auditable rather
         # than silently defaulting the item to taxable.
         for r in records:
@@ -468,7 +481,7 @@ class ItemImporter(BaseImporter):
             if raw and self._gst_treatment(raw) is None:
                 result.add_warning(
                     r["_name"],
-                    f"GST type '{raw}' not recognised — item imported as taxable; "
+                    f"GST type '{raw}' not recognised - item imported as taxable; "
                     "set its GST treatment manually if needed.")
         # India Compliance check: the item-level GST fields (HSN code, taxability,
         # supply type, nil/exempt/non-GST flags) only exist when the India Compliance
@@ -483,10 +496,24 @@ class ItemImporter(BaseImporter):
             result.add_warning(
                 "GST details",
                 "Your items carry GST data (HSN code, taxability, supply type), but the "
-                "India Compliance app is not installed on this site — ERPNext core has no "
+                "India Compliance app is not installed on this site - ERPNext core has no "
                 "fields to store it, so these attributes were skipped. To import them, "
                 "install 'India Compliance' from the Frappe Cloud marketplace and re-run "
                 "this migration; everything else imported normally.")
+
+    @staticmethod
+    def _code_collisions(records: list[dict]) -> dict:
+        """``{item_code: [name, ...]}`` for codes produced by >1 distinct Tally
+        name. Order preserved so the first occurrence is treated as the one kept."""
+        by_code: dict = {}
+        for r in records:
+            name = r.get("_name")
+            if not name:
+                continue
+            by_code.setdefault(safe_item_code(name), [])
+            if name not in by_code[safe_item_code(name)]:
+                by_code[safe_item_code(name)].append(name)
+        return {code: names for code, names in by_code.items() if len(names) > 1}
 
     def build_doc(self, record: dict) -> dict:
         tally_uom = (record.get("BaseUnits") or "").strip()
@@ -813,7 +840,7 @@ class UnitImporter:
 
         Creating the category is a side effect the user didn't explicitly ask for,
         so when we do create one we record a one-off warning (the category is reused
-        thereafter, so this fires at most once per run) — the auto-created master is
+        thereafter, so this fires at most once per run) - the auto-created master is
         then visible/auditable in the log rather than appearing silently."""
         if not frappe.db.has_column("UOM Conversion Factor", "category"):
             return ""
@@ -828,7 +855,7 @@ class UnitImporter:
                 result.add_warning(
                     "UOM Category",
                     "auto-created a 'Tally Imported' UOM Category to hold compound-unit "
-                    "conversions — ERPNext requires every conversion to belong to a "
+                    "conversions - ERPNext requires every conversion to belong to a "
                     "category and none existed.")
             return cat.name
         except Exception:
@@ -848,7 +875,7 @@ class AccountImporter:
     - ``mirror`` : every Tally group is recreated verbatim.
 
     Parties (ledgers under Sundry Debtors/Creditors) are excluded upstream by the
-    extractor — they are Customers/Suppliers, not ledger Accounts.
+    extractor - they are Customers/Suppliers, not ledger Accounts.
 
     Standalone (not a BaseImporter) because parent resolution + topological group
     ordering don't fit the simple key_field upsert template.
@@ -876,7 +903,7 @@ class AccountImporter:
     def _select(self, accounts: list) -> list:
         if self.mode == "mirror":
             return list(accounts)
-        # reuse: reserved groups already exist in ERPNext — don't recreate them.
+        # reuse: reserved groups already exist in ERPNext - don't recreate them.
         return [a for a in accounts if not (a.is_group and a.is_reserved)]
 
     def _ordered(self, nodes: list) -> list:
@@ -1076,14 +1103,14 @@ class OpeningBalanceImporter:
     """Posts one balanced 'Opening Entry' Journal Entry for the whole trial balance.
 
     Three balance sources are combined into a single submitted JE:
-      • ledger accounts  — Dr/Cr against the account itself,
-      • customers        — against the company's default Receivable account, with
+      • ledger accounts  - Dr/Cr against the account itself,
+      • customers        - against the company's default Receivable account, with
                            ``party_type='Customer'`` / ``party=<name>``,
-      • suppliers        — against the default Payable account, ``party=<name>``.
+      • suppliers        - against the default Payable account, ``party=<name>``.
 
     Referenced accounts/parties are normally created first (COA + Customers +
     Suppliers). A line whose account/party did *not* get created (its earlier import
-    failed) is skipped with a warning rather than included — otherwise a single
+    failed) is skipped with a warning rather than included - otherwise a single
     missing reference would make the whole submitted entry throw and roll back,
     silently dropping *every* opening balance. ERPNext requires the JE to balance;
     any residual difference
@@ -1108,7 +1135,7 @@ class OpeningBalanceImporter:
         # Idempotency: the opening JE is an aggregate document, not a per-record
         # upsert, so re-posting a batch would double the books. But posting is
         # per-batch (one JE per root type / party type), so the guard must be
-        # per-batch too — otherwise a re-run after a *partial* failure (some
+        # per-batch too - otherwise a re-run after a *partial* failure (some
         # batches committed, one failed) would see the committed batches and skip
         # *everything*, silently abandoning the balances that never posted.
         #
@@ -1122,7 +1149,7 @@ class OpeningBalanceImporter:
             result.add_warning(
                 "Opening Entry",
                 "this company already has an Opening Entry that was not created by "
-                "this migrator — opening balances were skipped to avoid double-posting "
+                "this migrator - opening balances were skipped to avoid double-posting "
                 "against a manually set-up book. Cancel that entry first if you want "
                 "this migration to post the opening balances instead.")
             return result
@@ -1158,7 +1185,7 @@ class OpeningBalanceImporter:
                 result.add_warning(
                     label,
                     f"opening balances for {label} were already posted in an earlier "
-                    "run — skipped to avoid double-posting. The remaining batches (if "
+                    "run - skipped to avoid double-posting. The remaining batches (if "
                     "any) were posted now.")
                 continue
             pending.append((label, lines))
@@ -1166,7 +1193,7 @@ class OpeningBalanceImporter:
             return result  # every batch already posted
 
         # The 'did not net to zero' check is meaningful only across the balances we
-        # are actually posting now — per-batch plugs are expected and large — so warn
+        # are actually posting now - per-batch plugs are expected and large - so warn
         # once here over the pending batches, then let each batch plug silently.
         self._warn_residual([l for _, rows in pending for l in rows], result)
         for label, lines in pending:
@@ -1177,7 +1204,7 @@ class OpeningBalanceImporter:
                     result: ImportResult) -> None:
         """Insert + submit one Opening Entry batch, committing on its own.
 
-        Plugs the batch against Temporary Opening (silently — the aggregate
+        Plugs the batch against Temporary Opening (silently - the aggregate
         residual is warned once by the caller). A failure rolls back only this
         batch's transaction; batches already committed are unaffected."""
         self._balance(lines)
@@ -1202,10 +1229,10 @@ class OpeningBalanceImporter:
         """Inspect this company's non-cancelled Opening Entries.
 
         Returns ``(foreign, posted)``:
-        - ``posted`` — the set of batch labels this migrator already posted,
+        - ``posted`` - the set of batch labels this migrator already posted,
           recovered from each entry's ``user_remark`` marker, so a re-run can skip
           exactly those batches and post the rest.
-        - ``foreign`` — True when an Opening Entry exists whose remark this migrator
+        - ``foreign`` - True when an Opening Entry exists whose remark this migrator
           did *not* write (opening balances set up by hand or another tool); the
           caller then skips entirely rather than double-post against those books.
         """
@@ -1250,7 +1277,7 @@ class OpeningBalanceImporter:
             if not frappe.db.exists("Account", account):
                 result.add_warning(
                     node.name,
-                    f"opening balance skipped — account '{account}' was not created "
+                    f"opening balance skipped - account '{account}' was not created "
                     "(its import failed earlier). Fix the account and re-run.")
                 continue
             lines.append(self._line(account, node.opening_balance, node.opening_dr_cr))
@@ -1277,13 +1304,13 @@ class OpeningBalanceImporter:
                 continue
             # Resolve the actual document name (handles naming series and any
             # existing party matched on display name but stored under another id).
-            # A missing name means the party wasn't created — skip with a warning
+            # A missing name means the party wasn't created - skip with a warning
             # rather than posting against, or failing the whole entry on, a bad id.
             party_name = frappe.db.get_value(party_type, {key_field: record["_name"]}, "name")
             if not party_name:
                 result.add_warning(
                     record["_name"],
-                    f"opening balance skipped — {party_type} '{record['_name']}' was "
+                    f"opening balance skipped - {party_type} '{record['_name']}' was "
                     "not created (its import failed earlier). Fix it and re-run.")
                 continue
             line = self._line(control, amount, drcr)
@@ -1292,7 +1319,7 @@ class OpeningBalanceImporter:
         if missing_control:
             result.add_error(
                 f"{party_type} opening balances",
-                f"company has no {company_field.replace('_', ' ')} set — skipped",
+                f"company has no {company_field.replace('_', ' ')} set - skipped",
             )
         return lines
 
@@ -1339,7 +1366,7 @@ class OpeningBalanceImporter:
         result.add_warning(
             "Opening Entry",
             f"opening balances did not net to zero; {abs(diff):,.2f} was {side}ed "
-            f"to 'Temporary Opening - {self.abbr}' to balance the entry — review "
+            f"to 'Temporary Opening - {self.abbr}' to balance the entry - review "
             "whether the full trial balance was migrated.")
 
 
@@ -1369,7 +1396,7 @@ class StockOpeningImporter:
             result.add_warning(
                 "Opening Stock",
                 "opening stock already posted for this company (an Opening Stock "
-                "reconciliation exists) — skipped to avoid double-counting. Cancel "
+                "reconciliation exists) - skipped to avoid double-counting. Cancel "
                 "the existing reconciliation first if you need to re-import.")
             return result
         warehouse = self._default_warehouse()
@@ -1388,18 +1415,18 @@ class StockOpeningImporter:
                 # than silently or fatally.
                 result.add_warning(
                     it["_name"],
-                    f"opening stock not posted — Tally reports a negative opening "
+                    f"opening stock not posted - Tally reports a negative opening "
                     f"quantity '{raw_qty}'. ERPNext opening stock cannot be negative; "
                     "review the item in Tally and set its opening stock manually.")
                 continue
             if qty == 0:
                 # A non-empty cell that parses to zero is a real opening quantity we
-                # failed to read (e.g. an unexpected format) — surface it instead of
+                # failed to read (e.g. an unexpected format) - surface it instead of
                 # dropping the item's opening stock silently.
                 if str(raw_qty or "").strip():
                     result.add_warning(
                         it["_name"],
-                        f"opening stock not posted — could not read quantity "
+                        f"opening stock not posted - could not read quantity "
                         f"'{raw_qty}'. Set this item's opening stock manually.")
                 continue
             rate = (BaseImporter._to_float(it.get("OpeningRate"))
@@ -1410,7 +1437,7 @@ class StockOpeningImporter:
                 # is real), but surface the missing rate so it can be corrected.
                 result.add_warning(
                     it["_name"],
-                    f"opening stock posted with a zero valuation rate — the item has "
+                    f"opening stock posted with a zero valuation rate - the item has "
                     "no opening rate or standard cost in Tally, so its opening stock "
                     "carries no value. Set the item's valuation rate in ERPNext.")
             rows.append({
@@ -1527,6 +1554,6 @@ class ERPNextImporter:
         return self._fiscal_year_start()
 
     def _fiscal_year_start(self) -> str:
-        """Posting date for the opening entry — the company's current FY start."""
+        """Posting date for the opening entry - the company's current FY start."""
         from erpnext.accounts.utils import get_fiscal_year
         return str(get_fiscal_year(frappe.utils.nowdate(), company=self.company)[1])

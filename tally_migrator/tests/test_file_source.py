@@ -1,6 +1,6 @@
 """Unit tests for FileTallySource (offline Tally masters XML parsing).
 
-No Tally connection and no Frappe site required — exercises the parser and its
+No Tally connection and no Frappe site required - exercises the parser and its
 interop with TallyExtractor directly.
 """
 import unittest
@@ -71,6 +71,21 @@ class TestFileTallySource(unittest.TestCase):
         # 3 groups + 3 ledgers + 1 stock item + 1 godown in SAMPLE_XML.
         self.assertEqual(self.source.approx_record_count(), 8)
 
+    def test_scale_many_records_parse_and_count(self):
+        """Smoke test that the streaming parser handles a large record count and
+        the per-tag buckets stay exact (guards the iterparse/root.clear path)."""
+        n = 5000
+        msgs = "".join(
+            f'<TALLYMESSAGE><LEDGER NAME="C{i}"><PARENT>Sundry Debtors</PARENT></LEDGER></TALLYMESSAGE>'
+            for i in range(n)
+        )
+        src = FileTallySource(f"<ENVELOPE><BODY>{msgs}</BODY></ENVELOPE>")
+        self.assertEqual(src.approx_record_count(), n)
+        ledgers = src.get_collection("Ledger", ["Parent"])
+        self.assertEqual(len(ledgers), n)
+        self.assertEqual(ledgers[-1]["_name"], f"C{n - 1}")
+        self.assertEqual(ledgers[0]["Parent"], "Sundry Debtors")
+
     def test_streaming_ignores_non_master_chrome(self):
         # A COMPANY header and voucher data must not inflate the record buckets.
         xml = ("<ENVELOPE><BODY>"
@@ -86,7 +101,7 @@ class TestFileTallySource(unittest.TestCase):
 # Two records: one in real Tally tags (state <LEDSTATENAME>, email <EMAIL>,
 # multi-line <ADDRESS.LIST>, price/cost <STANDARDPRICELIST.LIST> revision lists),
 # and one using the OLD invented flat tags (<LEDGERSTATE>/<LEDGEREMAIL>/flat
-# <ADDRESS>/<STANDARDPRICE>) which the parser must now IGNORE — only real Tally
+# <ADDRESS>/<STANDARDPRICE>) which the parser must now IGNORE - only real Tally
 # tags are read.
 REAL_TALLY_XML = """<ENVELOPE>
   <BODY><IMPORTDATA><REQUESTDATA>
@@ -207,7 +222,7 @@ class TestDecode(unittest.TestCase):
 
 
 class TestXmlSafety(unittest.TestCase):
-    """A DTD / entity declaration (the 'billion laughs' DoS vector) is refused —
+    """A DTD / entity declaration (the 'billion laughs' DoS vector) is refused -
     a real Tally masters export never declares one."""
 
     def test_doctype_is_rejected(self):
@@ -222,7 +237,7 @@ class TestXmlSafety(unittest.TestCase):
             FileTallySource('<!ENTITY x "y"><ENVELOPE/>')
 
     def test_clean_export_still_parses(self):
-        # No DTD — must not be falsely rejected.
+        # No DTD - must not be falsely rejected.
         src = FileTallySource("<ENVELOPE><TALLYMESSAGE/></ENVELOPE>")
         self.assertTrue(src.ping())
 

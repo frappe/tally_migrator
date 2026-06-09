@@ -79,7 +79,7 @@ class TestCoverage(unittest.TestCase):
 
     def test_real_tally_tags_are_not_flagged(self):
         # A genuine export uses LEDSTATENAME / EMAIL / ADDRESS.LIST instead of the
-        # flat canonical tags — the parser reads them, so coverage must treat them
+        # flat canonical tags - the parser reads them, so coverage must treat them
         # as covered, not "not migrated".
         tags = {
             "NAME": _tag(),

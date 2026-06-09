@@ -32,7 +32,7 @@ class MigrationSummary:
     """Per-entity import results, keyed by label in pipeline order.
 
     Holding the results in one ordered mapping (rather than a fixed field per
-    entity) means adding a new entity to the pipeline needs no change here — the
+    entity) means adding a new entity to the pipeline needs no change here - the
     summary, the log, and the error reporting all iterate generically.
     """
 
@@ -63,13 +63,13 @@ class MigrationSummary:
             for w in result.warnings
         ]
         if warns:
-            lines += ["", "Warnings (non-fatal — record imported, dependent data dropped):"] + warns
+            lines += ["", "Warnings (non-fatal - record imported, dependent data dropped):"] + warns
         return "\n".join(lines)
 
     def created_records(self) -> dict:
         """Per-entity list of the ERPNext doc names actually inserted this run.
 
-        This is the authoritative 'what did this migration touch' record — it
+        This is the authoritative 'what did this migration touch' record - it
         includes the opening Journal Entry and Stock Reconciliation names, so the
         run can be reviewed or reversed by inspection. Empty entities are omitted."""
         return {
@@ -104,9 +104,9 @@ class MasterMigrator:
 
     Order of operations
     -------------------
-    Warehouses first  — Items reference warehouses.
-    Customers / Suppliers next — independent of each other.
-    Items last — depend on Item Groups and Warehouses.
+    Warehouses first  - Items reference warehouses.
+    Customers / Suppliers next - independent of each other.
+    Items last - depend on Item Groups and Warehouses.
 
     A ``Tally Migration Log`` is created with status ``Running`` *before* any
     work starts and finalized at the end, so an interrupted run still leaves an
@@ -115,7 +115,7 @@ class MasterMigrator:
 
     Scaling note: for very large datasets, ``run`` is a natural unit to move into
     a background job (``frappe.enqueue``) keyed off the log document. It is kept
-    synchronous here for reliability — the summary is returned directly rather
+    synchronous here for reliability - the summary is returned directly rather
     than depending on the realtime channel.
     """
 
@@ -195,7 +195,7 @@ class MasterMigrator:
     def _pipeline(self, masters: ExtractedMasters, coa) -> list[PipelineStep]:
         """Entity import order. Adding an entity = add one step here.
 
-        Accounts (COA) first — opening balances post against them; Cost Centres
+        Accounts (COA) first - opening balances post against them; Cost Centres
         next; then Warehouses (Items reference them), Customers/Suppliers
         (independent), Items (depend on Item Groups + Warehouses); Opening
         Balances last, once every account exists.
@@ -207,7 +207,7 @@ class MasterMigrator:
             steps.append(PipelineStep("Cost Centres", 30, self.importer.import_cost_centres, coa.cost_centres))
         steps.append(
             PipelineStep("Warehouses", 40, self.importer.import_warehouses, masters.warehouses))
-        # Inventory structure masters before Items — an item references its group
+        # Inventory structure masters before Items - an item references its group
         # and UOM, so create the nested Item Groups and UOMs first.
         if masters.units:
             steps.append(PipelineStep("Units", 44, self.importer.import_units, masters.units))
@@ -284,7 +284,7 @@ class MasterMigrator:
         log.coa_mode = getattr(self.config, "coa_mode", "reuse") or "reuse"
         if self.posting_date:
             log.posting_date = self.posting_date
-        # The user's pre-flight UOM mappings and per-record fixes — kept so a re-run
+        # The user's pre-flight UOM mappings and per-record fixes - kept so a re-run
         # reproduces the migration that was validated, not the raw/default data.
         if self.uom_overrides:
             log.uom_overrides = frappe.as_json(self.uom_overrides)

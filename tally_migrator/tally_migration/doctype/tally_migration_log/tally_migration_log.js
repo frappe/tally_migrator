@@ -11,7 +11,7 @@ frappe.ui.form.on("Tally Migration Log", {
 
 // ── Field-coverage report ───────────────────────────────────────────────────
 // Lists fields present in the uploaded Tally file that the migrator does NOT
-// read (UDFs / unmapped attributes) — i.e. data that never entered the pipeline.
+// read (UDFs / unmapped attributes) - i.e. data that never entered the pipeline.
 // Read-only audit of what was intentionally left behind.
 
 function render_coverage(frm) {
@@ -32,7 +32,7 @@ function render_coverage(frm) {
 	if (report.clean || !report.types.length) {
 		wrapper.html(
 			`<div class="text-success" style="padding:6px 0;">
-				✓ Every field in your file maps to an ERPNext field — nothing was left behind.
+				✓ Every field in your file maps to an ERPNext field - nothing was left behind.
 			</div>`
 		);
 		return;
@@ -82,7 +82,7 @@ function render_coverage(frm) {
 	const unwrittenNote = unwrittenCount
 		? `<div class="small" style="margin-bottom:8px; color:#f0a500;">
 				<strong>${unwrittenCount}</strong> field(s) were read from the file but
-				<strong>not persisted</strong> to ERPNext — review these, they are a real gap.
+				<strong>not persisted</strong> to ERPNext - review these, they are a real gap.
 			</div>`
 		: "";
 
@@ -101,7 +101,7 @@ function render_coverage(frm) {
 
 // ── Records-created audit trail ─────────────────────────────────────────────
 // The authoritative "what did this run touch" list: every ERPNext document this
-// migration inserted, grouped by entity, with deep links — including the opening
+// migration inserted, grouped by entity, with deep links - including the opening
 // Journal Entry and Stock Reconciliation, so the run is reviewable / reversible.
 
 const CREATED_DOCTYPE = {
@@ -295,7 +295,7 @@ function render_quality(frm) {
 				<span class="text-danger"><strong>${report.error_count}</strong> error(s)</span>
 				&nbsp;·&nbsp;
 				<span style="color:#f0a500;"><strong>${report.warning_count}</strong> warning(s)</span>
-				<span class="text-muted small">— flagged before this run</span>
+				<span class="text-muted small">- flagged before this run</span>
 			</div>
 			${rows}
 		</div>
@@ -304,7 +304,7 @@ function render_quality(frm) {
 
 // ── Visual summary dashboard ────────────────────────────────────────────────
 // Turns the stored import_summary JSON into a scannable per-entity breakdown
-// (created / already there / failed) with a stacked bar — no JSON reading.
+// (created / already there / failed) with a stacked bar - no JSON reading.
 
 function render_summary(frm) {
 	const wrapper = frm.get_field("summary_view").$wrapper;

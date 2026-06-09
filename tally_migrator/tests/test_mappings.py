@@ -1,4 +1,4 @@
-"""Unit tests for UOM map and state map — pure Python, no Frappe needed."""
+"""Unit tests for UOM map and state map - pure Python, no Frappe needed."""
 import unittest
 
 from tally_migrator.tally.mappings import (
