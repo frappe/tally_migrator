@@ -814,8 +814,11 @@ class TallyMigratorPage {
 		const label = TallyMigratorPage.DQ_LABELS[g.code] || g.code;
 		const editable = g.editable_fields || [];
 		const items = g.items.map((it) => this.dqItemHtml(it, editable)).join("");
+		// First group sits flush under the container's own border, so skip the
+		// divider there; later groups keep it to separate them.
+		const divider = idx === 0 ? "" : "border-top:1px solid var(--border-color, #f0f4f7);";
 		return `
-			<div style="border-top:1px solid #f0f4f7;">
+			<div style="${divider}">
 				<div class="dq-head" data-idx="${idx}" style="cursor:pointer; padding:8px 0; display:flex; align-items:center; gap:6px;">
 					<span style="color:${dot};" title="${g.severity === "error" ? "Error" : "Warning"}" aria-label="${g.severity === "error" ? "Error" : "Warning"}">${g.severity === "error" ? "✗" : "⚠"}</span>
 					<strong>${esc(label)}</strong>
@@ -907,9 +910,13 @@ class TallyMigratorPage {
 	// click; per-row dropdowns let the user map specific units to existing ones.
 	renderUomIssues() {
 		const esc = frappe.utils.escape_html;
-		const existingOptions = this.allUoms
-			.map((u) => `<option value="${esc(u)}">Map to existing: ${esc(u)}</option>`)
-			.join("");
+		// Bare unit names grouped under one "map to existing" heading, so the prefix
+		// is shown once (on the optgroup) instead of repeated on every option.
+		const existingOptions = this.allUoms.length
+			? `<optgroup label="Or map to an existing unit">${this.allUoms
+					.map((u) => `<option value="${esc(u)}">${esc(u)}</option>`)
+					.join("")}</optgroup>`
+			: "";
 
 		const rows = this.uomIssues
 			.map((issue) => `
@@ -918,7 +925,7 @@ class TallyMigratorPage {
 					<td class="text-muted text-center" style="width:28px; vertical-align:middle;">→</td>
 					<td>
 						<select class="form-control input-sm uom-choice">
-							<option value="__create__">Create "${esc(issue.erpnext_uom)}" as a new unit</option>
+							<option value="__create__">Create new unit: "${esc(issue.erpnext_uom)}"</option>
 							${existingOptions}
 						</select>
 					</td>
