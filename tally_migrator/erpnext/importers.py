@@ -155,6 +155,17 @@ class BaseImporter:
 
         The ``created`` flag lets ``run`` fire ``after_insert`` side effects
         only for genuinely new records (idempotent re-runs).
+
+        Throughput vs. atomicity (deliberate)
+        -------------------------------------
+        This commits once per record, so a run is *not* one transaction: an
+        interrupted run leaves every record committed so far in place. That is
+        intentional — the import is idempotent (existing records are skipped), so
+        a resumed/re-run picks up exactly where it stopped instead of redoing
+        thousands of rows or rolling them all back. The cost is one COMMIT plus a
+        duplicate-check round-trip per record, which is the dominant per-row cost
+        at scale; batching commits would trade resumability for speed and is a
+        deliberate non-goal here.
         """
         key_value = data.get(self.key_field, "")
         filters = {self.key_field: key_value}

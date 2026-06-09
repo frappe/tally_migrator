@@ -272,14 +272,53 @@ def rerun_from_log(log_name):
 
 # ── Internal helpers ──────────────────────────────────────────────────────────
 
+# Most-recently-parsed source, keyed by (File name, modified timestamp). The
+# wizard re-calls validate/preview on every inline fix ("Re-check"), each of which
+# would otherwise re-read, re-decode, re-sanitize and re-parse the whole file. The
+# File's bytes are immutable for a given (name, modified), so a cached parse is
+# always valid; a new upload (new name) or an edit (new modified) misses and
+# re-parses. Bounded to one entry so a large file can't pin memory across uploads.
+_SOURCE_CACHE: dict = {}
+
+
+def _assert_file_access(file_doc) -> None:
+    """Refuse to read a File the current user has no claim to.
+
+    The whitelisted handlers accept an arbitrary ``file_url``; without this a
+    Tally Migration Manager could pass another user's *private* File URL and read
+    its bytes (an IDOR). Owners, System Managers and Administrator always pass;
+    public files are readable by anyone with the role; any other private file is
+    denied.
+    """
+    user = frappe.session.user
+    if user == "Administrator" or file_doc.owner == user:
+        return
+    if "System Manager" in frappe.get_roles(user):
+        return
+    if not file_doc.is_private:
+        return
+    frappe.throw(
+        frappe._("You are not permitted to access this file."),
+        frappe.PermissionError,
+    )
+
+
 def _source_from_file(file_url):
     """Load the uploaded File and wrap it as a FileTallySource.
 
     Returns ``(file_doc, source)`` — most callers only need the source, but the
-    migration run also reads ``file_doc.file_name`` for the log label.
+    migration run also reads ``file_doc.file_name`` for the log label. Access is
+    checked (see ``_assert_file_access``) and the parse is cached per file version.
     """
     file_doc = frappe.get_doc("File", {"file_url": file_url})
-    return file_doc, FileTallySource(_decode(_raw_file_bytes(file_doc)))
+    _assert_file_access(file_doc)
+    cache_key = (file_doc.name, str(file_doc.modified))
+    source = _SOURCE_CACHE.get(cache_key)
+    if source is None:
+        source = FileTallySource(_decode(_raw_file_bytes(file_doc)))
+        _SOURCE_CACHE.clear()        # keep only the most-recent file's parse
+        _SOURCE_CACHE[cache_key] = source
+    return file_doc, source
 
 
 def _raw_file_bytes(file_doc) -> bytes:
