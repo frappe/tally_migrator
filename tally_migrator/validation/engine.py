@@ -272,8 +272,10 @@ def _validate_party(rec: dict, entity_type: str, report: ValidationReport) -> No
     state = (rec.get("LedgerState") or "").strip()
     pin = rec.get("PinCode") or ""
 
+    gstin_valid = False
     if gstin:
         ok, reason = validate_gstin(gstin)
+        gstin_valid = ok
         if not ok:
             report.add(ValidationIssue(
                 entity_type, name, ERROR, "GSTIN_INVALID",
@@ -287,12 +289,20 @@ def _validate_party(rec: dict, entity_type: str, report: ValidationReport) -> No
                     f"GSTIN state code maps to {code_state} but ledger state is {state}.",
                     "Verify the party's state — wrong state flips CGST/SGST vs IGST."))
 
-    # GST state is mandatory for India Compliance, even when unregistered.
+    # GST state: it lives on the party's *address* and is used at invoicing time to
+    # decide CGST/SGST vs IGST — it is NOT required to create the Customer/Supplier,
+    # so a missing state never fails the import (hence a warning, not an error). When
+    # the party has a valid GSTIN we derive the state from its state code (the
+    # importer does the same), so there's nothing to flag at all.
     if country == "India" and not state:
-        report.add(ValidationIssue(
-            entity_type, name, ERROR, "GST_STATE_MISSING",
-            "No GST state — ERPNext (India Compliance) requires one on every party.",
-            "Set the state in Tally, or derive it from the PIN code."))
+        derived = GSTIN_STATE_CODES.get(gstin[:2]) if gstin_valid else None
+        if not derived:
+            report.add(ValidationIssue(
+                entity_type, name, WARNING, "GST_STATE_MISSING",
+                "No GST state — the party imports fine, but set one so its GST "
+                "invoices compute CGST/SGST vs IGST correctly.",
+                "Fill the state here, or set it in Tally. (Auto-filled when the "
+                "party has a valid GSTIN.)"))
 
     expected = pin_state_conflict(pin, state)
     if expected:
@@ -502,8 +512,12 @@ def group_report(report: ValidationReport, lookup: dict | None = None) -> dict:
     ordered = sorted(groups.values(), key=lambda g: (g["severity"] != "error", g["code"]))
     return {
         "totals": report.totals,
+        # Affected-record counts (magnitude), shown per-group in the rows.
         "error_count": len(report.errors),
         "warning_count": len(report.warnings),
+        # Distinct issue *types* — the headline number, matching the rows shown.
+        "error_group_count": sum(1 for g in ordered if g["severity"] == "error"),
+        "warning_group_count": sum(1 for g in ordered if g["severity"] == "warning"),
         "clean": not report.issues,
         "groups": ordered,
     }

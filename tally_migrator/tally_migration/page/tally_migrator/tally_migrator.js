@@ -757,9 +757,13 @@ class TallyMigratorPage {
 				<div style="font-size:20px; font-weight:700; color:${color};">${n}</div>
 				<div class="text-muted small">${label}</div>
 			</div>`;
+		// Headline shows the number of distinct issue *types* (matching the rows
+		// below); the affected-record count is shown inside each group's row.
+		const errGroups = report.error_group_count ?? report.error_count;
+		const warnGroups = report.warning_group_count ?? report.warning_count;
 		$("#dq-cards").html(
-			card(report.error_count, "Errors", report.error_count ? "#e24c4c" : "#8d99a6") +
-			card(report.warning_count, "Warnings", report.warning_count ? "#f0a500" : "#8d99a6")
+			card(errGroups, "Errors", errGroups ? "#e24c4c" : "#8d99a6") +
+			card(warnGroups, "Warnings", warnGroups ? "#f0a500" : "#8d99a6")
 		);
 
 		const rows = report.groups.map((g, idx) => this.dqGroupHtml(g, idx)).join("");

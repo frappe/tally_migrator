@@ -42,7 +42,9 @@ from tally_migrator.tally.mappings import (
 )
 from tally_migrator.naming import safe_item_code, company_scoped
 from tally_migrator.tally.extractors import TallyExtractor
-from tally_migrator.validation.engine import infer_gst_category
+from tally_migrator.validation.engine import (
+    infer_gst_category, validate_gstin, GSTIN_STATE_CODES,
+)
 
 
 # ── Result tracking ───────────────────────────────────────────────────────────
@@ -259,7 +261,7 @@ class PartyImporter(BaseImporter):
             # otherwise a clear placeholder — never the PIN, which only looked like a
             # city and produced visibly wrong addresses.
             addr.city = (data.get("City") or "").strip() or "Not Specified"
-            addr.state = TALLY_STATE_MAP.get(data.get("LedgerState", ""), "")
+            addr.state = self._resolve_state(data)
             addr.country = data.get("CountryName") or "India"
             addr.pincode = data.get("PinCode") or ""
             addr.phone = data.get("LedgerPhone") or data.get("LedgerMobile") or ""
@@ -271,6 +273,20 @@ class PartyImporter(BaseImporter):
         except Exception as exc:
             frappe.log_error(f"Address save failed for {link_name}: {exc}", "Tally Migrator")
             result.add_warning(link_name, f"address not created: {exc}")
+
+    @staticmethod
+    def _resolve_state(data: dict) -> str:
+        """The party's ERPNext state. Prefer Tally's ledger state; when it's blank
+        but the party has a structurally valid GSTIN, derive the state from the
+        GSTIN's state code — the same fallback the pre-flight check assumes, so a
+        registered party never lands with an empty (and GST-breaking) state."""
+        state = TALLY_STATE_MAP.get((data.get("LedgerState") or "").strip(), "")
+        if state:
+            return state
+        gstin = (data.get("GSTRegistrationNumber") or "").strip().upper()
+        if gstin and validate_gstin(gstin)[0]:
+            return GSTIN_STATE_CODES.get(gstin[:2], "")
+        return ""
 
     def _save_contact(self, link_name: str, link_type: str, data: dict,
                       result: "ImportResult") -> None:

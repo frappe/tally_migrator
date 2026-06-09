@@ -147,9 +147,20 @@ class TestValidateMasters(unittest.TestCase):
         self.assertIn("GSTIN_INVALID", self._codes(report))
         self.assertTrue(report.has_errors)
 
-    def test_missing_state_is_error(self):
+    def test_missing_state_is_warning(self):
+        # A missing GST state never fails the import (state lives on the address,
+        # used only at invoicing), so it's a warning, not an error.
         m = _masters(customers=[_party("X", LedgerState="")])
-        self.assertIn("GST_STATE_MISSING", self._codes(validate_masters(m)))
+        report = validate_masters(m)
+        self.assertIn("GST_STATE_MISSING", self._codes(report))
+        self.assertFalse(report.has_errors)
+
+    def test_missing_state_derived_from_valid_gstin_is_silent(self):
+        # When the party carries a valid GSTIN, the state is derivable from its
+        # state code, so there is nothing to flag at all.
+        m = _masters(customers=[
+            _party("X", LedgerState="", GSTRegistrationNumber=_valid_gstin())])
+        self.assertNotIn("GST_STATE_MISSING", self._codes(validate_masters(m)))
 
     def test_missing_hsn_is_warning(self):
         m = _masters(items=[_item("Widget", hsn="")])
@@ -206,14 +217,19 @@ class TestReport(unittest.TestCase):
 
 class TestGroupReport(unittest.TestCase):
     def test_collapses_same_code_and_orders_errors_first(self):
-        # 3 customers all missing GST state (error) + 1 item missing HSN (warning).
+        # 1 customer with an invalid GSTIN (error) + 3 missing GST state + 1 item
+        # missing HSN (all warnings).
         m = _masters(
-            customers=[_party(n, LedgerState="") for n in ("A", "B", "C")],
+            customers=[_party("Z", GSTRegistrationNumber="27BADGSTIN0000")]
+            + [_party(n, LedgerState="") for n in ("A", "B", "C")],
             items=[_item("W", hsn="")],
         )
         out = group_report(validate_masters(m))
-        self.assertEqual(out["error_count"], 3)
-        self.assertEqual(out["warning_count"], 1)
+        self.assertEqual(out["error_count"], 1)          # 1 affected record
+        self.assertEqual(out["warning_count"], 4)        # 3 state + 1 hsn
+        # Headline = number of distinct issue *types*.
+        self.assertEqual(out["error_group_count"], 1)    # GSTIN_INVALID
+        self.assertEqual(out["warning_group_count"], 2)  # GST_STATE_MISSING + HSN_MISSING
         self.assertFalse(out["clean"])
         # GST_STATE_MISSING collapses 3 issues into one group of 3 items.
         state_group = next(g for g in out["groups"] if g["code"] == "GST_STATE_MISSING")
