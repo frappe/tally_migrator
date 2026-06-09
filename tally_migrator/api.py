@@ -125,6 +125,78 @@ def create_uoms(uom_names):
     return {"created": created, "existing": existing, "failed": failed}
 
 
+# ── Wizard draft (resume an in-progress migration after reload/logout) ──────────
+
+_DRAFT_DOCTYPE = "Tally Migration Draft"
+
+
+@frappe.whitelist()
+def save_draft(payload):
+    """Upsert the current user's in-progress wizard state (one draft per user).
+
+    The wizard autosaves here after every inline fix / step change so an accidental
+    reload or logout doesn't lose the user's work. Stores only references + the
+    user's own edits (file URL, company, options, UOM + record overrides, step).
+    """
+    frappe.only_for(ALLOWED_ROLES)
+    data = json.loads(payload) if isinstance(payload, str) else (payload or {})
+    if not data.get("file_url"):
+        return {"saved": False}        # nothing meaningful to persist yet
+
+    user = frappe.session.user
+    name = frappe.db.exists(_DRAFT_DOCTYPE, user)
+    doc = (frappe.get_doc(_DRAFT_DOCTYPE, name) if name
+           else frappe.new_doc(_DRAFT_DOCTYPE))
+    doc.user = user
+    doc.file_url = data.get("file_url") or ""
+    doc.file_name = data.get("file_name") or ""
+    doc.erpnext_company = data.get("erpnext_company") or ""
+    doc.coa_mode = data.get("coa_mode") or ""
+    doc.posting_date = data.get("posting_date") or ""
+    doc.step = data.get("step") or ""
+    doc.uom_overrides = frappe.as_json(data.get("uom_overrides") or {})
+    doc.record_overrides = frappe.as_json(data.get("record_overrides") or {})
+    doc.save(ignore_permissions=True)
+    frappe.db.commit()
+    return {"saved": True}
+
+
+@frappe.whitelist()
+def get_draft():
+    """Return the current user's saved wizard draft, or ``None`` if there is none."""
+    frappe.only_for(ALLOWED_ROLES)
+    name = frappe.db.exists(_DRAFT_DOCTYPE, frappe.session.user)
+    if not name:
+        return None
+    d = frappe.get_doc(_DRAFT_DOCTYPE, name)
+    # Only offer a resume if the uploaded file still exists — a draft pointing at a
+    # deleted File is stale and would just fail on resume.
+    if not d.file_url or not frappe.db.exists("File", {"file_url": d.file_url}):
+        return None
+    return {
+        "file_url": d.file_url,
+        "file_name": d.file_name,
+        "erpnext_company": d.erpnext_company,
+        "coa_mode": d.coa_mode,
+        "posting_date": d.posting_date,
+        "step": d.step,
+        "uom_overrides": json.loads(d.uom_overrides or "{}"),
+        "record_overrides": json.loads(d.record_overrides or "{}"),
+        "modified": str(d.modified),
+    }
+
+
+@frappe.whitelist()
+def clear_draft():
+    """Delete the current user's wizard draft (on 'start over' or after a run)."""
+    frappe.only_for(ALLOWED_ROLES)
+    name = frappe.db.exists(_DRAFT_DOCTYPE, frappe.session.user)
+    if name:
+        frappe.delete_doc(_DRAFT_DOCTYPE, name, ignore_permissions=True)
+        frappe.db.commit()
+    return {"cleared": True}
+
+
 @frappe.whitelist()
 def run_masters_migration_from_file(file_url, erpnext_company="", uom_overrides="",
                                     validation_report="", record_overrides="", coa_mode="reuse",

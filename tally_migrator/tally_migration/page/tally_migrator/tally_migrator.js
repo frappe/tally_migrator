@@ -28,7 +28,9 @@ class TallyMigratorPage {
 		this.qualityReport = null; // grouped data-quality report from the pre-flight scan
 		this.recordOverrides = {}; // {entityType: {name: {field: value}}} inline fixes
 		this.states = [];          // ERPNext state names for the inline state dropdown
+		this._currentStep = "section-upload";
 		this.render();
+		this.loadDraft();          // offer to resume an in-progress migration, if any
 	}
 
 	render() {
@@ -40,6 +42,7 @@ class TallyMigratorPage {
 
 				<!-- STEP 1: Upload -->
 				<div id="section-upload">
+					<div id="resume-banner" style="display:none;"></div>
 					<h4>Bring your Tally data into ERPNext</h4>
 					<p class="text-muted" style="margin-bottom:18px;">
 						This tool copies your master records — Customers, Suppliers, Items and Warehouses —
@@ -177,6 +180,8 @@ class TallyMigratorPage {
 						<button id="btn-back-check" class="btn btn-default btn-sm">← Back</button>
 						&nbsp;
 						<button id="btn-next-check" class="btn btn-primary btn-sm">Continue →</button>
+						<button id="btn-startover-check" class="btn btn-default btn-sm pull-right"
+							style="color:#c0392b;">Start over</button>
 					</div>
 				</div>
 
@@ -274,6 +279,7 @@ class TallyMigratorPage {
 
 		// Step 3 — pre-flight check
 		$("#btn-back-check").on("click", () => this.show("section-configure"));
+		$("#btn-startover-check").on("click", () => this.confirmStartOver());
 		$("#btn-next-check").on("click", () => {
 			if (this.readiness && this.readiness.ready === false) {
 				frappe.msgprint(
@@ -287,6 +293,9 @@ class TallyMigratorPage {
 		// Step 4
 		$("#btn-back-3").on("click", () => this.show("section-check"));
 		$("#btn-run").on("click", () => this.runMigration());
+
+		// Persist option changes to the draft as the user makes them.
+		$("#erpnext-company, #coa-mode, #opening-date").on("change", () => this.saveDraft());
 	}
 
 	// ── Step 1: upload + preview ────────────────────────────────────────────────
@@ -385,6 +394,105 @@ class TallyMigratorPage {
 		STEPS.forEach((s) => $("#" + s.id).hide());
 		$("#" + sectionId).show();
 		this.renderStepper(sectionId);
+		this._currentStep = sectionId;
+		this.saveDraft();          // persist progress on every step transition
+	}
+
+	// ── Draft persistence (server-side, one per user) ───────────────────────────
+	// Survives reload and logout so a half-finished migration — and every inline
+	// fix the user made — isn't lost. Debounced; only saves once a file is chosen.
+
+	saveDraft() {
+		if (!this.fileUrl) return;
+		const payload = {
+			file_url: this.fileUrl,
+			file_name: this.fileName,
+			erpnext_company: $("#erpnext-company").val() || "",
+			coa_mode: $("#coa-mode").val() || "",
+			posting_date: $("#opening-date").val() || "",
+			step: this._currentStep || "section-upload",
+			uom_overrides: this.uomOverrides || {},
+			record_overrides: this.recordOverrides || {},
+		};
+		clearTimeout(this._draftTimer);
+		this._draftTimer = setTimeout(() => {
+			frappe.call({
+				method: "tally_migrator.api.save_draft",
+				args: { payload: JSON.stringify(payload) },
+				callback: () => {},
+			});
+		}, 600);
+	}
+
+	loadDraft() {
+		frappe.call({
+			method: "tally_migrator.api.get_draft",
+			callback: (r) => {
+				const d = r.message;
+				if (!d || !d.file_url) return;
+				const when = d.modified ? frappe.datetime.comment_when(d.modified) : "";
+				$("#resume-banner")
+					.html(`
+						<div class="alert alert-warning" style="display:flex; gap:10px; align-items:center; justify-content:space-between;">
+							<div style="font-size:13px;">
+								<strong>You have an unfinished migration.</strong>
+								File <strong>${frappe.utils.escape_html(d.file_name || d.file_url)}</strong>${when ? ` — last saved ${when}` : ""}.
+								Your fixes are saved.
+							</div>
+							<div style="white-space:nowrap;">
+								<button class="btn btn-primary btn-xs" id="btn-resume">Resume</button>
+								<button class="btn btn-default btn-xs" id="btn-discard">Start over</button>
+							</div>
+						</div>`)
+					.show();
+				$("#btn-resume").on("click", () => this.resumeDraft(d));
+				$("#btn-discard").on("click", () => this.confirmStartOver());
+			},
+		});
+	}
+
+	resumeDraft(d) {
+		this.fileUrl = d.file_url;
+		this.fileName = d.file_name;
+		this.uomOverrides = d.uom_overrides || {};
+		this.recordOverrides = d.record_overrides || {};
+		// Applied when the Configure step's company list finishes loading.
+		this._restore = {
+			company: d.erpnext_company,
+			coa: d.coa_mode,
+			posting: d.posting_date,
+		};
+		$("#resume-banner").hide().empty();
+		$("#file-status").html(
+			`<span class="indicator green">${frappe.utils.escape_html(this.fileName || this.fileUrl)}</span>`
+		);
+		this.loadPreview();        // refresh the counts for the file
+		this.proceedToConfigure(); // land on Configure, one click from where they were
+		if (this._restore.coa) $("#coa-mode").val(this._restore.coa).trigger("change");
+		if (this._restore.posting) $("#opening-date").val(this._restore.posting);
+		frappe.show_alert({
+			message: __("Resumed your in-progress migration — your fixes are saved."),
+			indicator: "green",
+		});
+	}
+
+	confirmStartOver() {
+		// frappe.warn is Frappe's native destructive-confirmation dialog.
+		frappe.warn(
+			__("Start over?"),
+			__("This discards the uploaded file and every fix you've made. This cannot be undone."),
+			() => {
+				this.clearDraft();
+				this.restart();
+			},
+			__("Discard & start over")
+		);
+	}
+
+	clearDraft() {
+		clearTimeout(this._draftTimer);
+		$("#resume-banner").hide().empty();
+		frappe.call({ method: "tally_migrator.api.clear_draft", callback: () => {} });
 	}
 
 	loadERPNextCompanies() {
@@ -406,8 +514,13 @@ class TallyMigratorPage {
 					const name = frappe.utils.escape_html(c.name);
 					$select.append(`<option value="${name}">${name}</option>`);
 				});
-				// Auto-select when there is exactly one.
-				if (companies.length === 1) $select.val(companies[0].name);
+				// Restore a resumed company, else auto-select when there is exactly one.
+				if (this._restore && this._restore.company) {
+					$select.val(this._restore.company);
+					this.saveDraft();   // persist the restored selection
+				} else if (companies.length === 1) {
+					$select.val(companies[0].name);
+				}
 			},
 		});
 	}
@@ -752,6 +865,7 @@ class TallyMigratorPage {
 		this.recordOverrides[etype] = this.recordOverrides[etype] || {};
 		this.recordOverrides[etype][name] = this.recordOverrides[etype][name] || {};
 		this.recordOverrides[etype][name][field] = $el.val();
+		this.saveDraft();          // persist each inline fix as it's made
 	}
 
 	// Re-validate with the in-memory edits applied — fixes are confirmed by the same
@@ -943,6 +1057,7 @@ class TallyMigratorPage {
 					.text("100%");
 				const summary = r.message;
 				if (summary) {
+					this.clearDraft();   // migration ran — the draft is now obsolete
 					this.renderResults(summary);
 					$("#run-actions").hide();
 				} else {
@@ -1071,6 +1186,8 @@ class TallyMigratorPage {
 	restart() {
 		this.fileUrl = null;
 		this.fileName = null;
+		this._restore = null;
+		$("#resume-banner").hide().empty();
 		this.preview = null;
 		this.uomIssues = [];
 		this.allUoms = [];

@@ -1,0 +1,97 @@
+{
+  "name": "Tally Migration Draft",
+  "doctype": "DocType",
+  "module": "Tally Migration",
+  "custom": 0,
+  "autoname": "field:user",
+  "track_changes": 0,
+  "description": "Per-user, in-progress state of the Tally Migrator wizard (file + inline fixes + step), so an accidental reload or logout doesn't lose the user's work. Cleared once a migration runs or the user starts over.",
+  "fields": [
+    {
+      "fieldname": "user",
+      "fieldtype": "Link",
+      "label": "User",
+      "options": "User",
+      "reqd": 1,
+      "unique": 1,
+      "in_list_view": 1
+    },
+    {
+      "fieldname": "file_name",
+      "fieldtype": "Data",
+      "label": "File Name",
+      "read_only": 1,
+      "in_list_view": 1
+    },
+    {
+      "fieldname": "file_url",
+      "fieldtype": "Data",
+      "label": "File URL",
+      "read_only": 1
+    },
+    {
+      "fieldname": "step",
+      "fieldtype": "Data",
+      "label": "Wizard Step",
+      "read_only": 1,
+      "in_list_view": 1
+    },
+    {
+      "fieldname": "col_break_1",
+      "fieldtype": "Column Break"
+    },
+    {
+      "fieldname": "erpnext_company",
+      "fieldtype": "Data",
+      "label": "ERPNext Company",
+      "read_only": 1
+    },
+    {
+      "fieldname": "coa_mode",
+      "fieldtype": "Data",
+      "label": "COA Mode",
+      "read_only": 1
+    },
+    {
+      "fieldname": "posting_date",
+      "fieldtype": "Data",
+      "label": "Opening Posting Date",
+      "read_only": 1
+    },
+    {
+      "fieldname": "section_state",
+      "fieldtype": "Section Break",
+      "label": "Saved State"
+    },
+    {
+      "fieldname": "uom_overrides",
+      "fieldtype": "Code",
+      "label": "UOM Overrides (JSON)",
+      "options": "JSON",
+      "read_only": 1
+    },
+    {
+      "fieldname": "record_overrides",
+      "fieldtype": "Code",
+      "label": "Record Overrides (JSON)",
+      "options": "JSON",
+      "read_only": 1
+    }
+  ],
+  "permissions": [
+    {
+      "role": "System Manager",
+      "read": 1,
+      "write": 1,
+      "create": 1,
+      "delete": 1
+    },
+    {
+      "role": "Tally Migration Manager",
+      "read": 1,
+      "write": 1,
+      "create": 1,
+      "delete": 1
+    }
+  ]
+}
