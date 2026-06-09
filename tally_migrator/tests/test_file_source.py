@@ -267,5 +267,30 @@ class TestRealItemSchema(unittest.TestCase):
         self.assertEqual(self._item()["BaseUnits"], "Nos")
 
 
+class TestUtf16Decoding(unittest.TestCase):
+    """Real TallyPrime exports are UTF-16-with-BOM. Regression guard for the upload
+    failure where the BOM reached the XML parser and it died at line 1, column 0."""
+
+    def test_utf16_le_bom_decodes_and_parses(self):
+        raw = SAMPLE_XML.encode("utf-16")  # adds the LE BOM
+        self.assertEqual(raw[:2], b"\xff\xfe")
+        src = FileTallySource(decode_tally_bytes(raw))
+        self.assertEqual(src.get_collection("Godown", ["Name"])[0]["_name"], "Main Store")
+
+    def test_utf16_be_bom_decodes(self):
+        raw = b"\xfe\xff" + SAMPLE_XML.encode("utf-16-be")  # prepend BE BOM
+        self.assertIn("<ENVELOPE>", sanitize_tally_xml(decode_tally_bytes(raw)))
+
+    def test_bom_stripped_so_parser_sees_clean_root(self):
+        # A leading BOM character must not survive into the text handed to ElementTree.
+        text = "﻿" + SAMPLE_XML
+        self.assertTrue(sanitize_tally_xml(text).startswith("<ENVELOPE>"))
+
+    def test_str_passthrough_is_unchanged(self):
+        # decode_tally_bytes must not mangle an already-decoded str; the byte-level
+        # recovery now happens in api._raw_file_bytes (reads binary before decoding).
+        self.assertEqual(decode_tally_bytes(SAMPLE_XML), SAMPLE_XML)
+
+
 if __name__ == "__main__":
     unittest.main()

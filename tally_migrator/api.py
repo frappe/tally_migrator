@@ -207,7 +207,30 @@ def _source_from_file(file_url):
     migration run also reads ``file_doc.file_name`` for the log label.
     """
     file_doc = frappe.get_doc("File", {"file_url": file_url})
-    return file_doc, FileTallySource(_decode(file_doc.get_content()))
+    return file_doc, FileTallySource(_decode(_raw_file_bytes(file_doc)))
+
+
+def _raw_file_bytes(file_doc) -> bytes:
+    """Return the uploaded file's raw bytes.
+
+    ``File.get_content()`` can hand back an already-decoded ``str`` (recent Frappe
+    decodes text uploads as UTF-8 with replacement). That destroys the byte-order
+    mark on a genuine UTF-16 Tally export, so our own encoding detection in
+    ``decode_tally_bytes`` never runs and the parser dies at byte 0. Reading binary
+    keeps the real bytes — and the BOM — intact.
+    """
+    content = file_doc.get_content()
+    if isinstance(content, (bytes, bytearray)):
+        return bytes(content)
+    # A str means get_content() already decoded (and likely corrupted) the bytes;
+    # re-read the original from disk so UTF-16 survives.
+    try:
+        with open(file_doc.get_full_path(), "rb") as fh:
+            return fh.read()
+    except Exception:
+        # Last resort: re-encode the str we were given. Lossless only if it was a
+        # latin-1 round-trip, but better than failing outright.
+        return content.encode("latin-1", errors="ignore")
 
 
 def _run_and_summarize(config: TallyConfig, source, uom_overrides: dict | None = None,
