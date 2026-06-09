@@ -217,6 +217,45 @@ def _ensure_bank(bank_name: str) -> str:
         return ""
 
 
+def _insert_bank_account(*, account_name: str, bank: str, account_no: str,
+                         ifsc: str, result: "ImportResult", warn_name: str,
+                         party_type: str = "", party: str = "",
+                         gl_account: str = "", is_company: bool = False,
+                         count_created: bool = False) -> str:
+    """Insert one Bank Account doc, shared by the party and company bank paths.
+
+    Both paths build the same doc (account name + bank + account no + IFSC) and
+    differ only in how it's linked: a party account points at a Customer/Supplier
+    (``party_type``/``party``), a company account at the GL account and sets
+    ``is_company_account`` (``gl_account``/``is_company``). Non-fatal — a failure
+    is logged, recorded as a warning, rolled back, and "" returned so a Bank
+    Account quirk never aborts the party/account that was just created.
+    """
+    try:
+        ba = frappe.new_doc("Bank Account")
+        ba.account_name = account_name
+        ba.bank = bank
+        ba.bank_account_no = account_no
+        if ifsc:
+            ba.branch_code = ifsc
+        if is_company:
+            ba.account = gl_account
+            ba.is_company_account = 1
+        else:
+            ba.party_type = party_type
+            ba.party = party
+        ba.insert(ignore_permissions=True)
+        frappe.db.commit()
+        if count_created:
+            result.add_created(ba.name)
+        return ba.name
+    except Exception as exc:
+        frappe.log_error(f"Bank account save failed for {warn_name}: {exc}", "Tally Migrator")
+        result.add_warning(warn_name, f"bank account not created: {exc}")
+        frappe.db.rollback()
+        return ""
+
+
 # ── Party importers (Customer / Supplier) ──────────────────────────────────────
 
 class PartyImporter(BaseImporter):
@@ -351,22 +390,16 @@ class PartyImporter(BaseImporter):
             result.add_warning(
                 link_name, "bank account not created: no bank name on the ledger")
             return
-        try:
-            ba = frappe.new_doc("Bank Account")
-            ba.account_name = (data.get("BankAccountHolder") or "").strip() or link_name
-            ba.bank = bank
-            ba.party_type = link_type
-            ba.party = link_name
-            ba.bank_account_no = acc_no
-            ifsc = (data.get("BankIFSC") or "").strip()
-            if ifsc:
-                ba.branch_code = ifsc
-            ba.insert(ignore_permissions=True)
-            frappe.db.commit()
-        except Exception as exc:
-            frappe.log_error(f"Bank account save failed for {link_name}: {exc}", "Tally Migrator")
-            result.add_warning(link_name, f"bank account not created: {exc}")
-            frappe.db.rollback()
+        _insert_bank_account(
+            account_name=(data.get("BankAccountHolder") or "").strip() or link_name,
+            bank=bank,
+            account_no=acc_no,
+            ifsc=(data.get("BankIFSC") or "").strip(),
+            party_type=link_type,
+            party=link_name,
+            result=result,
+            warn_name=link_name,
+        )
 
 
 class CustomerImporter(PartyImporter):
@@ -753,7 +786,7 @@ class UnitImporter:
                 "to_uom": additional,
                 "value": factor,
             }
-            category = self._uom_category()
+            category = self._uom_category(result)
             if category:
                 doc["category"] = category
             frappe.get_doc(doc).insert(ignore_permissions=True)
@@ -767,9 +800,14 @@ class UnitImporter:
             frappe.db.rollback()
 
     @staticmethod
-    def _uom_category() -> str:
+    def _uom_category(result: "ImportResult | None" = None) -> str:
         """A UOM Category to attach conversions to (required in recent ERPNext).
-        Reuse one if present, else create a 'Tally Imported' category."""
+        Reuse one if present, else create a 'Tally Imported' category.
+
+        Creating the category is a side effect the user didn't explicitly ask for,
+        so when we do create one we record a one-off warning (the category is reused
+        thereafter, so this fires at most once per run) — the auto-created master is
+        then visible/auditable in the log rather than appearing silently."""
         if not frappe.db.has_column("UOM Conversion Factor", "category"):
             return ""
         existing = frappe.get_all("UOM Category", pluck="name", limit=1)
@@ -779,6 +817,12 @@ class UnitImporter:
             cat = frappe.get_doc({"doctype": "UOM Category", "category_name": "Tally Imported"})
             cat.insert(ignore_permissions=True)
             frappe.db.commit()
+            if result is not None:
+                result.add_warning(
+                    "UOM Category",
+                    "auto-created a 'Tally Imported' UOM Category to hold compound-unit "
+                    "conversions — ERPNext requires every conversion to belong to a "
+                    "category and none existed.")
             return cat.name
         except Exception:
             frappe.db.rollback()
@@ -928,23 +972,17 @@ class AccountImporter:
             result.add_warning(
                 node.name, "bank account not created: no bank name on the ledger")
             return
-        try:
-            ba = frappe.new_doc("Bank Account")
-            ba.account_name = node.bank_holder or node.name
-            ba.bank = bank
-            ba.account = account_name        # link to the GL account just created
-            ba.is_company_account = 1
-            ba.bank_account_no = node.bank_account_no
-            if node.bank_ifsc:
-                ba.branch_code = node.bank_ifsc
-            ba.insert(ignore_permissions=True)
-            frappe.db.commit()
-            result.add_created(ba.name)
-        except Exception as exc:
-            frappe.log_error(
-                f"Company bank account failed for {node.name}: {exc}", "Tally Migrator")
-            result.add_warning(node.name, f"bank account not created: {exc}")
-            frappe.db.rollback()
+        _insert_bank_account(
+            account_name=node.bank_holder or node.name,
+            bank=bank,
+            account_no=node.bank_account_no,
+            ifsc=node.bank_ifsc,
+            gl_account=account_name,        # link to the GL account just created
+            is_company=True,
+            result=result,
+            warn_name=node.name,
+            count_created=True,
+        )
 
 
 # ── Cost Centre importer ─────────────────────────────────────────────────────
