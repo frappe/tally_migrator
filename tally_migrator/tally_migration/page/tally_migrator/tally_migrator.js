@@ -403,7 +403,8 @@ class TallyMigratorPage {
 				$("#btn-next-2").prop("disabled", false);
 				$select.append('<option value="">Select company…</option>');
 				companies.forEach((c) => {
-					$select.append(`<option value="${c.name}">${c.name}</option>`);
+					const name = frappe.utils.escape_html(c.name);
+					$select.append(`<option value="${name}">${name}</option>`);
 				});
 				// Auto-select when there is exactly one.
 				if (companies.length === 1) $select.val(companies[0].name);
