@@ -52,6 +52,24 @@
       "description": "Opening-balance posting date used. Kept so a re-run repeats it faithfully."
     },
     {
+      "fieldname": "uom_overrides",
+      "fieldtype": "Code",
+      "label": "UOM Overrides (JSON)",
+      "options": "JSON",
+      "read_only": 1,
+      "hidden": 1,
+      "description": "Tally→ERPNext unit mappings chosen on the pre-flight screen. Kept so a re-run reproduces the same UOM resolution instead of reverting to defaults."
+    },
+    {
+      "fieldname": "record_overrides",
+      "fieldtype": "Code",
+      "label": "Record Overrides (JSON)",
+      "options": "JSON",
+      "read_only": 1,
+      "hidden": 1,
+      "description": "Per-record field fixes (GSTIN/state/HSN/…) made on the pre-flight screen. Kept so a re-run re-applies the same fixes instead of importing the unfixed data."
+    },
+    {
       "fieldname": "col_break_1",
       "fieldtype": "Column Break"
     },

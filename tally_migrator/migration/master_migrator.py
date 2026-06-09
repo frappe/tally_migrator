@@ -143,9 +143,10 @@ class MasterMigrator:
         self.config = config
         self.client = source
         self.extractor = TallyExtractor(self.client)
+        self.uom_overrides = uom_overrides or {}
         self.importer = ERPNextImporter(
             config.erpnext_company,
-            uom_overrides=uom_overrides or {},
+            uom_overrides=self.uom_overrides,
             coa_mode=getattr(config, "coa_mode", "reuse"),
         )
         self.record_overrides = record_overrides or {}
@@ -273,6 +274,12 @@ class MasterMigrator:
         log.coa_mode = getattr(self.config, "coa_mode", "reuse") or "reuse"
         if self.posting_date:
             log.posting_date = self.posting_date
+        # The user's pre-flight UOM mappings and per-record fixes — kept so a re-run
+        # reproduces the migration that was validated, not the raw/default data.
+        if self.uom_overrides:
+            log.uom_overrides = frappe.as_json(self.uom_overrides)
+        if self.record_overrides:
+            log.record_overrides = frappe.as_json(self.record_overrides)
         log.insert(ignore_permissions=True)
         frappe.db.commit()
         return log

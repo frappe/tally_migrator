@@ -105,6 +105,11 @@ class BaseImporter:
 
     doctype: str = ""
     key_field: str = ""
+    # When set, the duplicate-detection lookup is also filtered by this field =
+    # ``self.company``. Required for company-scoped doctypes (e.g. Warehouse), where
+    # the same ``key_field`` value can legitimately exist in another company —
+    # without it, a same-named record in Company A makes Company B's get skipped.
+    scope_field: str = ""
 
     def __init__(self, company: str, abbr: str):
         self.company = company
@@ -150,8 +155,11 @@ class BaseImporter:
         only for genuinely new records (idempotent re-runs).
         """
         key_value = data.get(self.key_field, "")
+        filters = {self.key_field: key_value}
+        if self.scope_field:
+            filters[self.scope_field] = self.company
         try:
-            existing = frappe.db.get_value(self.doctype, {self.key_field: key_value}, "name")
+            existing = frappe.db.get_value(self.doctype, filters, "name")
             if existing:
                 result.skipped += 1
                 return existing, False
@@ -419,6 +427,7 @@ class ItemImporter(BaseImporter):
 class WarehouseImporter(BaseImporter):
     doctype = "Warehouse"
     key_field = "warehouse_name"
+    scope_field = "company"   # warehouse_name is unique per company, not globally
 
     def iter_records(self, records: list[dict]) -> list[dict]:
         return self._topo_sort(records)
@@ -455,13 +464,16 @@ class WarehouseImporter(BaseImporter):
         index = {w["_name"]: w for w in warehouses}
         ordered: list[dict] = []
         visited: set[str] = set()
+        visiting: set[str] = set()   # nodes on the current DFS path → cycle guard
 
         def visit(name: str) -> None:
             if name in visited or name not in index:
                 return
+            visiting.add(name)
             parent = index[name].get("Parent", "").strip()
-            if parent and parent in name_set:
+            if parent and parent in name_set and parent not in visiting:
                 visit(parent)
+            visiting.discard(name)
             visited.add(name)
             ordered.append(index[name])
 
@@ -503,14 +515,16 @@ class StockGroupImporter:
     def _ordered(groups: list[dict]) -> list[dict]:
         """Parent-before-child (arbitrary depth)."""
         index = {g["_name"]: g for g in groups}
-        ordered, visited = [], set()
+        ordered, visited, visiting = [], set(), set()   # visiting = cycle guard
 
         def visit(name: str) -> None:
             if name in visited or name not in index:
                 return
+            visiting.add(name)
             parent = index[name].get("Parent", "").strip()
-            if parent in index:
+            if parent in index and parent not in visiting:
                 visit(parent)
+            visiting.discard(name)
             visited.add(name)
             ordered.append(index[name])
 
@@ -694,14 +708,16 @@ class AccountImporter:
     @staticmethod
     def _topo_groups(groups: list) -> list:
         index = {g.name: g for g in groups}
-        ordered, visited = [], set()
+        ordered, visited, visiting = [], set(), set()   # visiting = cycle guard
 
         def visit(name: str) -> None:
             if name in visited or name not in index:
                 return
+            visiting.add(name)
             parent = index[name].parent
-            if parent in index:
+            if parent in index and parent not in visiting:
                 visit(parent)
+            visiting.discard(name)
             visited.add(name)
             ordered.append(index[name])
 
@@ -803,14 +819,16 @@ class CostCentreImporter:
     @staticmethod
     def _ordered(centres: list) -> list:
         index = {c.name: c for c in centres}
-        ordered, visited = [], set()
+        ordered, visited, visiting = [], set(), set()   # visiting = cycle guard
 
         def visit(name: str) -> None:
             if name in visited or name not in index:
                 return
+            visiting.add(name)
             parent = index[name].parent
-            if parent in index:
+            if parent in index and parent not in visiting:
                 visit(parent)
+            visiting.discard(name)
             visited.add(name)
             ordered.append(index[name])
 
@@ -859,8 +877,12 @@ class OpeningBalanceImporter:
                            ``party_type='Customer'`` / ``party=<name>``,
       • suppliers        — against the default Payable account, ``party=<name>``.
 
-    All referenced accounts/parties must already exist (COA + Customers + Suppliers
-    imported first). ERPNext requires the JE to balance; any residual difference
+    Referenced accounts/parties are normally created first (COA + Customers +
+    Suppliers). A line whose account/party did *not* get created (its earlier import
+    failed) is skipped with a warning rather than included — otherwise a single
+    missing reference would make the whole submitted entry throw and roll back,
+    silently dropping *every* opening balance. ERPNext requires the JE to balance;
+    any residual difference
     (e.g. only part of the trial balance was migrated) is absorbed by a balancing
     line against 'Temporary Opening - <ABBR>'. The entry is **submitted** so the
     balances actually post to the General Ledger.
@@ -874,7 +896,7 @@ class OpeningBalanceImporter:
             posting_date: str) -> ImportResult:
         result = ImportResult("Journal Entry")
         lines: list[dict] = []
-        lines += self._account_lines(accounts)
+        lines += self._account_lines(accounts, result)
         lines += self._party_lines(customers, "Customer", "default_receivable_account", result)
         lines += self._party_lines(suppliers, "Supplier", "default_payable_account", result)
         if not lines:
@@ -900,15 +922,19 @@ class OpeningBalanceImporter:
         return result
 
     # ── Line builders ────────────────────────────────────────────────────────
-    def _account_lines(self, accounts: list) -> list[dict]:
+    def _account_lines(self, accounts: list, result: ImportResult) -> list[dict]:
         lines = []
         for node in accounts:
             if not node.opening_balance or node.is_group:
                 continue
-            lines.append(self._line(
-                company_scoped(node.name, self.abbr),
-                node.opening_balance, node.opening_dr_cr,
-            ))
+            account = company_scoped(node.name, self.abbr)
+            if not frappe.db.exists("Account", account):
+                result.add_warning(
+                    node.name,
+                    f"opening balance skipped — account '{account}' was not created "
+                    "(its import failed earlier). Fix the account and re-run.")
+                continue
+            lines.append(self._line(account, node.opening_balance, node.opening_dr_cr))
         return lines
 
     def _party_lines(self, parties: list, party_type: str, company_field: str,
@@ -923,6 +949,12 @@ class OpeningBalanceImporter:
                 continue
             if not control:
                 missing_control = True
+                continue
+            if not frappe.db.exists(party_type, record["_name"]):
+                result.add_warning(
+                    record["_name"],
+                    f"opening balance skipped — {party_type} '{record['_name']}' was "
+                    "not created (its import failed earlier). Fix it and re-run.")
                 continue
             line = self._line(control, amount, drcr)
             line.update({"party_type": party_type, "party": record["_name"]})

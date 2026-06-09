@@ -185,7 +185,12 @@ def rerun_from_log(log_name):
         coa_mode=log.coa_mode or "reuse",
         posting_date=str(log.posting_date or ""),
     )
-    return _run_and_summarize(config, source)
+    # Replay the user's original pre-flight choices, or the re-run silently reverts
+    # custom UOMs to defaults and drops every inline GST/state/HSN fix that made the
+    # first run viable.
+    uom = json.loads(log.uom_overrides) if log.get("uom_overrides") else {}
+    records = json.loads(log.record_overrides) if log.get("record_overrides") else {}
+    return _run_and_summarize(config, source, uom, records)
 
 
 # ── Internal helpers ──────────────────────────────────────────────────────────
