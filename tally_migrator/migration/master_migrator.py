@@ -131,7 +131,7 @@ class MasterMigrator:
     }
 
     def __init__(self, config: TallyConfig, source, uom_overrides: dict | None = None,
-                 record_overrides: dict | None = None):
+                 record_overrides: dict | None = None, log=None):
         """``source`` is any object exposing ``ping()`` + ``get_collection``.
 
         In practice this is a :class:`FileTallySource` wrapping an uploaded
@@ -139,6 +139,11 @@ class MasterMigrator:
 
         ``record_overrides`` are per-record field fixes from the pre-flight screen,
         applied to the extracted records in memory before import.
+
+        ``log`` lets a caller create the ``Tally Migration Log`` up front (e.g. so a
+        background-job dispatcher can return its name immediately) and have this run
+        reuse it instead of creating a new one. ``source`` may be ``None`` when the
+        instance is built only to create the log.
         """
         self.config = config
         self.client = source
@@ -152,12 +157,14 @@ class MasterMigrator:
         self.record_overrides = record_overrides or {}
         self.applied_edits: list[dict] = []   # audit trail of effective pre-flight edits
         self.posting_date = getattr(config, "posting_date", "") or ""
-        self.log = None
+        self.log = log
 
     # ── Public ────────────────────────────────────────────────────────────────
 
     def run(self) -> MigrationSummary:
-        self.log = self._create_log()
+        # Reuse a log handed in by the dispatcher (background runs); otherwise
+        # create one now so an interrupted run is still recorded.
+        self.log = self.log or self._create_log()
         try:
             self._progress(0)
             if not self.client.ping():

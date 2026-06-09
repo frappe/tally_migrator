@@ -1056,12 +1056,23 @@ class TallyMigratorPage {
 				posting_date: $("#opening-date").val() || "",
 			},
 			callback: (r) => {
+				const summary = r.message;
+				// Large imports run in the background: the server returns {enqueued,
+				// log_name} immediately and we track the log to completion (progress
+				// keeps streaming over the realtime bus).
+				if (summary && summary.enqueued) {
+					$("#progress-desc").text(
+						"Large import is running in the background. You can leave this " +
+						"page; the result will appear here and in the migration log."
+					);
+					this.pollLog(summary.log_name);
+					return;
+				}
 				frappe.realtime.off("progress", this._onProgress);
 				$("#progress-bar")
 					.removeClass("active progress-bar-striped")
 					.css("width", "100%")
 					.text("100%");
-				const summary = r.message;
 				if (summary) {
 					this.clearDraft();   // migration ran — the draft is now obsolete
 					this.renderResults(summary);
@@ -1091,6 +1102,54 @@ class TallyMigratorPage {
 				});
 			},
 		});
+	}
+
+	// Track a backgrounded run by polling its log until it leaves 'Running',
+	// then render the same results table from the log's stored summary.
+	pollLog(logName) {
+		const finishFromLog = (doc) => {
+			frappe.realtime.off("progress", this._onProgress);
+			$("#progress-bar").removeClass("active progress-bar-striped").css("width", "100%").text("100%");
+			if (doc.status === "Failed") {
+				$("#btn-run").prop("disabled", false);
+				$("#btn-back-3").prop("disabled", false);
+				$("#error-section")
+					.html(
+						"<strong>Migration failed.</strong> Records imported before the failure are kept " +
+						"(each step is committed as it completes), so it's safe to run again. " +
+						'Open <a href="#" class="err-logs-link">the migration log</a> for details.'
+					)
+					.show();
+				$(".err-logs-link").on("click", (e) => {
+					e.preventDefault();
+					frappe.set_route("Form", "Tally Migration Log", logName);
+				});
+				return;
+			}
+			let summary = {};
+			try {
+				summary = JSON.parse(doc.import_summary || "{}");
+			} catch (e) {
+			}
+			summary.log_name = logName;
+			this.clearDraft();
+			this.renderResults(summary);
+			$("#run-actions").hide();
+		};
+		const poll = () => {
+			frappe.call({
+				method: "frappe.client.get_value",
+				args: { doctype: "Tally Migration Log", filters: { name: logName }, fieldname: ["status", "import_summary"] },
+				callback: (r) => {
+					const doc = r.message;
+					if (!doc) { setTimeout(poll, 3000); return; }
+					if (doc.status === "Running" || !doc.status) { setTimeout(poll, 3000); return; }
+					finishFromLog(doc);
+				},
+				error: () => setTimeout(poll, 5000),
+			});
+		};
+		setTimeout(poll, 3000);
 	}
 
 	renderResults(summary) {

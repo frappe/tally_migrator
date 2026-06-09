@@ -1,9 +1,21 @@
 from __future__ import annotations
 
+import io
 import re
 import xml.etree.ElementTree as ET
 
 import frappe
+
+# The Tally master record elements we extract. The streaming parser keeps only
+# these (every other element — TALLYMESSAGE wrappers, COMPANY headers, voucher
+# data when present — is discarded as it is parsed), so peak memory stays
+# proportional to the records we actually use rather than the whole document.
+# Normalised the same way ``get_collection`` derives a tag from an obj_type
+# (``upper().replace(" ", "")``), so "Stock Item" → STOCKITEM, etc.
+MASTER_RECORD_TAGS = (
+    "GROUP", "LEDGER", "STOCKITEM", "GODOWN",
+    "COSTCENTRE", "STOCKGROUP", "UNIT",
+)
 
 
 # Real Tally Prime masters exports are UTF-16 (with a BOM) and contain XML-1.0
@@ -94,17 +106,47 @@ class FileTallySource:
     so the same tag derivation works for both sources.
     """
 
-    def __init__(self, xml_text: str):
+    def __init__(self, xml_text: str, record_tags=MASTER_RECORD_TAGS):
         cleaned = sanitize_tally_xml(xml_text)
         reject_unsafe_xml(cleaned)
+        self._keep = {t.upper().replace(" ", "") for t in record_tags}
+        # Stream the document once, retaining only the master record elements
+        # (bucketed by tag) and dropping everything else as it is parsed. Avoids
+        # building — and holding — the whole DOM the way ET.fromstring would.
+        self._by_tag = self._stream_records(cleaned, self._keep)
+        # extract_all() and extract_coa() both ask for the Group and Ledger
+        # collections, so memoise each (obj_type, fields) result to avoid
+        # re-walking the retained records on every call.
+        self._collection_cache: dict = {}
+
+    @staticmethod
+    def _stream_records(cleaned: str, keep: set) -> dict:
+        """Single streaming pass → ``{TAG: [element, ...]}`` for kept record tags.
+
+        Uses ``iterparse`` and clears the parser's root after each captured record
+        so already-seen wrappers/chrome are freed immediately; the captured record
+        survives because the bucket holds a direct reference to it. Peak memory is
+        therefore bounded by the retained records plus one in-progress subtree,
+        not the size of the whole file.
+        """
+        buckets: dict = {tag: [] for tag in keep}
         try:
-            self._root = ET.fromstring(cleaned)
+            context = ET.iterparse(io.StringIO(cleaned), events=("start", "end"))
+            _, root = next(context)   # grab the root so we can clear it as we go
+            for event, elem in context:
+                if event != "end":
+                    continue
+                if elem.tag.split("}")[-1].upper() in keep:
+                    buckets.setdefault(elem.tag.split("}")[-1].upper(), []).append(elem)
+                    # Drop everything iterparse has accumulated on root so far; the
+                    # record just captured is safe (referenced from its bucket).
+                    root.clear()
+            root.clear()
         except ET.ParseError as e:
             frappe.throw(f"Uploaded file is not valid Tally XML: {e}")
-        # The DOM is parsed once; extract_all() and extract_coa() both ask for the
-        # Group and Ledger collections, so memoise each (obj_type, fields) result to
-        # avoid re-walking the whole tree on every call.
-        self._collection_cache: dict = {}
+        except StopIteration:
+            frappe.throw("Uploaded file is empty or not valid Tally XML.")
+        return buckets
 
     # The single method TallyExtractor depends on.
     def get_collection(self, obj_type: str, fields: list[str],
@@ -126,7 +168,7 @@ class FileTallySource:
         tag = obj_type.upper().replace(" ", "")
         tag_map = tag_map or {}
         records: list[dict] = []
-        for elem in self._root.iter(tag):
+        for elem in self._by_tag.get(tag, ()):
             name = (elem.get("NAME") or elem.findtext("NAME") or "").strip()
             if not name:
                 continue
@@ -180,7 +222,7 @@ class FileTallySource:
         """
         tag = obj_type.upper().replace(" ", "")
         out: dict = {}
-        for elem in self._root.iter(tag):
+        for elem in self._by_tag.get(tag, ()):
             name = (elem.get("NAME") or elem.findtext("NAME") or "").strip()
             if not name:
                 continue
@@ -194,6 +236,13 @@ class FileTallySource:
                 if len(entry["records"]) < 5 and name not in entry["records"]:
                     entry["records"].append(name)
         return out
+
+    def approx_record_count(self) -> int:
+        """Total kept master records — a cheap volume signal (already parsed).
+
+        Used to decide whether a migration is large enough to run as a background
+        job instead of synchronously inside the web request."""
+        return sum(len(v) for v in self._by_tag.values())
 
     # Callers ping() the source before extracting; a loaded file is always ready.
     def ping(self) -> bool:

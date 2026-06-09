@@ -1,4 +1,5 @@
 import json
+import threading
 
 import frappe
 
@@ -218,17 +219,19 @@ def run_masters_migration_from_file(file_url, erpnext_company="", uom_overrides=
     records: dict = json.loads(record_overrides) if record_overrides else {}
 
     file_doc, source = _source_from_file(file_url)
-    config = TallyConfig(
-        erpnext_company=erpnext_company,
-        tally_company=f"File: {file_doc.file_name or file_url}",
-        source_file=file_url,
-        validation_report=validation_report or "",
-        # Computed server-side from the actual file so the stored audit record of
-        # un-migrated fields is authoritative, not client-supplied.
-        coverage_report=frappe.as_json(coverage_report(source)),
-        coa_mode=coa_mode if coa_mode in ("reuse", "mirror") else "reuse",
-        posting_date=posting_date or "",
-    )
+    config = _build_masters_config(
+        file_url, file_doc.file_name, erpnext_company, source,
+        validation_report, coa_mode, posting_date)
+
+    # Large imports can run longer than the web request's proxy/gunicorn timeout,
+    # so above a record threshold we create the log up front and hand the run to a
+    # background worker, returning immediately. The page then tracks the log to
+    # completion (progress still streams over the realtime bus). Smaller imports
+    # stay synchronous and return the full summary in one round-trip.
+    if source.approx_record_count() > RUN_ASYNC_THRESHOLD:
+        return _enqueue_masters_run(
+            config, file_url, erpnext_company, uom_overrides or "",
+            validation_report or "", record_overrides or "", coa_mode, posting_date or "")
     return _run_and_summarize(config, source, uom, records)
 
 
@@ -272,13 +275,30 @@ def rerun_from_log(log_name):
 
 # ── Internal helpers ──────────────────────────────────────────────────────────
 
-# Most-recently-parsed source, keyed by (File name, modified timestamp). The
+# Most-recently-parsed source, keyed by (user, File name, modified timestamp). The
 # wizard re-calls validate/preview on every inline fix ("Re-check"), each of which
 # would otherwise re-read, re-decode, re-sanitize and re-parse the whole file. The
 # File's bytes are immutable for a given (name, modified), so a cached parse is
 # always valid; a new upload (new name) or an edit (new modified) misses and
 # re-parses. Bounded to one entry so a large file can't pin memory across uploads.
+#
+# The cache is a process global shared by every worker thread, so all access goes
+# through ``_SOURCE_CACHE_LOCK``: without it two concurrent requests could clear /
+# repopulate it mid-read, and the key includes the user so one person's upload can
+# never hand another person's request a different file's parse.
 _SOURCE_CACHE: dict = {}
+_SOURCE_CACHE_LOCK = threading.Lock()
+
+# Reject uploads above this size before parsing, with an actionable message,
+# rather than letting a multi-gigabyte file exhaust the worker. UTF-16 exports
+# decode to roughly half this many characters. Overridable via site config
+# (``tally_migrator_max_upload_mb``) for operators who need a higher ceiling.
+_DEFAULT_MAX_UPLOAD_MB = 150
+
+# Above this many master records a run is moved to a background job instead of
+# blocking the web request until it finishes (which would hit the proxy/gunicorn
+# timeout). Below it, the run stays synchronous and returns the summary directly.
+RUN_ASYNC_THRESHOLD = 5000
 
 
 def _assert_file_access(file_doc) -> None:
@@ -312,12 +332,13 @@ def _source_from_file(file_url):
     """
     file_doc = frappe.get_doc("File", {"file_url": file_url})
     _assert_file_access(file_doc)
-    cache_key = (file_doc.name, str(file_doc.modified))
-    source = _SOURCE_CACHE.get(cache_key)
-    if source is None:
-        source = FileTallySource(_decode(_raw_file_bytes(file_doc)))
-        _SOURCE_CACHE.clear()        # keep only the most-recent file's parse
-        _SOURCE_CACHE[cache_key] = source
+    cache_key = (frappe.session.user, file_doc.name, str(file_doc.modified))
+    with _SOURCE_CACHE_LOCK:
+        source = _SOURCE_CACHE.get(cache_key)
+        if source is None:
+            source = FileTallySource(_decode(_raw_file_bytes(file_doc)))
+            _SOURCE_CACHE.clear()        # keep only the most-recent file's parse
+            _SOURCE_CACHE[cache_key] = source
     return file_doc, source
 
 
@@ -331,17 +352,55 @@ def _raw_file_bytes(file_doc) -> bytes:
     keeps the real bytes — and the BOM — intact.
     """
     content = file_doc.get_content()
-    if isinstance(content, (bytes, bytearray)):
-        return bytes(content)
+    raw = bytes(content) if isinstance(content, (bytes, bytearray)) else None
+    if raw is not None:
+        _assert_within_size_limit(len(raw))
+        return raw
     # A str means get_content() already decoded (and likely corrupted) the bytes;
     # re-read the original from disk so UTF-16 survives.
     try:
         with open(file_doc.get_full_path(), "rb") as fh:
-            return fh.read()
+            raw = fh.read()
+        _assert_within_size_limit(len(raw))
+        return raw
+    except frappe.ValidationError:
+        raise                       # the size-limit rejection must propagate
     except Exception:
         # Last resort: re-encode the str we were given. Lossless only if it was a
         # latin-1 round-trip, but better than failing outright.
-        return content.encode("latin-1", errors="ignore")
+        encoded = content.encode("latin-1", errors="ignore")
+        _assert_within_size_limit(len(encoded))
+        return encoded
+
+
+def _assert_within_size_limit(num_bytes: int) -> None:
+    """Reject an oversized upload before parsing, with an actionable message."""
+    max_mb = frappe.conf.get("tally_migrator_max_upload_mb") or _DEFAULT_MAX_UPLOAD_MB
+    if num_bytes > max_mb * 1024 * 1024:
+        frappe.throw(
+            frappe._(
+                "This file is {0} MB, above the {1} MB limit for a single import. "
+                "Export your Tally masters in smaller batches (for example a few "
+                "ledger groups at a time) and import them one after another — the "
+                "migration is idempotent, so already-imported records are skipped."
+            ).format(round(num_bytes / (1024 * 1024), 1), max_mb)
+        )
+
+
+def _build_masters_config(file_url, file_name, erpnext_company, source,
+                          validation_report, coa_mode, posting_date) -> TallyConfig:
+    """Assemble the TallyConfig for a masters run (shared by sync + background)."""
+    return TallyConfig(
+        erpnext_company=erpnext_company,
+        tally_company=f"File: {file_name or file_url}",
+        source_file=file_url,
+        validation_report=validation_report or "",
+        # Computed server-side from the actual file so the stored audit record of
+        # un-migrated fields is authoritative, not client-supplied.
+        coverage_report=frappe.as_json(coverage_report(source)),
+        coa_mode=coa_mode if coa_mode in ("reuse", "mirror") else "reuse",
+        posting_date=posting_date or "",
+    )
 
 
 def _run_and_summarize(config: TallyConfig, source, uom_overrides: dict | None = None,
@@ -355,6 +414,51 @@ def _run_and_summarize(config: TallyConfig, source, uom_overrides: dict | None =
     result = migrator.run().as_dict()
     result["log_name"] = migrator.log.name if migrator.log else None
     return result
+
+
+def _enqueue_masters_run(config: TallyConfig, file_url, erpnext_company, uom_overrides,
+                         validation_report, record_overrides, coa_mode, posting_date) -> dict:
+    """Create the log now, hand the run to a background worker, return the log name.
+
+    The log is created (and committed) in the request so the page has something to
+    track immediately; the worker reuses that same log rather than creating a new
+    one. ``enqueue_after_commit`` ensures the job is only published once the log is
+    durably committed, so the worker can never race ahead of it.
+    """
+    migrator = MasterMigrator(config, source=None)
+    log = migrator._create_log()
+    frappe.enqueue(
+        "tally_migrator.api._run_masters_job",
+        queue="long",
+        timeout=4 * 60 * 60,
+        enqueue_after_commit=True,
+        file_url=file_url,
+        erpnext_company=erpnext_company,
+        uom_overrides=uom_overrides,
+        validation_report=validation_report,
+        record_overrides=record_overrides,
+        coa_mode=coa_mode,
+        posting_date=posting_date,
+        log_name=log.name,
+    )
+    return {"enqueued": True, "log_name": log.name, "company": erpnext_company}
+
+
+def _run_masters_job(file_url, erpnext_company, uom_overrides, validation_report,
+                     record_overrides, coa_mode, posting_date, log_name):
+    """Background entry point: re-parse the file and run the migration into an
+    already-created log. Errors are recorded on the log by ``MasterMigrator`` and
+    re-raised so the failure is also visible in the job/error log."""
+    uom = json.loads(uom_overrides) if uom_overrides else {}
+    records = json.loads(record_overrides) if record_overrides else {}
+    file_doc, source = _source_from_file(file_url)
+    config = _build_masters_config(
+        file_url, file_doc.file_name, erpnext_company, source,
+        validation_report, coa_mode, posting_date)
+    log = frappe.get_doc("Tally Migration Log", log_name)
+    MasterMigrator(
+        config, source=source, uom_overrides=uom, record_overrides=records, log=log,
+    ).run()
 
 
 def _decode(content) -> str:

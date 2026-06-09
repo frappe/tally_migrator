@@ -67,6 +67,21 @@ class TestFileTallySource(unittest.TestCase):
         with self.assertRaises(Exception):
             FileTallySource("<ENVELOPE><not-closed>")
 
+    def test_approx_record_count_sums_kept_records(self):
+        # 3 groups + 3 ledgers + 1 stock item + 1 godown in SAMPLE_XML.
+        self.assertEqual(self.source.approx_record_count(), 8)
+
+    def test_streaming_ignores_non_master_chrome(self):
+        # A COMPANY header and voucher data must not inflate the record buckets.
+        xml = ("<ENVELOPE><BODY>"
+               "<COMPANY><NAME>Acme</NAME></COMPANY>"
+               "<TALLYMESSAGE><VOUCHER><AMOUNT>1</AMOUNT></VOUCHER></TALLYMESSAGE>"
+               "<TALLYMESSAGE><LEDGER NAME=\"L1\"><PARENT>Sundry Debtors</PARENT></LEDGER></TALLYMESSAGE>"
+               "</BODY></ENVELOPE>")
+        src = FileTallySource(xml)
+        self.assertEqual(src.approx_record_count(), 1)
+        self.assertEqual(src.get_collection("Ledger", ["Parent"])[0]["Parent"], "Sundry Debtors")
+
 
 # Two records: one in real Tally tags (state <LEDSTATENAME>, email <EMAIL>,
 # multi-line <ADDRESS.LIST>, price/cost <STANDARDPRICELIST.LIST> revision lists),
