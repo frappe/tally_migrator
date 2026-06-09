@@ -263,3 +263,31 @@ class TestERPNextImporter(unittest.TestCase):
         imp._balance(lines, result)
         self.assertEqual(len(lines), 2)          # no plug line added
         self.assertEqual(result.warned, 0)
+
+    # ── Re-run idempotency guards (no DB — guard stubbed) ───────────────────────
+
+    def test_opening_balance_skipped_when_entry_exists(self):
+        """A second run must NOT post a second Opening Entry (would double the books).
+        Regression for the re-run double-posting bug."""
+        from tally_migrator.erpnext.importers import OpeningBalanceImporter
+
+        imp = OpeningBalanceImporter("_TMTest Co", "TC")
+        imp._existing_opening_entry = lambda: True   # simulate a prior run
+        result = imp.run(accounts=[], customers=[], suppliers=[], posting_date="2024-04-01")
+        self.assertEqual(result.created, 0)
+        self.assertEqual(result.skipped, 1)
+        self.assertEqual(result.warned, 1)
+        self.assertIn("already posted", result.warnings[0]["reason"])
+
+    def test_opening_stock_skipped_when_reconciliation_exists(self):
+        """A second run must NOT post a second Opening Stock reconciliation."""
+        from tally_migrator.erpnext.importers import StockOpeningImporter
+
+        imp = StockOpeningImporter("_TMTest Co", "TC")
+        imp._existing_opening_stock = lambda: True   # simulate a prior run
+        result = imp.run(items=[{"_name": "X", "OpeningBalance": "55 Nos"}],
+                         posting_date="2024-04-01")
+        self.assertEqual(result.created, 0)
+        self.assertEqual(result.skipped, 1)
+        self.assertEqual(result.warned, 1)
+        self.assertIn("already posted", result.warnings[0]["reason"])

@@ -1043,6 +1043,18 @@ class OpeningBalanceImporter:
     def run(self, accounts: list, customers: list, suppliers: list,
             posting_date: str) -> ImportResult:
         result = ImportResult("Journal Entry")
+        # Idempotency guard: the opening JE is one aggregate document, not a
+        # per-record upsert, so re-running would post the whole trial balance a
+        # second time and double the books. If a submitted Opening Entry already
+        # exists for this company, skip rather than re-post.
+        if self._existing_opening_entry():
+            result.skipped += 1
+            result.add_warning(
+                "Opening Entry",
+                "opening balances already posted for this company (an Opening Entry "
+                "journal exists) — skipped to avoid double-posting. Cancel the "
+                "existing entry first if you need to re-import.")
+            return result
         lines: list[dict] = []
         lines += self._account_lines(accounts, result)
         lines += self._party_lines(customers, "Customer", "default_receivable_account", result)
@@ -1068,6 +1080,14 @@ class OpeningBalanceImporter:
             result.add_error("Opening Entry", exc)
             frappe.db.rollback()
         return result
+
+    def _existing_opening_entry(self) -> bool:
+        """True when a non-cancelled Opening Entry JE already exists for the company."""
+        return bool(frappe.db.exists("Journal Entry", {
+            "company": self.company,
+            "voucher_type": "Opening Entry",
+            "docstatus": ["<", 2],   # draft or submitted, not cancelled
+        }))
 
     # ── Line builders ────────────────────────────────────────────────────────
     def _account_lines(self, accounts: list, result: ImportResult) -> list[dict]:
@@ -1182,6 +1202,16 @@ class StockOpeningImporter:
 
     def run(self, items: list, posting_date: str) -> ImportResult:
         result = ImportResult(self.doctype)
+        # Idempotency guard (see OpeningBalanceImporter): one aggregate submitted
+        # document, so re-running would double opening stock. Skip if one exists.
+        if self._existing_opening_stock():
+            result.skipped += 1
+            result.add_warning(
+                "Opening Stock",
+                "opening stock already posted for this company (an Opening Stock "
+                "reconciliation exists) — skipped to avoid double-counting. Cancel "
+                "the existing reconciliation first if you need to re-import.")
+            return result
         warehouse = self._default_warehouse()
         if not warehouse:
             result.add_error("Opening Stock", "no warehouse found to hold opening stock")
@@ -1189,8 +1219,17 @@ class StockOpeningImporter:
 
         rows = []
         for it in items:
-            qty = BaseImporter._to_float(it.get("OpeningBalance"))
-            if qty <= 0:
+            raw_qty = it.get("OpeningBalance")
+            qty = TallyExtractor._parse_quantity(raw_qty)
+            if qty == 0:
+                # A non-empty cell that parses to zero is a real opening quantity we
+                # failed to read (e.g. an unexpected format) — surface it instead of
+                # dropping the item's opening stock silently.
+                if str(raw_qty or "").strip():
+                    result.add_warning(
+                        it["_name"],
+                        f"opening stock not posted — could not read quantity "
+                        f"'{raw_qty}'. Set this item's opening stock manually.")
                 continue
             rate = (BaseImporter._to_float(it.get("OpeningRate"))
                     or BaseImporter._to_float(it.get("StandardCost")))
@@ -1221,6 +1260,14 @@ class StockOpeningImporter:
             result.add_error("Opening Stock", exc)
             frappe.db.rollback()
         return result
+
+    def _existing_opening_stock(self) -> bool:
+        """True when a non-cancelled Opening Stock reconciliation exists for the company."""
+        return bool(frappe.db.exists("Stock Reconciliation", {
+            "company": self.company,
+            "purpose": "Opening Stock",
+            "docstatus": ["<", 2],   # draft or submitted, not cancelled
+        }))
 
     def _default_warehouse(self) -> str:
         """A non-group warehouse to hold opening stock.

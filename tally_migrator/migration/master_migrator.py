@@ -227,7 +227,10 @@ class MasterMigrator:
                 coa.accounts,
             ))
         # Opening stock: item opening quantities → one submitted Stock Reconciliation.
-        if any(_has_opening(i.get("OpeningBalance")) for i in masters.items):
+        # Item opening balances are unit-suffixed quantities ("55 Nos"), so gate on
+        # the quantity parser, not the amount parser (which reads them as zero).
+        if any(TallyExtractor._parse_quantity(i.get("OpeningBalance")) != 0
+               for i in masters.items):
             steps.append(PipelineStep(
                 "Opening Stock", 93,
                 lambda items: self.importer.import_opening_stock(items, self.posting_date),

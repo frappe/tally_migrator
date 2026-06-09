@@ -1,3 +1,4 @@
+import re
 from dataclasses import dataclass, field
 from .mappings import TALLY_ROOT_PARENT, TALLY_SYSTEM_LEDGERS, classify_group
 from .resolver import ACCOUNT, CUSTOMER, SUPPLIER, LedgerResolver
@@ -275,6 +276,30 @@ class TallyExtractor:
         """Tally's top-level sentinel parent "Primary" → "" (no parent)."""
         p = str(parent or "").strip()
         return "" if p == TALLY_ROOT_PARENT else p
+
+    @staticmethod
+    def _parse_quantity(raw) -> float:
+        """Parse a Tally stock opening *quantity* → float.
+
+        Stock-item opening balances are unit-suffixed quantities like ``"55 Nos"``
+        or ``"100.50 Kgs"`` (and occasionally a multi-godown ``"=`` cell), which the
+        amount parser (:meth:`_parse_opening`) and the plain ``float`` path both
+        read as 0. Strip the leading signed-decimal token and ignore the trailing
+        unit name. Returns 0.0 when there is no leading number.
+        """
+        s = str(raw or "").strip()
+        if not s:
+            return 0.0
+        if "=" in s:
+            s = s.split("=")[-1].strip()
+        s = s.replace(",", "")
+        m = re.match(r"[-+]?\d*\.?\d+", s)
+        if not m:
+            return 0.0
+        try:
+            return float(m.group(0))
+        except ValueError:
+            return 0.0
 
     @staticmethod
     def _parse_opening(raw) -> tuple[float, str]:

@@ -85,6 +85,23 @@ class TestTallyExtractor(unittest.TestCase):
         self.assertEqual(s["items"], 1)
         self.assertEqual(s["warehouses"], 2)
 
+    def test_parse_quantity_handles_unit_suffix(self):
+        """Stock opening quantities are unit-suffixed ('55 Nos') in real Tally
+        exports; the amount parser reads them as 0, so the quantity parser must
+        recover the number. Regression for the 'opening stock imports as zero' bug."""
+        pq = TallyExtractor._parse_quantity
+        self.assertEqual(pq(" 55 Nos"), 55.0)
+        self.assertEqual(pq("100.50 Kgs"), 100.5)
+        self.assertEqual(pq("1,200 Nos"), 1200.0)
+        self.assertEqual(pq("-5 Nos"), -5.0)
+        self.assertEqual(pq("10.00 Nos = 800.00"), 800.0)
+        self.assertEqual(pq(""), 0.0)
+        self.assertEqual(pq(None), 0.0)
+        self.assertEqual(pq("Nos"), 0.0)
+        # The amount parser genuinely cannot read these — confirms why we needed a
+        # separate quantity parser.
+        self.assertEqual(TallyExtractor._parse_opening(" 55 Nos")[0], 0.0)
+
     def test_bfs_handles_deep_nesting(self):
         """Groups 3 levels deep must still be recognised as Debtors."""
 
