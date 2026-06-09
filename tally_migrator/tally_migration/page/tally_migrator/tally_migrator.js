@@ -750,11 +750,21 @@ class TallyMigratorPage {
 		frappe.dom.freeze(__("Re-checking…"));
 		frappe.call({
 			method: "tally_migrator.api.validate_masters_data",
-			args: { file_url: this.fileUrl, record_overrides: JSON.stringify(this.recordOverrides) },
+			args: {
+				file_url: this.fileUrl,
+				record_overrides: JSON.stringify(this.recordOverrides),
+				// Pass the company so the readiness panel is recomputed alongside the
+				// data fixes, instead of showing a stale readiness state.
+				erpnext_company: $("#erpnext-company").val() || "",
+			},
 			callback: (r) => {
 				frappe.dom.unfreeze();
 				this.qualityReport = r.message || null;
 				this.states = (r.message && r.message.states) || this.states;
+				if (r.message && r.message.readiness) {
+					this.readiness = r.message.readiness;
+					this.renderReadiness();
+				}
 				this.renderDataQuality();
 			},
 			error: () => frappe.dom.unfreeze(),
@@ -890,12 +900,19 @@ class TallyMigratorPage {
 		$("#results-section").hide();
 		$("#progress-section").show();
 
-		frappe.realtime.on("progress", (data) => {
-			if (data.title !== "Tally Masters Migration") return;
-			const pct = data.percent || 0;
-			$("#progress-bar").css("width", pct + "%").text(pct + "%");
-			$("#progress-desc").text(data.description || "");
-		});
+		// One stable handler reference, registered once and removed by reference, so
+		// repeated runs don't stack duplicate listeners and we never tear down other
+		// pages' "progress" subscribers with a blanket off("progress").
+		if (!this._onProgress) {
+			this._onProgress = (data) => {
+				if (data.title !== "Tally Masters Migration") return;
+				const pct = data.percent || 0;
+				$("#progress-bar").css("width", pct + "%").text(pct + "%");
+				$("#progress-desc").text(data.description || "");
+			};
+		}
+		frappe.realtime.off("progress", this._onProgress);
+		frappe.realtime.on("progress", this._onProgress);
 
 		frappe.call({
 			method: "tally_migrator.api.run_masters_migration_from_file",
@@ -909,7 +926,7 @@ class TallyMigratorPage {
 				posting_date: $("#opening-date").val() || "",
 			},
 			callback: (r) => {
-				frappe.realtime.off("progress");
+				frappe.realtime.off("progress", this._onProgress);
 				$("#progress-bar")
 					.removeClass("active progress-bar-striped")
 					.css("width", "100%")
@@ -924,7 +941,7 @@ class TallyMigratorPage {
 				}
 			},
 			error: (err) => {
-				frappe.realtime.off("progress");
+				frappe.realtime.off("progress", this._onProgress);
 				$("#btn-run").prop("disabled", false);
 				$("#btn-back-3").prop("disabled", false);
 				const detail =
@@ -933,7 +950,7 @@ class TallyMigratorPage {
 				$("#error-section")
 					.html(
 						`<strong>Migration failed.</strong> ${frappe.utils.escape_html(detail)}` +
-							`<br><span style="font-size:12px;">Nothing was left half-done — already-imported records are kept and it's safe to run again. ` +
+							`<br><span style="font-size:12px;">Records imported before the failure are kept (each step is committed as it completes), so it's safe to run again — already-imported records are skipped. ` +
 							`Open <a href="#" class="err-logs-link">the migration log</a> to see exactly what happened.</span>`
 					)
 					.show();

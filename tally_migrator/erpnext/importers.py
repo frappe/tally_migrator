@@ -231,7 +231,11 @@ class PartyImporter(BaseImporter):
             addr.address_title = (data.get("MailingName") or "").strip() or link_name
             addr.address_type = "Billing"
             addr.address_line1 = raw_address
-            addr.city = data.get("PinCode") or ""          # Tally rarely supplies a city
+            # ERPNext requires a city, but Tally's party ledger has no city field
+            # (the PIN has its own field below). Use a real city if one ever appears,
+            # otherwise a clear placeholder — never the PIN, which only looked like a
+            # city and produced visibly wrong addresses.
+            addr.city = (data.get("City") or "").strip() or "Not Specified"
             addr.state = TALLY_STATE_MAP.get(data.get("LedgerState", ""), "")
             addr.country = data.get("CountryName") or "India"
             addr.pincode = data.get("PinCode") or ""
