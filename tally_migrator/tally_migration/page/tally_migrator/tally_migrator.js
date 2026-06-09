@@ -576,6 +576,14 @@ class TallyMigratorPage {
 			.join("");
 		const total =
 			(report.unmapped_field_count || 0) + (report.unwritten_field_count || 0);
+		const noise = report.noise_field_count || 0;
+		const noiseNote = noise
+			? `<div style="margin-top:8px; font-size:12px; color:#888;">
+					(${noise} Tally internal field${noise === 1 ? "" : "s"} — config flags,
+					empty containers, audit/legacy-tax data — were hidden as they carry no
+					business value.)
+				</div>`
+			: "";
 		$sec.html(`
 			<div class="alert alert-info" style="margin:0;">
 				<strong>ℹ ${total} field(s) in your file won't be migrated.</strong>
@@ -584,6 +592,7 @@ class TallyMigratorPage {
 				Your records will still import — this is just so nothing is dropped without
 				you knowing. A copy is saved on the migration log for your records.
 				<div style="margin-top:10px;">${blocks}</div>
+				${noiseNote}
 			</div>
 		`).show();
 	}

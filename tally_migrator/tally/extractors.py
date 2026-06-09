@@ -12,6 +12,8 @@ LEDGER_FIELDS = [
     "CountryName", "LedgerState", "PinCode",
     # P1 standard fields Tally states explicitly on the party ledger.
     "GSTRegistrationType", "CreditLimit", "EmailCC", "LedgerContact", "MailingName",
+    # Bank account details (→ ERPNext Bank Account, linked to the party).
+    "BankAccountNo", "BankIFSC", "BankAccountHolder", "BankBranch", "BankName",
 ]
 
 ITEM_FIELDS = [
@@ -56,6 +58,12 @@ LEDGER_TAGS = {
     "GSTRegistrationNumber": [f"{_GSTREG}/GSTIN", "GSTREGISTRATIONNUMBER", "PARTYGSTIN"],
     "GSTRegistrationType":   [f"{_GSTREG}/GSTREGISTRATIONTYPE", "GSTREGISTRATIONTYPE"],
     "LedgerContact": ["LEDGERCONTACT", "CONTACTPERSON"],
+    # Bank details — flat tags on the party ledger in a real export.
+    "BankAccountNo":     ["BANKDETAILS"],
+    "BankIFSC":          ["IFSCODE"],
+    "BankAccountHolder": ["BANKACCHOLDERNAME"],
+    "BankBranch":        ["BRANCHNAME"],
+    "BankName":          ["BANKINGCONFIGBANK"],
 }
 
 ITEM_TAGS = {
@@ -113,6 +121,11 @@ class AccountNode:
     is_reserved: bool      # True for Tally's built-in primary groups
     opening_balance: float = 0.0
     opening_dr_cr: str = ""    # "Dr" | "Cr" | ""
+    # Bank details (only on account_type == "Bank" ledgers) → company Bank Account.
+    bank_account_no: str = ""
+    bank_ifsc: str = ""
+    bank_name: str = ""
+    bank_holder: str = ""
 
 
 @dataclass
@@ -237,6 +250,10 @@ class TallyExtractor:
                 is_reserved=False,
                 opening_balance=ob,
                 opening_dr_cr=drcr,
+                bank_account_no=(l.get("BankAccountNo") or "").strip(),
+                bank_ifsc=(l.get("BankIFSC") or "").strip(),
+                bank_name=(l.get("BankName") or "").strip(),
+                bank_holder=(l.get("BankAccountHolder") or "").strip(),
             ))
 
         centres = [

@@ -103,6 +103,29 @@ class TestCoverage(unittest.TestCase):
         self.assertEqual(report["unwritten_field_count"], 0)
         self.assertTrue(report["clean"])
 
+    def test_noise_tags_suppressed_but_counted(self):
+        # Tally internal flags / empty containers / audit / legacy-tax must not flood
+        # the report, but the count is surfaced so nothing is hidden silently.
+        tags = {
+            "ISBILLWISEON": _tag(40, "No"),                 # boolean flag → noise
+            "GSTDETAILS.LIST": _tag(40, ""),                # empty container → noise
+            "UPDATEDDATETIME": _tag(40, "20260608"),        # audit → noise
+            "VATDEALERTYPE": _tag(2, "Regular"),            # legacy tax prefix → noise
+            "EXCISEDUTYTYPE": _tag(52, "Not Applicable"),   # legacy tax → noise
+            "CUSTOMERCATEGORY": _tag(3, "Wholesale", ["Acme"]),  # real UDF → shown
+        }
+        report = coverage_report(_Src({"Ledger": tags}))
+        self.assertEqual(report["unmapped_field_count"], 1)
+        self.assertEqual(report["noise_field_count"], 5)
+        self.assertEqual(report["types"][0]["unmapped"][0]["field"], "CUSTOMERCATEGORY")
+
+    def test_real_value_field_is_not_noise(self):
+        # A field carrying a genuine value (a bank number) is never treated as noise.
+        tags = {"SOMEBANKFIELD": _tag(6, "61801504485", ["HDFC Bank"])}
+        report = coverage_report(_Src({"Ledger": tags}))
+        self.assertEqual(report["unmapped_field_count"], 1)
+        self.assertEqual(report["noise_field_count"], 0)
+
 
 if __name__ == "__main__":
     unittest.main()

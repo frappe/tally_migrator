@@ -96,6 +96,35 @@ IGNORED_TAGS = {
     "RESERVEDNAME", "FORPAYROLL", "ISGROUP",
 }
 
+# A real TallyPrime export carries hundreds of internal config flags, empty
+# structural containers and audit fields on every master. None of it is business
+# data, so listing it as "won't migrate" buries the handful of fields that
+# genuinely matter. These are suppressed from the per-field report (but still
+# counted, so the user knows how many were hidden).
+_NOISE_VALUE_SENTINELS = {"yes", "no", "not applicable", "create"}
+_AUDIT_TAGS = {
+    "OBJECTUPDATEACTION", "ISUPDATINGTARGETID", "ISSECURITYONWHENENTERED",
+    "UPDATEDDATETIME", "ASORIGINAL", "TYPEOFUPDATEACTIVITY", "OLDAUDITENTRYIDS.LIST",
+}
+# Pre-GST tax frameworks Tally still emits but ERPNext doesn't model on masters.
+_LEGACY_TAX_PREFIXES = (
+    "EXCISE", "VAT", "SERVICETAX", "STX", "TDS", "TCS", "SCHVI", "XBRL",
+    "LBT", "FBT", "SALESTAX", "CVD",
+)
+
+
+def _is_noise(tag: str, info: dict) -> bool:
+    """True for Tally housekeeping tags that are never business data: audit fields,
+    legacy-tax scaffolding, empty ``.LIST`` containers and pure Yes/No/Not-Applicable
+    config toggles. Tags carrying a real value (a bank number, a city, a rate) are
+    NOT noise and still surface."""
+    if tag in _AUDIT_TAGS or tag.startswith(_LEGACY_TAX_PREFIXES):
+        return True
+    sample = (info.get("sample") or "").strip().lower()
+    if tag.endswith(".LIST") and not sample:
+        return True                          # empty structural container
+    return sample in _NOISE_VALUE_SENTINELS  # boolean toggle / unused-feature sentinel
+
 
 def _norm(field: str) -> str:
     """Match the tag-derivation the source uses (uppercase, no spaces)."""
@@ -127,6 +156,7 @@ def coverage_report(source) -> dict:
     types = []
     unmapped_total = 0
     unwritten_total = 0
+    noise_total = 0
     for obj_type, fields in MAPPED_FIELDS.items():
         mapped = _read_tags(obj_type, fields) | {"NAME"}
         written = _read_tags(obj_type, WRITTEN_FIELDS.get(obj_type, fields)) | {"NAME"}
@@ -136,6 +166,12 @@ def coverage_report(source) -> dict:
         unmapped, unwritten = [], []
         for tag, info in sorted(tags.items()):
             if tag in IGNORED_TAGS:
+                continue
+            # Tally-internal noise (flags/empty containers/audit/legacy tax) is
+            # hidden from the report but counted, so the user knows it was dropped
+            # without drowning the fields that actually carry data.
+            if tag not in mapped and _is_noise(tag, info):
+                noise_total += 1
                 continue
             row = {
                 "field": tag,
@@ -160,5 +196,7 @@ def coverage_report(source) -> dict:
         "clean": unmapped_total == 0 and unwritten_total == 0,
         "unmapped_field_count": unmapped_total,
         "unwritten_field_count": unwritten_total,
+        # Tally-internal fields intentionally suppressed from the per-field tables.
+        "noise_field_count": noise_total,
         "types": types,
     }

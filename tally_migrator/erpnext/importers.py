@@ -182,6 +182,28 @@ class BaseImporter:
             return 0.0
 
 
+# ── Bank Account helpers (shared by party + company bank accounts) ─────────────
+
+def _ensure_bank(bank_name: str) -> str:
+    """Return an existing/created Bank master name, or "" when no name is given.
+
+    ERPNext's Bank Account requires a linked Bank; Tally only gives us its name,
+    so we create the Bank master on demand. Best-effort: a failure returns "" and
+    the caller skips bank-account creation with a warning rather than aborting."""
+    name = (bank_name or "").strip()
+    if not name:
+        return ""
+    if frappe.db.exists("Bank", name):
+        return name
+    try:
+        frappe.get_doc({"doctype": "Bank", "bank_name": name}).insert(ignore_permissions=True)
+        frappe.db.commit()
+        return name
+    except Exception:
+        frappe.db.rollback()
+        return ""
+
+
 # ── Party importers (Customer / Supplier) ──────────────────────────────────────
 
 class PartyImporter(BaseImporter):
@@ -190,6 +212,7 @@ class PartyImporter(BaseImporter):
     def after_insert(self, name: str, record: dict, result: "ImportResult") -> None:
         self._save_address(name, self.doctype, record, result)
         self._save_contact(name, self.doctype, record, result)
+        self._save_bank_account(name, self.doctype, record, result)
 
     @staticmethod
     def _gst_category(record: dict) -> str:
@@ -285,6 +308,38 @@ class PartyImporter(BaseImporter):
         except Exception as exc:
             frappe.log_error(f"Contact save failed for {link_name}: {exc}", "Tally Migrator")
             result.add_warning(link_name, f"contact not created: {exc}")
+
+    def _save_bank_account(self, link_name: str, link_type: str, data: dict,
+                           result: "ImportResult") -> None:
+        """Create a Bank Account (account no + IFSC) linked to the party.
+
+        Tally stores a party's bank details on the ledger; ERPNext keeps them on a
+        Bank Account doc linked to the Customer/Supplier. Non-fatal — a failure is a
+        warning, so the dropped bank detail is visible in the log, not lost."""
+        acc_no = (data.get("BankAccountNo") or "").strip()
+        if not acc_no:
+            return
+        bank = _ensure_bank(data.get("BankName") or "")
+        if not bank:
+            result.add_warning(
+                link_name, "bank account not created: no bank name on the ledger")
+            return
+        try:
+            ba = frappe.new_doc("Bank Account")
+            ba.account_name = (data.get("BankAccountHolder") or "").strip() or link_name
+            ba.bank = bank
+            ba.party_type = link_type
+            ba.party = link_name
+            ba.bank_account_no = acc_no
+            ifsc = (data.get("BankIFSC") or "").strip()
+            if ifsc:
+                ba.branch_code = ifsc
+            ba.insert(ignore_permissions=True)
+            frappe.db.commit()
+        except Exception as exc:
+            frappe.log_error(f"Bank account save failed for {link_name}: {exc}", "Tally Migrator")
+            result.add_warning(link_name, f"bank account not created: {exc}")
+            frappe.db.rollback()
 
 
 class CustomerImporter(PartyImporter):
@@ -789,6 +844,37 @@ class AccountImporter:
             result.add_created(d.name)
         except Exception as exc:
             result.add_error(node.name, exc)
+            frappe.db.rollback()
+            return
+        # A Tally bank ledger carries the company's own account no + IFSC → create a
+        # company Bank Account linked to this GL account. Separate, non-fatal step so
+        # a Bank-Account quirk can't roll back the account that was just created.
+        if not node.is_group and node.account_type == "Bank" and node.bank_account_no:
+            self._save_company_bank_account(node, d.name, result)
+
+    def _save_company_bank_account(self, node, account_name: str,
+                                   result: ImportResult) -> None:
+        bank = _ensure_bank(node.bank_name)
+        if not bank:
+            result.add_warning(
+                node.name, "bank account not created: no bank name on the ledger")
+            return
+        try:
+            ba = frappe.new_doc("Bank Account")
+            ba.account_name = node.bank_holder or node.name
+            ba.bank = bank
+            ba.account = account_name        # link to the GL account just created
+            ba.is_company_account = 1
+            ba.bank_account_no = node.bank_account_no
+            if node.bank_ifsc:
+                ba.branch_code = node.bank_ifsc
+            ba.insert(ignore_permissions=True)
+            frappe.db.commit()
+            result.add_created(ba.name)
+        except Exception as exc:
+            frappe.log_error(
+                f"Company bank account failed for {node.name}: {exc}", "Tally Migrator")
+            result.add_warning(node.name, f"bank account not created: {exc}")
             frappe.db.rollback()
 
 
