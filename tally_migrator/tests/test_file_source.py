@@ -191,6 +191,35 @@ class TestDecode(unittest.TestCase):
         self.assertIn("&#65;", sanitize_tally_xml("&#65;"))
 
 
+class TestXmlSafety(unittest.TestCase):
+    """A DTD / entity declaration (the 'billion laughs' DoS vector) is refused —
+    a real Tally masters export never declares one."""
+
+    def test_doctype_is_rejected(self):
+        payload = ('<?xml version="1.0"?>'
+                   '<!DOCTYPE lolz [<!ENTITY lol "lol">]>'
+                   '<ENVELOPE>&lol;</ENVELOPE>')
+        with self.assertRaises(Exception):
+            FileTallySource(payload)
+
+    def test_entity_declaration_is_rejected(self):
+        with self.assertRaises(Exception):
+            FileTallySource('<!ENTITY x "y"><ENVELOPE/>')
+
+    def test_clean_export_still_parses(self):
+        # No DTD — must not be falsely rejected.
+        src = FileTallySource("<ENVELOPE><TALLYMESSAGE/></ENVELOPE>")
+        self.assertTrue(src.ping())
+
+    def test_collection_result_is_cached_per_signature(self):
+        """extract_all + extract_coa both request Group/Ledger; the second call
+        must return the memoised result, not re-walk the DOM."""
+        src = FileTallySource(SAMPLE_XML)
+        first = src.get_collection("Ledger", ["Parent", "OpeningBalance"])
+        second = src.get_collection("Ledger", ["Parent", "OpeningBalance"])
+        self.assertIs(first, second)
+
+
 class TestRealExportFormat(unittest.TestCase):
     """A genuine export (UTF-16 + &#4; + nested .LIST containers) parses and the
     party's mailing/GST fields extract from their real nested paths."""

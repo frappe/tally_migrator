@@ -15,6 +15,9 @@ import frappe
 # Control chars XML 1.0 forbids (everything < 0x20 except TAB/LF/CR).
 _ILLEGAL_CHARS = re.compile(r"[\x00-\x08\x0b\x0c\x0e-\x1f]")
 _CHAR_REF = re.compile(r"&#(x[0-9a-fA-F]+|\d+);")
+# A DTD or custom entity declaration — the vector for entity-expansion
+# ("billion laughs") denial-of-service against the parser.
+_DTD_DECL = re.compile(r"<!(DOCTYPE|ENTITY)\b", re.IGNORECASE)
 
 
 def decode_tally_bytes(raw) -> str:
@@ -54,6 +57,22 @@ def sanitize_tally_xml(text: str) -> str:
     return _ILLEGAL_CHARS.sub("", text)
 
 
+def reject_unsafe_xml(text: str) -> None:
+    """Refuse a document carrying a DTD or custom entity declaration.
+
+    A genuine Tally masters export never declares a DOCTYPE or entities, so a file
+    that does is either corrupt or a crafted entity-expansion payload aimed at
+    exhausting the worker. Python's stdlib ElementTree has no protection against
+    such expansion, so we reject the input outright rather than parse it.
+    """
+    if _DTD_DECL.search(text or ""):
+        frappe.throw(
+            "Uploaded file contains an XML DOCTYPE or entity declaration, which a "
+            "genuine Tally Masters export never does. It was rejected as unsafe. "
+            "Re-export the masters from Tally (XML format) and try again."
+        )
+
+
 class FileTallySource:
     """Offline master source: reads a Tally Prime *Masters* XML export.
 
@@ -76,10 +95,16 @@ class FileTallySource:
     """
 
     def __init__(self, xml_text: str):
+        cleaned = sanitize_tally_xml(xml_text)
+        reject_unsafe_xml(cleaned)
         try:
-            self._root = ET.fromstring(sanitize_tally_xml(xml_text))
+            self._root = ET.fromstring(cleaned)
         except ET.ParseError as e:
             frappe.throw(f"Uploaded file is not valid Tally XML: {e}")
+        # The DOM is parsed once; extract_all() and extract_coa() both ask for the
+        # Group and Ledger collections, so memoise each (obj_type, fields) result to
+        # avoid re-walking the whole tree on every call.
+        self._collection_cache: dict = {}
 
     # The single method TallyExtractor depends on.
     def get_collection(self, obj_type: str, fields: list[str],
@@ -94,6 +119,10 @@ class FileTallySource:
             fields already equals the real Tally tag (NAME, PARENT, PINCODE, …).
         The first candidate that yields a value wins.
         """
+        cache_key = (obj_type, tuple(fields))
+        cached = self._collection_cache.get(cache_key)
+        if cached is not None:
+            return cached
         tag = obj_type.upper().replace(" ", "")
         tag_map = tag_map or {}
         records: list[dict] = []
@@ -106,6 +135,7 @@ class FileTallySource:
                 candidates = tag_map.get(f) or [f.upper().replace(" ", "")]
                 record[f] = self._resolve_field(elem, candidates)
             records.append(record)
+        self._collection_cache[cache_key] = records
         return records
 
     # ── Field resolution (tag overrides + nested .LIST descent) ────────────────

@@ -291,3 +291,35 @@ class TestERPNextImporter(unittest.TestCase):
         self.assertEqual(result.skipped, 1)
         self.assertEqual(result.warned, 1)
         self.assertIn("already posted", result.warnings[0]["reason"])
+
+    def test_negative_opening_stock_warns_and_is_not_posted(self):
+        """A negative opening quantity can't go into an Opening Stock reconciliation;
+        it must be dropped with a warning, not silently or fatally. (H-4)"""
+        from tally_migrator.erpnext.importers import StockOpeningImporter
+
+        imp = StockOpeningImporter("_TMTest Co", "TC")
+        imp._existing_opening_stock = lambda: False
+        imp._default_warehouse = lambda: "Stores - TC"
+        result = imp.run(items=[{"_name": "Oversold", "OpeningBalance": "-5 Nos"}],
+                         posting_date="2024-04-01")
+        self.assertEqual(result.created, 0)        # nothing posted
+        self.assertEqual(result.warned, 1)
+        self.assertIn("negative", result.warnings[0]["reason"].lower())
+
+    # ── Opening-balance batching (no DB — residual maths only) ──────────────────
+
+    def test_warn_residual_only_fires_above_threshold(self):
+        """The aggregate 'did not net to zero' warning is raised once, and only for
+        a non-trivial residual (per-batch plugs must not each warn). (H-1)"""
+        from tally_migrator.erpnext.importers import OpeningBalanceImporter, ImportResult
+
+        imp = OpeningBalanceImporter("_TMTest Co", "TC")
+        big = ImportResult("Journal Entry")
+        imp._warn_residual(
+            [{"debit_in_account_currency": 9000.0, "credit_in_account_currency": 0.0}], big)
+        self.assertEqual(big.warned, 1)
+
+        tiny = ImportResult("Journal Entry")
+        imp._warn_residual(
+            [{"debit_in_account_currency": 0.4, "credit_in_account_currency": 0.0}], tiny)
+        self.assertEqual(tiny.warned, 0)   # below PLUG_NOISE_THRESHOLD

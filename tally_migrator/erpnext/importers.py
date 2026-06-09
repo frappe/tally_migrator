@@ -1055,14 +1055,44 @@ class OpeningBalanceImporter:
                 "journal exists) — skipped to avoid double-posting. Cancel the "
                 "existing entry first if you need to re-import.")
             return result
-        lines: list[dict] = []
-        lines += self._account_lines(accounts, result)
-        lines += self._party_lines(customers, "Customer", "default_receivable_account", result)
-        lines += self._party_lines(suppliers, "Supplier", "default_payable_account", result)
-        if not lines:
+
+        # Build the entry in batches (one per root type, plus Customers and
+        # Suppliers) rather than a single all-or-nothing document. A validation
+        # failure on submit then loses only its own batch, not the whole trial
+        # balance, and each batch commits independently. Every batch is balanced
+        # against 'Temporary Opening', so the batches' plugs net to exactly the
+        # same Temporary Opening balance a single combined entry would produce.
+        batches: list[tuple[str, list[dict]]] = []
+        for root_type in ("Asset", "Liability", "Equity", "Income", "Expense"):
+            rows = self._account_lines(
+                [a for a in accounts if a.root_type == root_type], result)
+            if rows:
+                batches.append((root_type, rows))
+        cust = self._party_lines(customers, "Customer", "default_receivable_account", result)
+        if cust:
+            batches.append(("Customer", cust))
+        supp = self._party_lines(suppliers, "Supplier", "default_payable_account", result)
+        if supp:
+            batches.append(("Supplier", supp))
+        if not batches:
             return result  # nothing to post
 
-        self._balance(lines, result)
+        # The 'did not net to zero' check is meaningful only across the whole trial
+        # balance — per-batch plugs are expected and large — so warn once here, then
+        # let each batch plug silently.
+        self._warn_residual([l for _, rows in batches for l in rows], result)
+        for label, lines in batches:
+            self._post_batch(label, lines, posting_date, result)
+        return result
+
+    def _post_batch(self, label: str, lines: list[dict], posting_date: str,
+                    result: ImportResult) -> None:
+        """Insert + submit one Opening Entry batch, committing on its own.
+
+        Plugs the batch against Temporary Opening (silently — the aggregate
+        residual is warned once by the caller). A failure rolls back only this
+        batch's transaction; batches already committed are unaffected."""
+        self._balance(lines)
         try:
             doc = frappe.get_doc({
                 "doctype": "Journal Entry",
@@ -1070,16 +1100,15 @@ class OpeningBalanceImporter:
                 "posting_date": posting_date,
                 "company": self.company,
                 "accounts": lines,
-                "user_remark": "Opening balances imported from Tally",
+                "user_remark": f"Opening balances imported from Tally ({label})",
             })
             doc.insert(ignore_permissions=True)
             doc.submit()
             frappe.db.commit()
             result.add_created(doc.name)
         except Exception as exc:
-            result.add_error("Opening Entry", exc)
+            result.add_error(f"Opening Entry ({label})", exc)
             frappe.db.rollback()
-        return result
 
     def _existing_opening_entry(self) -> bool:
         """True when a non-cancelled Opening Entry JE already exists for the company."""
@@ -1158,6 +1187,12 @@ class OpeningBalanceImporter:
     PLUG_NOISE_THRESHOLD = 1.0
 
     def _balance(self, lines: list[dict], result: "ImportResult | None" = None) -> None:
+        # A non-trivial residual means the migrated balances don't net to zero on
+        # their own (usually only part of the trial balance was migrated). When a
+        # result is given, surface that gap before plugging it; the batch path warns
+        # once on the aggregate instead and calls this with no result.
+        if result is not None:
+            self._warn_residual(lines, result)
         total_dr = sum(l["debit_in_account_currency"] for l in lines)
         total_cr = sum(l["credit_in_account_currency"] for l in lines)
         diff = round(total_dr - total_cr, 2)
@@ -1170,17 +1205,20 @@ class OpeningBalanceImporter:
         else:
             lines.append({"account": temp, "debit_in_account_currency": abs(diff),
                           "credit_in_account_currency": 0.0})
-        # A non-trivial plug means the migrated balances don't net to zero on their
-        # own — usually only part of the trial balance was migrated. ERPNext still
-        # balances the entry against Temporary Opening, but that silently hides the
-        # gap, so flag it as a non-fatal warning for review.
-        if result is not None and abs(diff) >= self.PLUG_NOISE_THRESHOLD:
-            side = "credit" if diff > 0 else "debit"
-            result.add_warning(
-                "Opening Entry",
-                f"opening balances did not net to zero; {abs(diff):,.2f} was {side}ed "
-                f"to 'Temporary Opening - {self.abbr}' to balance the entry — review "
-                "whether the full trial balance was migrated.")
+
+    def _warn_residual(self, lines: list[dict], result: ImportResult) -> None:
+        """Flag a non-fatal warning when the lines don't net to zero (a Temporary
+        Opening plug will absorb the gap, so it must not be hidden)."""
+        diff = round(sum(l["debit_in_account_currency"] for l in lines)
+                     - sum(l["credit_in_account_currency"] for l in lines), 2)
+        if abs(diff) < self.PLUG_NOISE_THRESHOLD:
+            return
+        side = "credit" if diff > 0 else "debit"
+        result.add_warning(
+            "Opening Entry",
+            f"opening balances did not net to zero; {abs(diff):,.2f} was {side}ed "
+            f"to 'Temporary Opening - {self.abbr}' to balance the entry — review "
+            "whether the full trial balance was migrated.")
 
 
 # ── Opening stock importer ───────────────────────────────────────────────────
@@ -1221,6 +1259,17 @@ class StockOpeningImporter:
         for it in items:
             raw_qty = it.get("OpeningBalance")
             qty = TallyExtractor._parse_quantity(raw_qty)
+            if qty < 0:
+                # Tally can carry a negative opening quantity (e.g. oversold stock);
+                # an 'Opening Stock' reconciliation cannot hold a negative qty and
+                # would fail the whole document. Drop this line with a warning rather
+                # than silently or fatally.
+                result.add_warning(
+                    it["_name"],
+                    f"opening stock not posted — Tally reports a negative opening "
+                    f"quantity '{raw_qty}'. ERPNext opening stock cannot be negative; "
+                    "review the item in Tally and set its opening stock manually.")
+                continue
             if qty == 0:
                 # A non-empty cell that parses to zero is a real opening quantity we
                 # failed to read (e.g. an unexpected format) — surface it instead of
