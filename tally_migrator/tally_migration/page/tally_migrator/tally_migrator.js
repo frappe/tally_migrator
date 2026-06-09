@@ -181,7 +181,7 @@ class TallyMigratorPage {
 						&nbsp;
 						<button id="btn-next-check" class="btn btn-primary btn-sm">Continue →</button>
 						<button id="btn-startover-check" class="btn btn-default btn-sm pull-right"
-							style="color:#c0392b;">Start over</button>
+							style="color:var(--red-600, #c0392b);">Start over</button>
 					</div>
 				</div>
 
@@ -500,7 +500,7 @@ class TallyMigratorPage {
 	loadERPNextCompanies() {
 		frappe.call({
 			method: "frappe.client.get_list",
-			args: { doctype: "Company", fields: ["name"], limit_page_length: 100 },
+			args: { doctype: "Company", fields: ["name"], limit_page_length: 0 },
 			callback: (r) => {
 				const companies = r.message || [];
 				const $select = $("#erpnext-company").empty();
@@ -611,8 +611,8 @@ class TallyMigratorPage {
 				<div style="font-weight:600; color:${color};">${esc(it.message)}</div>
 				<div class="text-muted small">Fix: ${esc(it.fix)}</div>
 			</div>`;
-		const blockers = (report.blockers || []).map((b) => row(b, "#c0392b")).join("");
-		const warnings = (report.warnings || []).map((w) => row(w, "#b8860b")).join("");
+		const blockers = (report.blockers || []).map((b) => row(b, "var(--red-600, #c0392b)")).join("");
+		const warnings = (report.warnings || []).map((w) => row(w, "var(--yellow-600, #b8860b)")).join("");
 
 		const hasBlockers = (report.blockers || []).length > 0;
 		const cls = hasBlockers ? "alert-danger" : "alert-warning";
@@ -764,8 +764,8 @@ class TallyMigratorPage {
 		const errGroups = report.error_group_count ?? report.error_count;
 		const warnGroups = report.warning_group_count ?? report.warning_count;
 		$("#dq-cards").html(
-			card(errGroups, "Errors", errGroups ? "#e24c4c" : "#8d99a6") +
-			card(warnGroups, "Warnings", warnGroups ? "#f0a500" : "#8d99a6")
+			card(errGroups, "Errors", errGroups ? "var(--red-500, #e24c4c)" : "#8d99a6") +
+			card(warnGroups, "Warnings", warnGroups ? "var(--yellow-500, #f0a500)" : "#8d99a6")
 		);
 
 		const rows = report.groups.map((g, idx) => this.dqGroupHtml(g, idx)).join("");
@@ -810,7 +810,7 @@ class TallyMigratorPage {
 	// when the rule is fixable).
 	dqGroupHtml(g, idx) {
 		const esc = frappe.utils.escape_html;
-		const dot = g.severity === "error" ? "#e24c4c" : "#f0a500";
+		const dot = g.severity === "error" ? "var(--red-500, #e24c4c)" : "var(--yellow-500, #f0a500)";
 		const label = TallyMigratorPage.DQ_LABELS[g.code] || g.code;
 		const editable = g.editable_fields || [];
 		const items = g.items.map((it) => this.dqItemHtml(it, editable)).join("");

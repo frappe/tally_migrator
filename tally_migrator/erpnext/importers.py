@@ -117,6 +117,12 @@ class BaseImporter:
         self.company = company
         self.abbr = abbr
 
+    @property
+    def company_country(self) -> str:
+        """The target ERPNext Company's country — the correct default for records
+        whose Tally ledger leaves country blank, instead of assuming India."""
+        return frappe.get_cached_value("Company", self.company, "country") or "India"
+
     # ── Template method ─────────────────────────────────────────────────────
     def run(self, records: list[dict]) -> ImportResult:
         result = ImportResult(self.doctype)
@@ -266,18 +272,19 @@ class PartyImporter(BaseImporter):
         self._save_contact(name, self.doctype, record, result)
         self._save_bank_account(name, self.doctype, record, result)
 
-    @staticmethod
-    def _gst_category(record: dict) -> str:
+    def _gst_category(self, record: dict) -> str:
         """ERPNext GST Category. Tally's explicit registration type wins when set
-        (it alone distinguishes Composition / SEZ); otherwise infer from GSTIN +
-        country."""
+        (it alone distinguishes Composition / SEZ). Otherwise the category is India-
+        specific: a party outside India is 'Overseas', and only an Indian party has
+        its GSTIN inspected. A blank Tally country falls back to the *company's*
+        country, not a hardcoded 'India', so a non-Indian book isn't mislabelled."""
         explicit = gst_category_from_type(record.get("GSTRegistrationType") or "")
         if explicit:
             return explicit
-        return infer_gst_category(
-            record.get("GSTRegistrationNumber") or "",
-            record.get("CountryName") or "India",
-        )
+        country = (record.get("CountryName") or self.company_country or "India").strip()
+        if country.lower() != "india":
+            return "Overseas"
+        return infer_gst_category(record.get("GSTRegistrationNumber") or "", "India")
 
     def _resolve_payment_terms(self, tally_credit_period: str) -> str:
         """
@@ -312,7 +319,7 @@ class PartyImporter(BaseImporter):
             # city and produced visibly wrong addresses.
             addr.city = (data.get("City") or "").strip() or "Not Specified"
             addr.state = self._resolve_state(data)
-            addr.country = data.get("CountryName") or "India"
+            addr.country = (data.get("CountryName") or "").strip() or self.company_country
             addr.pincode = data.get("PinCode") or ""
             addr.phone = data.get("LedgerPhone") or data.get("LedgerMobile") or ""
             addr.email_id = data.get("LedgerEmail") or ""
@@ -1397,6 +1404,15 @@ class StockOpeningImporter:
                 continue
             rate = (BaseImporter._to_float(it.get("OpeningRate"))
                     or BaseImporter._to_float(it.get("StandardCost")))
+            if rate == 0:
+                # Posting a positive quantity at zero valuation creates stock with no
+                # book value, quietly understating inventory. Still post it (the qty
+                # is real), but surface the missing rate so it can be corrected.
+                result.add_warning(
+                    it["_name"],
+                    f"opening stock posted with a zero valuation rate — the item has "
+                    "no opening rate or standard cost in Tally, so its opening stock "
+                    "carries no value. Set the item's valuation rate in ERPNext.")
             rows.append({
                 "item_code": safe_item_code(it["_name"]),
                 "warehouse": warehouse,

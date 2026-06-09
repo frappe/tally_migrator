@@ -305,17 +305,16 @@ def _assert_file_access(file_doc) -> None:
     """Refuse to read a File the current user has no claim to.
 
     The whitelisted handlers accept an arbitrary ``file_url``; without this a
-    Tally Migration Manager could pass another user's *private* File URL and read
-    its bytes (an IDOR). Owners, System Managers and Administrator always pass;
-    public files are readable by anyone with the role; any other private file is
-    denied.
+    Tally Migration Manager could pass another user's File URL (the wizard's own
+    uploads are private, but a manager could also point at any *public* File on the
+    site) and have the server read its bytes — an IDOR. The migrator only ever needs
+    the file the current user uploaded, which they own, so access is limited to the
+    owner (plus System Manager / Administrator for support and cross-user re-runs).
     """
     user = frappe.session.user
     if user == "Administrator" or file_doc.owner == user:
         return
     if "System Manager" in frappe.get_roles(user):
-        return
-    if not file_doc.is_private:
         return
     frappe.throw(
         frappe._("You are not permitted to access this file."),

@@ -264,6 +264,36 @@ class TestERPNextImporter(unittest.TestCase):
         self.assertEqual(len(lines), 2)          # no plug line added
         self.assertEqual(result.warned, 0)
 
+    # ── GST category by country (M-A) ───────────────────────────────────────────
+
+    def test_gst_category_overseas_when_country_not_india(self):
+        """A party whose ledger country isn't India is 'Overseas' — its GSTIN field
+        is never inspected and India is never assumed."""
+        from tally_migrator.erpnext.importers import CustomerImporter
+
+        imp = CustomerImporter("_TMTest Co", "TC")
+        cat = imp._gst_category({"CountryName": "United States",
+                                 "GSTRegistrationNumber": "JUNK"})
+        self.assertEqual(cat, "Overseas")
+
+    def test_gst_category_india_inspects_gstin(self):
+        from tally_migrator.erpnext.importers import CustomerImporter
+
+        imp = CustomerImporter("_TMTest Co", "TC")
+        cat = imp._gst_category({"CountryName": "India", "GSTRegistrationNumber": ""})
+        self.assertEqual(cat, "Unregistered")
+
+    def test_blank_country_falls_back_to_company_not_india(self):
+        """A blank Tally country uses the *company's* country, so a non-Indian
+        company's parties aren't silently labelled Indian."""
+        from unittest import mock
+        from tally_migrator.erpnext.importers import CustomerImporter
+
+        imp = CustomerImporter("_TMTest Co", "TC")
+        with mock.patch("frappe.get_cached_value", return_value="United States"):
+            cat = imp._gst_category({"CountryName": "", "GSTRegistrationNumber": ""})
+        self.assertEqual(cat, "Overseas")
+
     # ── Re-run idempotency guards (no DB — guard stubbed) ───────────────────────
 
     def test_opening_balance_skipped_when_entry_exists(self):
@@ -333,6 +363,23 @@ class TestERPNextImporter(unittest.TestCase):
         self.assertEqual(result.skipped, 1)
         self.assertEqual(result.warned, 1)
         self.assertIn("already posted", result.warnings[0]["reason"])
+
+    def test_zero_valuation_opening_stock_warns(self):
+        """A positive opening qty with no rate/standard cost still posts, but warns
+        that it carries zero book value (M-B)."""
+        from unittest import mock
+        from tally_migrator.erpnext.importers import StockOpeningImporter
+
+        imp = StockOpeningImporter("_TMTest Co", "TC")
+        imp._existing_opening_stock = lambda: False
+        imp._default_warehouse = lambda: "Stores - TC"
+        # Stop before the actual submit; we only assert the warning was raised.
+        with mock.patch("frappe.get_doc", side_effect=Exception("stop")):
+            result = imp.run(
+                items=[{"_name": "NoRate", "OpeningBalance": "10 Nos",
+                        "OpeningRate": "", "StandardCost": ""}],
+                posting_date="2024-04-01")
+        self.assertTrue(any("zero valuation" in w["reason"] for w in result.warnings))
 
     def test_negative_opening_stock_warns_and_is_not_posted(self):
         """A negative opening quantity can't go into an Opening Stock reconciliation;
