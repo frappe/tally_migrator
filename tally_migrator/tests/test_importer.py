@@ -272,12 +272,54 @@ class TestERPNextImporter(unittest.TestCase):
         from tally_migrator.erpnext.importers import OpeningBalanceImporter
 
         imp = OpeningBalanceImporter("_TMTest Co", "TC")
-        imp._existing_opening_entry = lambda: True   # simulate a prior run
+        # Simulate a prior, hand-built Opening Entry (a remark this migrator never
+        # wrote) → conservative full skip, no double-posting.
+        imp._existing_opening_state = lambda: (True, set())
         result = imp.run(accounts=[], customers=[], suppliers=[], posting_date="2024-04-01")
         self.assertEqual(result.created, 0)
         self.assertEqual(result.skipped, 1)
         self.assertEqual(result.warned, 1)
-        self.assertIn("already posted", result.warnings[0]["reason"])
+        self.assertIn("not created by", result.warnings[0]["reason"])
+
+    def test_partial_opening_rerun_posts_only_missing_batches(self):
+        """Re-running after a partial failure must post the batches that never
+        posted, not skip everything. Regression for C-A: the all-or-nothing guard
+        used to abandon un-posted balances on re-run."""
+        from tally_migrator.erpnext.importers import OpeningBalanceImporter
+        from tally_migrator.tally.extractors import AccountNode
+
+        imp = OpeningBalanceImporter("_TMTest Co", "TC")
+        # A prior run posted the Asset batch only (Equity failed last time).
+        imp._existing_opening_state = lambda: (False, {"Asset"})
+        # Make account/party reference checks pass and capture what gets posted.
+        imp._account_lines = lambda accounts, result: (
+            [{"account": "x", "debit_in_account_currency": 100.0,
+              "credit_in_account_currency": 0.0}]
+            if accounts and accounts[0].root_type == "Equity" else []
+        )
+        imp._party_lines = lambda *a, **k: []
+        posted_labels = []
+        imp._post_batch = lambda label, lines, pd, result: posted_labels.append(label)
+
+        equity = AccountNode(name="Share Capital", parent="", is_group=False,
+                             root_type="Equity", account_type="", is_reserved=False,
+                             opening_balance=100.0, opening_dr_cr="Cr")
+        result = imp.run(accounts=[equity], customers=[], suppliers=[],
+                         posting_date="2024-04-01")
+        # Equity is posted now; Asset is recognised as already done and skipped.
+        self.assertEqual(posted_labels, ["Equity"])
+        self.assertEqual(result.skipped, 1)
+        self.assertTrue(any("already posted" in w["reason"] for w in result.warnings))
+
+    def test_batch_label_roundtrips_through_remark(self):
+        """The label written to user_remark must parse back to the same label, and a
+        foreign remark must not be mistaken for one of ours."""
+        from tally_migrator.erpnext.importers import OpeningBalanceImporter as OBI
+        for label in ("Asset", "Customer", "Supplier"):
+            remark = f"{OBI._REMARK_PREFIX}{label})"
+            self.assertEqual(OBI._batch_label_from_remark(remark), label)
+        self.assertEqual(OBI._batch_label_from_remark("Manual opening entry"), "")
+        self.assertEqual(OBI._batch_label_from_remark(None), "")
 
     def test_opening_stock_skipped_when_reconciliation_exists(self):
         """A second run must NOT post a second Opening Stock reconciliation."""

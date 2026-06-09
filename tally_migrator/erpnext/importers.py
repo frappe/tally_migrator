@@ -1085,6 +1085,12 @@ class OpeningBalanceImporter:
     balances actually post to the General Ledger.
     """
 
+    # Marker written to every batch's ``user_remark`` so a later re-run can tell
+    # which batches this migrator already posted (per-batch idempotency) and skip
+    # only those, posting the rest. Kept in one place so the writer (``_post_batch``)
+    # and reader (``_existing_opening_state``) can never drift apart.
+    _REMARK_PREFIX = "Opening balances imported from Tally ("
+
     def __init__(self, company: str, abbr: str):
         self.company = company
         self.abbr = abbr
@@ -1092,17 +1098,26 @@ class OpeningBalanceImporter:
     def run(self, accounts: list, customers: list, suppliers: list,
             posting_date: str) -> ImportResult:
         result = ImportResult("Journal Entry")
-        # Idempotency guard: the opening JE is one aggregate document, not a
-        # per-record upsert, so re-running would post the whole trial balance a
-        # second time and double the books. If a submitted Opening Entry already
-        # exists for this company, skip rather than re-post.
-        if self._existing_opening_entry():
+        # Idempotency: the opening JE is an aggregate document, not a per-record
+        # upsert, so re-posting a batch would double the books. But posting is
+        # per-batch (one JE per root type / party type), so the guard must be
+        # per-batch too — otherwise a re-run after a *partial* failure (some
+        # batches committed, one failed) would see the committed batches and skip
+        # *everything*, silently abandoning the balances that never posted.
+        #
+        # ``foreign`` is True when an Opening Entry exists that this migrator did
+        # NOT create (e.g. the company's books were opened manually); in that case
+        # we stay conservative and skip entirely rather than risk double-posting
+        # against a hand-built opening trial balance.
+        foreign, posted = self._existing_opening_state()
+        if foreign:
             result.skipped += 1
             result.add_warning(
                 "Opening Entry",
-                "opening balances already posted for this company (an Opening Entry "
-                "journal exists) — skipped to avoid double-posting. Cancel the "
-                "existing entry first if you need to re-import.")
+                "this company already has an Opening Entry that was not created by "
+                "this migrator — opening balances were skipped to avoid double-posting "
+                "against a manually set-up book. Cancel that entry first if you want "
+                "this migration to post the opening balances instead.")
             return result
 
         # Build the entry in batches (one per root type, plus Customers and
@@ -1126,11 +1141,28 @@ class OpeningBalanceImporter:
         if not batches:
             return result  # nothing to post
 
-        # The 'did not net to zero' check is meaningful only across the whole trial
-        # balance — per-batch plugs are expected and large — so warn once here, then
-        # let each batch plug silently.
-        self._warn_residual([l for _, rows in batches for l in rows], result)
+        # Drop batches a prior run already posted (per-batch idempotency); post the
+        # rest. This is what makes "fix it and re-run" actually complete a partially
+        # posted opening trial balance instead of skipping it wholesale.
+        pending: list[tuple[str, list[dict]]] = []
         for label, lines in batches:
+            if label in posted:
+                result.skipped += 1
+                result.add_warning(
+                    label,
+                    f"opening balances for {label} were already posted in an earlier "
+                    "run — skipped to avoid double-posting. The remaining batches (if "
+                    "any) were posted now.")
+                continue
+            pending.append((label, lines))
+        if not pending:
+            return result  # every batch already posted
+
+        # The 'did not net to zero' check is meaningful only across the balances we
+        # are actually posting now — per-batch plugs are expected and large — so warn
+        # once here over the pending batches, then let each batch plug silently.
+        self._warn_residual([l for _, rows in pending for l in rows], result)
+        for label, lines in pending:
             self._post_batch(label, lines, posting_date, result)
         return result
 
@@ -1149,7 +1181,7 @@ class OpeningBalanceImporter:
                 "posting_date": posting_date,
                 "company": self.company,
                 "accounts": lines,
-                "user_remark": f"Opening balances imported from Tally ({label})",
+                "user_remark": f"{self._REMARK_PREFIX}{label})",
             })
             doc.insert(ignore_permissions=True)
             doc.submit()
@@ -1159,13 +1191,47 @@ class OpeningBalanceImporter:
             result.add_error(f"Opening Entry ({label})", exc)
             frappe.db.rollback()
 
-    def _existing_opening_entry(self) -> bool:
-        """True when a non-cancelled Opening Entry JE already exists for the company."""
-        return bool(frappe.db.exists("Journal Entry", {
-            "company": self.company,
-            "voucher_type": "Opening Entry",
-            "docstatus": ["<", 2],   # draft or submitted, not cancelled
-        }))
+    def _existing_opening_state(self) -> tuple[bool, set[str]]:
+        """Inspect this company's non-cancelled Opening Entries.
+
+        Returns ``(foreign, posted)``:
+        - ``posted`` — the set of batch labels this migrator already posted,
+          recovered from each entry's ``user_remark`` marker, so a re-run can skip
+          exactly those batches and post the rest.
+        - ``foreign`` — True when an Opening Entry exists whose remark this migrator
+          did *not* write (opening balances set up by hand or another tool); the
+          caller then skips entirely rather than double-post against those books.
+        """
+        remarks = frappe.get_all(
+            "Journal Entry",
+            filters={
+                "company": self.company,
+                "voucher_type": "Opening Entry",
+                "docstatus": ["<", 2],   # draft or submitted, not cancelled
+            },
+            pluck="user_remark",
+        )
+        posted: set[str] = set()
+        foreign = False
+        for remark in remarks or []:
+            label = self._batch_label_from_remark(remark)
+            if label:
+                posted.add(label)
+            else:
+                foreign = True
+        return foreign, posted
+
+    @classmethod
+    def _batch_label_from_remark(cls, remark) -> str:
+        """Recover the batch label from a ``user_remark`` we wrote, else "".
+
+        ``"Opening balances imported from Tally (Asset)"`` → ``"Asset"``; anything
+        that doesn't match our marker (a hand-written or third-party entry) → "".
+        """
+        s = (remark or "").strip()
+        if s.startswith(cls._REMARK_PREFIX) and s.endswith(")"):
+            return s[len(cls._REMARK_PREFIX):-1].strip()
+        return ""
 
     # ── Line builders ────────────────────────────────────────────────────────
     def _account_lines(self, accounts: list, result: ImportResult) -> list[dict]:
