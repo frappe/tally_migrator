@@ -221,15 +221,17 @@ class TallyMigratorPage {
 
 	renderStepper(activeId) {
 		const activeIdx = STEPS.findIndex((s) => s.id === activeId);
-		const ACTIVE = "#1f272e";   // Frappe desk default text/ink color
-		const DONE = "#28a745";     // success green
-		const PENDING = "#d1d8dd";  // light grey
+		// Use Frappe design tokens (with hex fallbacks) so the stepper matches the
+		// active desk theme — including dark mode — instead of hardcoded colours.
+		const ACTIVE = "var(--text-color, #1f272e)";    // desk ink / near-black
+		const DONE = "var(--green-500, #28a745)";       // Frappe success green
+		const PENDING = "var(--gray-300, #d1d8dd)";     // muted fill
 
 		const parts = STEPS.map((s, i) => {
 			const done = i < activeIdx;
 			const active = i === activeIdx;
 			const circleColor = done ? DONE : active ? ACTIVE : PENDING;
-			const textColor = active ? ACTIVE : done ? DONE : "#8d99a6";
+			const textColor = active ? ACTIVE : done ? DONE : "var(--text-muted, #8d99a6)";
 			const circle = `
 				<div style="display:flex; align-items:center; gap:8px;">
 					<span style="display:inline-flex; align-items:center; justify-content:center;
@@ -241,7 +243,7 @@ class TallyMigratorPage {
 				</div>`;
 			const connector =
 				i < STEPS.length - 1
-					? `<div style="flex:1; height:2px; background:${i < activeIdx ? DONE : "#e0e6ed"}; margin:0 12px;"></div>`
+					? `<div style="flex:1; height:2px; background:${i < activeIdx ? DONE : "var(--border-color, #e0e6ed)"}; margin:0 12px;"></div>`
 					: "";
 			return circle + connector;
 		});
