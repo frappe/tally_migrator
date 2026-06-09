@@ -403,6 +403,23 @@ class ItemImporter(BaseImporter):
                     r["_name"],
                     f"GST type '{raw}' not recognised — item imported as taxable; "
                     "set its GST treatment manually if needed.")
+        # India Compliance check: the item-level GST fields (HSN code, taxability,
+        # supply type, nil/exempt/non-GST flags) only exist when the India Compliance
+        # app is installed. Without it ERPNext core silently drops those keys, so we
+        # say so once instead of pretending the GST data landed.
+        self._india_compliance = "india_compliance" in frappe.get_installed_apps()
+        if not self._india_compliance and any(
+            (r.get("GSTTaxability") or r.get("HSNCode")
+             or r.get("GstApplicable") or r.get("TypeOfSupply"))
+            for r in records
+        ):
+            result.add_warning(
+                "GST details",
+                "Your items carry GST data (HSN code, taxability, supply type), but the "
+                "India Compliance app is not installed on this site — ERPNext core has no "
+                "fields to store it, so these attributes were skipped. To import them, "
+                "install 'India Compliance' from the Frappe Cloud marketplace and re-run "
+                "this migration; everything else imported normally.")
 
     def build_doc(self, record: dict) -> dict:
         tally_uom = (record.get("BaseUnits") or "").strip()
@@ -420,8 +437,30 @@ class ItemImporter(BaseImporter):
             "valuation_rate": self._to_float(record.get("StandardCost")),
             "gst_hsn_code": record.get("HSNCode") or "",
         }
+        vm = self._valuation_method(record)
+        if vm:
+            doc["valuation_method"] = vm
         doc.update(self._gst_fields(record))
         return doc
+
+    @staticmethod
+    def _valuation_method(record: dict):
+        """Map Tally's costing/valuation method to ERPNext's Item.valuation_method.
+
+        Tally "Avg. Cost"/"Avg. Price" → "Moving Average"; FIFO/LIFO map straight
+        across. Returns None for anything else, so the item keeps the ERPNext
+        default (inherited from Stock Settings) rather than getting an invalid value.
+        """
+        raw = (record.get("ValuationMethod") or "").strip().lower()
+        if not raw:
+            return None
+        if raw.startswith("fifo") or "first in" in raw:
+            return "FIFO"
+        if raw.startswith("lifo") or "last in" in raw:
+            return "LIFO"
+        if "avg" in raw or "average" in raw or "moving" in raw:
+            return "Moving Average"
+        return None
 
     @staticmethod
     def _is_stock_item(record: dict) -> int:
@@ -460,6 +499,9 @@ class ItemImporter(BaseImporter):
         on the doc is harmless when that app isn't installed (Frappe ignores keys
         that aren't real docfields). Unrecognised values fall back to taxable and
         are flagged as a warning in ``before_run``."""
+        # A flat "GST Applicable = Not Applicable" overrides taxability → non-GST.
+        if (record.get("GstApplicable") or "").strip().lower() in ("not applicable", "no"):
+            return {"is_non_gst": 1}
         return self._gst_treatment(record.get("GSTTaxability") or "") or {}
 
     def _ensure_item_groups(self, groups: set[str], result: ImportResult) -> None:

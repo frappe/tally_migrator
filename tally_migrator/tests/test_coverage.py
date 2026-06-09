@@ -126,6 +126,36 @@ class TestCoverage(unittest.TestCase):
         self.assertEqual(report["unmapped_field_count"], 1)
         self.assertEqual(report["noise_field_count"], 0)
 
+    def test_no_target_tags_are_suppressed(self):
+        # Bucket C: value-bearing tags with no ERPNext destination are hidden from
+        # the per-field tables but still counted, so the report stays honest+short.
+        report = coverage_report(_Src({
+            "Group": {"GRPCREDITPARENT": _tag(40, ""), "GRPDEBITPARENT": _tag(40, "")},
+            "Ledger": {"CURRENCYNAME": _tag(3, "₹"), "TAXTYPE": _tag(52, "Others"),
+                       "PRIORSTATENAME": _tag(3, "Maharashtra")},
+            "Godown": {"ARE1SERIALMASTER": _tag(6, ""), "JOBNAME": _tag(6, ""),
+                       "TAXUNITNAME": _tag(6, "")},
+            "Stock Group": {"BASEUNITS": _tag(3, "Nos"), "COSTINGMETHOD": _tag(2, "Avg. Cost"),
+                            "VALUATIONMETHOD": _tag(2, "Avg. Price")},
+        }))
+        self.assertTrue(report["clean"], report["types"])
+        self.assertEqual(report["unmapped_field_count"], 0)
+        self.assertEqual(report["noise_field_count"], 11)
+
+    def test_valuation_and_gst_flat_tags_now_mapped(self):
+        # Bucket A & B: valuation method + flat GST tags on a Stock Item are read
+        # by the extractor, so they must count as covered (not "Not mapped").
+        tags = {t: _tag() for t in read_tags("Stock Item")}
+        tags.update({
+            "VALUATIONMETHOD": _tag(1, "Avg. Price"),
+            "COSTINGMETHOD": _tag(1, "Avg. Cost"),
+            "GSTAPPLICABLE": _tag(1, "Applicable"),
+            "GSTTYPEOFSUPPLY": _tag(1, "Goods"),
+        })
+        report = coverage_report(_Src({"Stock Item": tags}))
+        self.assertTrue(report["clean"], report["types"])
+        self.assertEqual(report["unwritten_field_count"], 0)
+
 
 if __name__ == "__main__":
     unittest.main()

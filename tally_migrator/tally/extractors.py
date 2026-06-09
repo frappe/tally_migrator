@@ -20,6 +20,9 @@ ITEM_FIELDS = [
     "Name", "Parent", "BaseUnits", "StandardCost", "StandardPrice",
     "OpeningBalance", "OpeningRate", "Description",
     "HSNCode", "GSTTaxability", "TypeOfSupply",
+    # Inventory valuation method (→ Item.valuation_method) and the flat item-level
+    # GST flag (→ India-Compliance is_non_gst). Both have real ERPNext targets.
+    "ValuationMethod", "GstApplicable",
 ]
 
 GODOWN_FIELDS     = ["Name", "Parent", "Address"]
@@ -78,7 +81,12 @@ ITEM_TAGS = {
     # item-level value is 0/unreliable; ERPNext models rate as a tax template.)
     "HSNCode":       ["HSNDETAILS.LIST/HSNCODE", "HSNCODE"],
     "GSTTaxability": ["GSTDETAILS.LIST/TAXABILITY"],
-    "TypeOfSupply":  ["GSTDETAILS.LIST/SUPPLYTYPE", "TYPEOFSUPPLY"],
+    "TypeOfSupply":  ["GSTDETAILS.LIST/SUPPLYTYPE", "TYPEOFSUPPLY", "GSTTYPEOFSUPPLY"],
+    # Tally exposes the costing/market valuation under either tag; "Avg. Cost"/
+    # "Avg. Price" → Moving Average, FIFO/LIFO map straight across.
+    "ValuationMethod": ["VALUATIONMETHOD", "COSTINGMETHOD"],
+    # Flat item-level "Applicable / Not Applicable" GST switch.
+    "GstApplicable":   ["GSTAPPLICABLE"],
 }
 
 GODOWN_TAGS = {

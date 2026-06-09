@@ -111,14 +111,35 @@ _LEGACY_TAX_PREFIXES = (
     "EXCISE", "VAT", "SERVICETAX", "STX", "TDS", "TCS", "SCHVI", "XBRL",
     "LBT", "FBT", "SALESTAX", "CVD",
 )
+# Tags that DO carry a value but have no ERPNext destination — Tally-internal
+# pointers, data redundant with a field we already import, pre-GST excise
+# scaffolding, or attributes that only exist at a level ERPNext doesn't model.
+# Suppressed from the per-field tables (still counted in ``noise_field_count``)
+# so the report shows only fields with a real, fixable target. NOTE: a tag here is
+# only hidden where it's *unmapped* — e.g. VALUATIONMETHOD is a real mapped field
+# on a Stock Item (→ Item.valuation_method) yet has no home at Stock-Group level,
+# so it stays visible on items and is hidden only on groups.
+_NO_TARGET_TAGS = {
+    "GRPCREDITPARENT", "GRPDEBITPARENT",    # Tally internal Dr/Cr group nature
+    "CURRENCYNAME",                          # = company base currency (redundant)
+    "LEDGERCOUNTRYISDCODE",                  # phone ISD code (redundant with country)
+    "PRIORSTATENAME",                        # historical GST state (only current kept)
+    "DEFAULTTRANSFERMODE",                   # payment mode; no ERPNext party field
+    "TAXTYPE", "RATEOFVAT",                  # legacy tax classification / VAT rate
+    "DENOMINATOR", "OPENINGVALUE",           # derived from qty × rate (already imported)
+    "BASEUNITS",                             # stock-group default unit; Item Group has no UOM
+    "COSTINGMETHOD", "VALUATIONMETHOD",      # only unmapped at stock-GROUP level
+    "JOBNAME", "TAXUNITNAME",                # excise job-work / tax unit (pre-GST)
+    "ARE1SERIALMASTER", "ARE2SERIALMASTER", "ARE3SERIALMASTER",  # excise ARE forms
+}
 
 
 def _is_noise(tag: str, info: dict) -> bool:
     """True for Tally housekeeping tags that are never business data: audit fields,
-    legacy-tax scaffolding, empty ``.LIST`` containers and pure Yes/No/Not-Applicable
-    config toggles. Tags carrying a real value (a bank number, a city, a rate) are
-    NOT noise and still surface."""
-    if tag in _AUDIT_TAGS or tag.startswith(_LEGACY_TAX_PREFIXES):
+    legacy-tax scaffolding, no-ERPNext-target attributes, empty ``.LIST`` containers
+    and pure Yes/No/Not-Applicable config toggles. Tags carrying a real value with a
+    real destination (a bank number, a city, a rate) are NOT noise and still surface."""
+    if tag in _AUDIT_TAGS or tag in _NO_TARGET_TAGS or tag.startswith(_LEGACY_TAX_PREFIXES):
         return True
     sample = (info.get("sample") or "").strip().lower()
     if tag.endswith(".LIST") and not sample:
