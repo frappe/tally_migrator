@@ -12,6 +12,7 @@ from tally_migrator.validation.engine import (
 )
 from tally_migrator.migration.overrides import apply_record_overrides
 from tally_migrator.migration.coverage import coverage_report
+from tally_migrator.migration.account_mapping import account_mapping
 from tally_migrator.migration.readiness import check_readiness
 from tally_migrator.migration.master_migrator import MasterMigrator
 
@@ -89,6 +90,7 @@ def validate_masters_data(file_url, record_overrides="", erpnext_company="", pos
         validate_extraction(masters=masters, coa=coa), records_by_key(masters))
     payload["states"] = erpnext_states()
     payload["coverage"] = coverage_report(source)
+    payload["account_mapping"] = account_mapping(source)
     if erpnext_company:
         payload["readiness"] = check_readiness(erpnext_company, posting_date)
     return payload

@@ -12,6 +12,9 @@ const STEPS = [
 	{ id: "section-upload", label: "Upload" },
 	{ id: "section-configure", label: "Configure" },
 	{ id: "section-check", label: "Check" },
+	// "Review" only appears when the file carries accounts - masters-only files
+	// skip it (see visibleSteps / hasAccounts).
+	{ id: "section-review", label: "Review" },
 	{ id: "section-run", label: "Migrate" },
 ];
 
@@ -185,7 +188,26 @@ class TallyMigratorPage {
 					</div>
 				</div>
 
-				<!-- STEP 4: Run & Results -->
+				<!-- STEP 4: Review accounts (only when the file carries accounts) -->
+				<div id="section-review" style="display:none;">
+					<h4>Review your accounts</h4>
+					<p class="text-muted">
+						Here's how your Tally ledgers will be classified in ERPNext's chart of
+						accounts, with their opening balances. Nothing is changed automatically -
+						please check anything we've flagged below.
+					</p>
+					<div id="review-summary" style="margin-bottom:16px;"></div>
+					<div id="review-exceptions" style="margin-bottom:16px;"></div>
+					<div id="review-all"></div>
+
+					<div style="margin-top:24px;">
+						<button id="btn-back-review" class="btn btn-default btn-sm">← Back</button>
+						&nbsp;
+						<button id="btn-next-review" class="btn btn-primary btn-sm">Continue →</button>
+					</div>
+				</div>
+
+				<!-- STEP 5: Run & Results -->
 				<div id="section-run" style="display:none;">
 					<h4>Migration</h4>
 					<p id="run-subtitle" class="text-muted"></p>
@@ -219,15 +241,27 @@ class TallyMigratorPage {
 	// Frappe default (near-black) for the active step, green for completed,
 	// light grey for steps still ahead - matches standard Frappe desk styling.
 
+	// Accounts make the Review step relevant; masters-only files skip it.
+	hasAccounts() {
+		return !!(this.accountMapping && this.accountMapping.total_accounts > 0);
+	}
+
+	// The steps actually shown in the stepper - Review is dropped when the file
+	// carries no accounts, so a masters-only run still reads as a clean 4-step flow.
+	visibleSteps() {
+		return STEPS.filter((s) => s.id !== "section-review" || this.hasAccounts());
+	}
+
 	renderStepper(activeId) {
-		const activeIdx = STEPS.findIndex((s) => s.id === activeId);
+		const steps = this.visibleSteps();
+		const activeIdx = steps.findIndex((s) => s.id === activeId);
 		// Use Frappe design tokens (with hex fallbacks) so the stepper matches the
 		// active desk theme - including dark mode - instead of hardcoded colours.
 		const ACTIVE = "var(--text-color, #1f272e)";    // desk ink / near-black
 		const DONE = "var(--green-500, #28a745)";       // Frappe success green
 		const PENDING = "var(--gray-300, #d1d8dd)";     // muted fill
 
-		const parts = STEPS.map((s, i) => {
+		const parts = steps.map((s, i) => {
 			const done = i < activeIdx;
 			const active = i === activeIdx;
 			const circleColor = done ? DONE : active ? ACTIVE : PENDING;
@@ -242,7 +276,7 @@ class TallyMigratorPage {
 					<span style="color:${textColor}; font-weight:${active ? 600 : 400}; font-size:13px;">${s.label}</span>
 				</div>`;
 			const connector =
-				i < STEPS.length - 1
+				i < steps.length - 1
 					? `<div style="flex:1; height:2px; background:${i < activeIdx ? DONE : "var(--border-color, #e0e6ed)"}; margin:0 12px;"></div>`
 					: "";
 			return circle + connector;
@@ -292,8 +326,13 @@ class TallyMigratorPage {
 			this.resolveUomsAndContinue();
 		});
 
-		// Step 4
-		$("#btn-back-3").on("click", () => this.show("section-check"));
+		// Step 4 - review accounts (skipped when the file has no accounts)
+		$("#btn-back-review").on("click", () => this.show("section-check"));
+		$("#btn-next-review").on("click", () => this.gotoRun());
+
+		// Step 5 - run. Back lands on Review when it exists, else straight to Check.
+		$("#btn-back-3").on("click", () =>
+			this.show(this.hasAccounts() ? "section-review" : "section-check"));
 		$("#btn-run").on("click", () => this.runMigration());
 
 		// Persist option changes to the draft as the user makes them.
@@ -535,6 +574,7 @@ class TallyMigratorPage {
 		this.uomOverrides = {};
 		this.qualityReport = null;
 		this.coverageReport = null;
+		this.accountMapping = null;
 		this.readiness = null;
 		this.recordOverrides = {};
 		this.states = [];
@@ -567,6 +607,7 @@ class TallyMigratorPage {
 				this.qualityReport = r.message || null;
 				this.states = (r.message && r.message.states) || [];
 				this.coverageReport = (r.message && r.message.coverage) || null;
+				this.accountMapping = (r.message && r.message.account_mapping) || null;
 				this.readiness = (r.message && r.message.readiness) || null;
 				this.renderDataQuality();
 				this.renderReadiness();
@@ -1027,7 +1068,7 @@ class TallyMigratorPage {
 	resolveUomsAndContinue() {
 		if (!this.uomIssues.length) {
 			this.uomOverrides = {};
-			this.gotoRun();
+			this.gotoReviewOrRun();
 			return;
 		}
 
@@ -1049,7 +1090,7 @@ class TallyMigratorPage {
 
 		const finish = () => {
 			this.uomOverrides = overrides;
-			this.gotoRun();
+			this.gotoReviewOrRun();
 		};
 
 		if (!toCreate.size) {
@@ -1079,6 +1120,173 @@ class TallyMigratorPage {
 				finish();
 			},
 			error: () => frappe.dom.unfreeze(),
+		});
+	}
+
+	// Branch after the Check step: accounts-bearing files get the Review step;
+	// masters-only files go straight to the run.
+	gotoReviewOrRun() {
+		if (this.hasAccounts()) {
+			this.renderAccountMapping();
+			this.show("section-review");
+		} else {
+			this.gotoRun();
+		}
+	}
+
+	// ── Step 4: review accounts ──────────────────────────────────────────────────
+	// Confidence-first: a short summary + only the rows we had to infer, with the
+	// full chart of accounts available on demand. All derived from the resolver -
+	// no hand-maintained labels. Read-only; never blocks Continue.
+	renderAccountMapping() {
+		const m = this.accountMapping;
+		if (!m || !m.total_accounts) {
+			$("#review-summary, #review-exceptions, #review-all").empty();
+			return;
+		}
+		const esc = frappe.utils.escape_html;
+		const fmt = (n) => Number(n || 0).toLocaleString("en-IN");
+		const inferred = m.inferred_count || 0;
+		const confident = m.total_accounts - inferred;
+		const plug = m.opening || {};
+
+		// Opening balance cell: amount + Dr/Cr, muted when zero.
+		const ob = (r) =>
+			r.amount
+				? `${fmt(r.amount)} <span class="text-muted">${esc(r.dr_cr)}</span>`
+				: `<span class="text-muted">0</span>`;
+		const classifiedAs = (r) =>
+			esc(r.root_type) + (r.account_type ? ` · ${esc(r.account_type)}` : "");
+
+		// ── Summary cards ──────────────────────────────────────────────────────
+		const AMBER = "var(--yellow-600, #b8860b)";
+		const GREEN = "var(--green-600, #1e7e34)";
+		const card = (big, label, sub, color) => `
+			<div style="flex:1; border:1px solid #e0e6ed; border-radius:6px; padding:10px 12px;">
+				<div class="text-muted small">${label}</div>
+				<div style="font-size:20px; font-weight:700;${color ? `color:${color};` : ""}">${big}</div>
+				<div class="small" style="color:${color || "var(--text-muted, #8d99a6)"};">${sub}</div>
+			</div>`;
+
+		const plugCard = plug.clean
+			? card("Balanced", "Opening balances", "✓ Dr = Cr", GREEN)
+			: card(
+					`${fmt(plug.temporary_opening_plug)} ${esc(plug.plug_dr_cr)}`,
+					"Opening balances",
+					"⚠ posts to Temporary Opening",
+					AMBER
+			  );
+
+		$("#review-summary").html(`
+			<div style="display:flex; gap:10px;">
+				${card(fmt(confident), "Mapped by standard groups", "✓ high confidence", GREEN)}
+				${card(
+					fmt(inferred),
+					"We had to infer",
+					inferred ? "⚠ please check" : "none",
+					inferred ? AMBER : "var(--text-muted, #8d99a6)"
+				)}
+				${plugCard}
+			</div>
+		`);
+
+		// ── Exceptions: only the inferred rows, named and explained ────────────
+		if (inferred) {
+			const rows = m.inferred
+				.map(
+					(r) => `
+					<tr>
+						<td style="padding:6px 10px;"><strong>${esc(r.name)}</strong></td>
+						<td style="padding:6px 10px;" class="text-muted">${classifiedAs(r)}</td>
+						<td style="padding:6px 10px; text-align:right;">${ob(r)}</td>
+						<td style="padding:6px 10px;" class="text-muted">no standard Tally group - defaulted</td>
+					</tr>`
+				)
+				.join("");
+			$("#review-exceptions").html(`
+				<div class="alert alert-warning" style="margin:0;">
+					<strong>⚠ ${fmt(inferred)} account${inferred === 1 ? "" : "s"} we inferred - please confirm.</strong>
+					These ledgers sit under a custom Tally group with no standard ancestor, so we
+					defaulted their type. Only you know if that's right - it's easy to fix the group in Tally and re-upload.
+					<div style="margin-top:10px; border:1px solid rgba(0,0,0,0.08); border-radius:6px; overflow:hidden; background:#fff;">
+						<table class="table table-condensed" style="margin:0; font-size:13px;">
+							<thead>
+								<tr>
+									<th style="border-top:0; padding:6px 10px;">Tally ledger</th>
+									<th style="border-top:0; padding:6px 10px;">Classified as</th>
+									<th style="border-top:0; padding:6px 10px; text-align:right;">Opening</th>
+									<th style="border-top:0; padding:6px 10px;">Why flagged</th>
+								</tr>
+							</thead>
+							<tbody>${rows}</tbody>
+						</table>
+					</div>
+				</div>
+			`);
+		} else {
+			$("#review-exceptions").html(`
+				<div class="alert alert-success" style="margin:0;">
+					<strong>✓ All ${fmt(m.total_accounts)} accounts mapped using Tally's standard groups.</strong>
+					Nothing needed guessing. Open the full list below if you'd like to review it.
+				</div>
+			`);
+		}
+
+		// ── Full chart of accounts (collapsed) ─────────────────────────────────
+		const book = (m.groups || [])
+			.map((g) => {
+				const sub = [];
+				if (g.subtotal_dr) sub.push(`${fmt(g.subtotal_dr)} Dr`);
+				if (g.subtotal_cr) sub.push(`${fmt(g.subtotal_cr)} Cr`);
+				const accRows = g.accounts
+					.map(
+						(r) => `
+						<tr>
+							<td style="padding:6px 10px;">${esc(r.name)}${
+							r.inferred
+								? ` <span title="inferred" style="color:${AMBER};">⚠</span>`
+								: ""
+						}</td>
+							<td style="padding:6px 10px;" class="text-muted">${esc(r.account_type || "—")}</td>
+							<td style="padding:6px 10px;" class="text-muted">${esc(r.parent || "—")}</td>
+							<td style="padding:6px 10px; text-align:right;">${ob(r)}</td>
+						</tr>`
+					)
+					.join("");
+				return `
+					<tr style="background:var(--fg-color, #f7fafc);">
+						<td colspan="3" style="padding:6px 10px; font-weight:600;">${esc(g.root_type)}</td>
+						<td style="padding:6px 10px; text-align:right; font-weight:600;">${sub.join(" · ")}</td>
+					</tr>
+					${accRows}`;
+			})
+			.join("");
+
+		$("#review-all").html(`
+			<div id="review-all-head" style="cursor:pointer; display:flex; align-items:center; justify-content:space-between;
+				border:1px solid #e0e6ed; border-radius:6px; padding:10px 12px;">
+				<span class="text-muted">Show all ${fmt(m.total_accounts)} mapped accounts</span>
+				<span class="text-muted" id="review-all-caret">▸</span>
+			</div>
+			<div id="review-all-body" style="display:none; margin-top:8px; max-height:360px; overflow-y:auto;
+				border:1px solid #e0e6ed; border-radius:6px;">
+				<table class="table table-condensed" style="margin:0; font-size:13px;">
+					<thead>
+						<tr>
+							<th style="border-top:0; padding:6px 10px;">Tally ledger</th>
+							<th style="border-top:0; padding:6px 10px;">Account type</th>
+							<th style="border-top:0; padding:6px 10px;">Under group</th>
+							<th style="border-top:0; padding:6px 10px; text-align:right;">Opening</th>
+						</tr>
+					</thead>
+					<tbody>${book}</tbody>
+				</table>
+			</div>
+		`);
+		$("#review-all-head").on("click", () => {
+			const $body = $("#review-all-body");
+			$body.toggle();
+			$("#review-all-caret").text($body.is(":visible") ? "▾" : "▸");
 		});
 	}
 
@@ -1361,8 +1569,10 @@ class TallyMigratorPage {
 		this.uomOverrides = {};
 		this.qualityReport = null;
 		this.coverageReport = null;
+		this.accountMapping = null;
 		this.recordOverrides = {};
 		this.states = [];
+		$("#review-summary, #review-exceptions, #review-all").empty();
 		$("#file-status").html("");
 		$("#preview-box").hide().html("");
 		$("#btn-next-upload").prop("disabled", true);
