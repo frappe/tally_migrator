@@ -174,6 +174,21 @@ class TestValidateMasters(unittest.TestCase):
         report = validate_masters(m)
         self.assertIn("ITEM_CODE_COLLISION", self._codes(report))
 
+    def test_invalid_email_is_warning(self):
+        m = _masters(customers=[_party("X", LedgerEmail="not-an-email")])
+        report = validate_masters(m)
+        self.assertIn("EMAIL_INVALID", self._codes(report))
+        self.assertFalse(report.has_errors)  # warning only - party still imports
+
+    def test_valid_email_is_silent(self):
+        m = _masters(customers=[_party("X", LedgerEmail="sales@acme.co.in")])
+        self.assertNotIn("EMAIL_INVALID", self._codes(validate_masters(m)))
+
+    def test_blank_email_is_silent(self):
+        # No email is fine (it's optional); only a malformed one warns.
+        self.assertNotIn(
+            "EMAIL_INVALID", self._codes(validate_masters(_masters(customers=[_party("X")]))))
+
     def test_duplicate_party_is_warning(self):
         m = _masters(customers=[_party("Reliance Industries"), _party("Reliance Ind.")])
         self.assertIn("DUPLICATE_PARTY", self._codes(validate_masters(m)))

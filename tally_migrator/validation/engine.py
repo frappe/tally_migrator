@@ -265,6 +265,11 @@ def find_duplicate_groups(parties: list[dict], threshold: float = 0.80) -> list[
 
 # ── Per-entity rule passes ────────────────────────────────────────────────────
 
+# Party email: structural format check only (a live deliverability probe needs the
+# network and is out of scope here, like the GSTIN registry check).
+_EMAIL_RE = re.compile(r"^[^@\s]+@[^@\s]+\.[^@\s]+$")
+
+
 def _validate_party(rec: dict, entity_type: str, report: ValidationReport) -> None:
     name = rec["_name"]
     gstin = (rec.get("GSTRegistrationNumber") or "").strip()
@@ -310,6 +315,18 @@ def _validate_party(rec: dict, entity_type: str, report: ValidationReport) -> No
             entity_type, name, WARNING, "PIN_STATE_CONFLICT",
             f"PIN {pin} looks like {expected}, but state is {state}.",
             "Check whether the PIN or the state is the typo."))
+
+    # A malformed email migrates fine on the party itself, but ERPNext rejects it
+    # when the party's Contact is built (where the address/phone/email land), so the
+    # contact - and thus the email - would be dropped. Surface it pre-flight as a
+    # warning rather than letting it fail silently at import time.
+    email = (rec.get("LedgerEmail") or "").strip()
+    if email and not _EMAIL_RE.match(email):
+        report.add(ValidationIssue(
+            entity_type, name, WARNING, "EMAIL_INVALID",
+            f"Email '{email}' is not a valid address.",
+            "Correct the email in Tally, or clear it so the party still imports "
+            "with its other contact details."))
 
 
 def _validate_items(items: list[dict], report: ValidationReport) -> None:

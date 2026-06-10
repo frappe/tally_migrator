@@ -182,6 +182,13 @@ class TestERPNextImporter(unittest.TestCase):
         result = self.importer.import_warehouses(warehouses)
         self.assertEqual(result.failed, 0, msg=str(result.errors))
         self.assertEqual(result.created, 2)
+        # The parent godown must become a GROUP warehouse, or ERPNext won't render
+        # the child nested under it (the tree only expands is_group nodes).
+        abbr = frappe.get_value("Company", self.company, "abbr")
+        self.assertEqual(
+            frappe.db.get_value("Warehouse", f"_TMTest Parent WH - {abbr}", "is_group"), 1)
+        self.assertEqual(
+            frappe.db.get_value("Warehouse", f"_TMTest Child WH - {abbr}", "is_group"), 0)
 
     # ── Stock Groups → nested Item Groups ───────────────────────────────────────
 
@@ -551,6 +558,39 @@ class TestERPNextImporter(unittest.TestCase):
         zero = [w for w in result.warnings if "zero valuation" in w["reason"]]
         self.assertEqual(len(zero), 4)                       # one per item
         self.assertEqual(len({w["reason"] for w in zero}), 1)  # identical text
+
+    def test_value_rate_mismatch_warns(self):
+        """When Tally carries BOTH an opening rate and value that don't satisfy
+        value = qty x rate, the divergence is flagged (Item Master Rule 1)."""
+        from unittest import mock
+        from tally_migrator.erpnext.importers import StockOpeningImporter
+
+        imp = StockOpeningImporter("_TMTest Co", "TC")
+        imp._existing_opening_stock = lambda: False
+        imp._default_warehouse = lambda: "Stores - TC"
+        with mock.patch("frappe.get_doc", side_effect=Exception("stop")):
+            result = imp.run(
+                # 10 x 5 = 50, but Tally reports a value of 999 -> mismatch.
+                items=[{"_name": "Widget", "OpeningBalance": "10 Nos",
+                        "OpeningRate": "5.00/Nos", "OpeningValue": "-999.00"}],
+                posting_date="2024-04-01")
+        self.assertTrue(any("does not reconcile" in w["reason"] for w in result.warnings))
+
+    def test_value_rate_consistent_does_not_warn(self):
+        """The normal case: value = qty x rate (with Tally's Dr-negative value sign)
+        must NOT warn, or every stock item would be flagged."""
+        from unittest import mock
+        from tally_migrator.erpnext.importers import StockOpeningImporter
+
+        imp = StockOpeningImporter("_TMTest Co", "TC")
+        imp._existing_opening_stock = lambda: False
+        imp._default_warehouse = lambda: "Stores - TC"
+        with mock.patch("frappe.get_doc", side_effect=Exception("stop")):
+            result = imp.run(
+                items=[{"_name": "Widget", "OpeningBalance": "10 Nos",
+                        "OpeningRate": "5.00/Nos", "OpeningValue": "-50.00"}],
+                posting_date="2024-04-01")
+        self.assertFalse(any("does not reconcile" in w["reason"] for w in result.warnings))
 
     # ── Opening-balance batching (no DB - residual maths only) ──────────────────
 

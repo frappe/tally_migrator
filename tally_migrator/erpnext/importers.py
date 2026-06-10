@@ -666,6 +666,19 @@ class WarehouseImporter(BaseImporter):
     def iter_records(self, records: list[dict]) -> list[dict]:
         return self._topo_sort(records)
 
+    def before_run(self, records: list[dict], result: ImportResult) -> None:
+        # A Tally Godown that is the Parent of another Godown must be created as a
+        # GROUP warehouse, or the migrated tree is malformed: ERPNext only renders
+        # nesting under an is_group warehouse, so children of a leaf parent are
+        # orphaned in the warehouse tree (the insert itself does not fail, so the
+        # loss is silent). Mirrors how Stock Groups and Cost Centres mark a node
+        # that is someone's parent. A parent referenced but absent from the file
+        # falls through to _resolve_parent's root fallback, so it needs no flag here.
+        self._group_names = {
+            (r.get("Parent") or "").strip()
+            for r in records if (r.get("Parent") or "").strip()
+        }
+
     def build_doc(self, record: dict) -> dict:
         doc = {
             "doctype": "Warehouse",
@@ -673,6 +686,8 @@ class WarehouseImporter(BaseImporter):
             "company": self.company,
             "address_line_1": record.get("Address") or "",
         }
+        if record["_name"] in getattr(self, "_group_names", set()):
+            doc["is_group"] = 1
         parent_wh = self._resolve_parent(record.get("Parent", "").strip())
         if parent_wh:
             doc["parent_warehouse"] = parent_wh
@@ -1906,13 +1921,27 @@ class StockOpeningImporter:
             # the value Tally already computed (OpeningValue ÷ qty - sign is direction,
             # so abs), then the item's standard cost. _to_float can't read the unit
             # suffix, hence _parse_rate.
-            rate = TallyExtractor._parse_rate(it.get("OpeningRate"))
-            if rate == 0:
-                value = abs(BaseImporter._to_float(it.get("OpeningValue")))
-                if value:
-                    rate = value / qty
+            opening_rate = TallyExtractor._parse_rate(it.get("OpeningRate"))
+            opening_value = abs(BaseImporter._to_float(it.get("OpeningValue")))
+            rate = opening_rate
+            if rate == 0 and opening_value:
+                rate = opening_value / qty
             if rate == 0:
                 rate = TallyExtractor._parse_rate(it.get("StandardCost"))
+            # Item Master Rule 1: when Tally gives BOTH an opening rate and value they
+            # must satisfy value = qty x rate (Tally derives one from the other). A
+            # divergence beyond rounding means the source is internally inconsistent;
+            # we post using the opening rate, but flag that the posted value will not
+            # match Tally's recorded value rather than letting it diverge silently.
+            if opening_rate and opening_value:
+                expected = qty * opening_rate
+                if abs(opening_value - expected) > max(1.0, 0.01 * expected):
+                    result.add_warning(
+                        it["_name"],
+                        f"opening stock value does not reconcile - Tally reports a "
+                        f"value of {opening_value:,.2f}, but quantity x rate is "
+                        f"{qty:g} x {opening_rate:g} = {expected:,.2f}. Posted using "
+                        "the opening rate; verify this item's opening stock in Tally.")
 
             code = safe_item_code(it["_name"])
             prev = by_code.get(code)
