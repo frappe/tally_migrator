@@ -174,10 +174,16 @@ class MasterMigrator:
             masters = self.extractor.extract_all()
             apply_record_overrides(masters, self.record_overrides, self.applied_edits)
             coa = self.extractor.extract_coa()
-            frappe.logger().info(f"[Tally Migrator] Extracted: {masters.summary} | COA: {coa.summary}")
+            # Bill-wise party opening detail (BILLALLOCATIONS) - empty when the
+            # source can't supply child lists, so party openings then degrade to a
+            # single lump opening invoice per party (no bill breakdown).
+            bills = self.extractor.extract_bill_allocations()
+            frappe.logger().info(
+                f"[Tally Migrator] Extracted: {masters.summary} | COA: {coa.summary} "
+                f"| bills: {len(bills)}")
 
             results: dict[str, ImportResult] = {}
-            for step in self._pipeline(masters, coa):
+            for step in self._pipeline(masters, coa, bills):
                 self._progress(step.percent, f"Importing {len(step.records)} {step.label.lower()}...")
                 results[step.label] = step.importer(step.records)
             self._record_excluded(results, coa)
@@ -192,7 +198,7 @@ class MasterMigrator:
             self._fail_log(exc)
             raise
 
-    def _pipeline(self, masters: ExtractedMasters, coa) -> list[PipelineStep]:
+    def _pipeline(self, masters: ExtractedMasters, coa, bills) -> list[PipelineStep]:
         """Entity import order. Adding an entity = add one step here.
 
         Accounts (COA) first - opening balances post against them; Cost Centres
@@ -219,19 +225,31 @@ class MasterMigrator:
             PipelineStep("Suppliers", 65, self.importer.import_suppliers, masters.suppliers),
             PipelineStep("Items", 80, self.importer.import_items, masters.items),
         ]
-        # Opening balances: ledger accounts + party (Customer/Supplier) balances,
-        # posted as one balanced, submitted Opening Entry once every account and
-        # party exists.
+        # Ledger account opening balances (cash, assets, P&L) - one balanced,
+        # submitted Opening Entry (JE) once every account exists. Party balances
+        # NO LONGER go through this path: they post invoice-wise below, so the JE
+        # gets empty customer/supplier lists and covers ledger accounts only.
         ledger_ob = any(a.opening_balance and not a.is_group for a in coa.accounts)
-        party_ob = any(_has_opening(r.get("OpeningBalance"))
-                       for r in (*masters.customers, *masters.suppliers))
-        if ledger_ob or party_ob:
+        if ledger_ob:
             steps.append(PipelineStep(
                 "Opening Balances", 90,
-                lambda _records, c=masters.customers, s=masters.suppliers:
-                    self.importer.import_opening_balances(
-                        coa.accounts, c, s, self.posting_date),
+                lambda _records: self.importer.import_opening_balances(
+                    coa.accounts, [], [], self.posting_date),
                 coa.accounts,
+            ))
+        # Party (Customer/Supplier) opening balances - invoice-wise: one opening
+        # Sales/Purchase Invoice per outstanding bill, a Payment Entry per advance,
+        # posted once every party exists. Gated on either bill-wise detail or a
+        # party ledger opening (a party with an opening but no bills falls back to
+        # a single lump opening invoice). See PartyOpeningImporter.
+        party_ob = any(_has_opening(r.get("OpeningBalance"))
+                       for r in (*masters.customers, *masters.suppliers))
+        if bills or party_ob:
+            steps.append(PipelineStep(
+                "Party Openings", 91,
+                lambda _records, c=masters.customers, s=masters.suppliers, b=bills:
+                    self.importer.import_party_openings(b, c, s, self.posting_date),
+                masters.customers,
             ))
         # Opening stock: item opening quantities → one submitted Stock Reconciliation.
         # Item opening balances are unit-suffixed quantities ("55 Nos"), so gate on

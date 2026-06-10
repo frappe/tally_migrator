@@ -84,8 +84,8 @@ class TestOpeningBalanceGuards(unittest.TestCase):
         accounts[0].opening_balance = 5000.0
         accounts[0].is_group = 0
         accounts[0].opening_dr_cr = "Dr"
-        with mock.patch("frappe.db") as db:
-            db.exists.return_value = False
+        accounts[0].root_type = "Asset"
+        with mock.patch("frappe.db.exists", return_value=False):
             lines = imp._account_lines(accounts, result)
         self.assertEqual(lines, [])
         self.assertEqual(result.warned, 1)
@@ -96,8 +96,8 @@ class TestOpeningBalanceGuards(unittest.TestCase):
         result = ImportResult("Journal Entry")
         acc = _node("Cash", None)
         acc.opening_balance, acc.is_group, acc.opening_dr_cr = 5000.0, 0, "Dr"
-        with mock.patch("frappe.db") as db:
-            db.exists.return_value = True
+        acc.root_type = "Asset"
+        with mock.patch("frappe.db.exists", return_value=True):
             lines = imp._account_lines([acc], result)
         self.assertEqual(len(lines), 1)
         self.assertEqual(result.warned, 0)
@@ -107,8 +107,7 @@ class TestOpeningBalanceGuards(unittest.TestCase):
         result = ImportResult("Journal Entry")
         parties = [{"_name": "Acme", "OpeningBalance": "1000 Dr"}]
         with mock.patch("frappe.get_cached_value", return_value="Debtors - TC"), \
-                mock.patch("frappe.db") as db:
-            db.get_value.return_value = None  # not created
+                mock.patch("frappe.db.get_value", return_value=None):  # not created
             lines = imp._party_lines(parties, "Customer", "default_receivable_account", result)
         self.assertEqual(lines, [])
         self.assertEqual(result.warned, 1)
@@ -121,8 +120,7 @@ class TestOpeningBalanceGuards(unittest.TestCase):
         result = ImportResult("Journal Entry")
         parties = [{"_name": "Acme", "OpeningBalance": "1000 Dr"}]
         with mock.patch("frappe.get_cached_value", return_value="Debtors - TC"), \
-                mock.patch("frappe.db") as db:
-            db.get_value.return_value = "CUST-0001"  # resolved docname differs from name
+                mock.patch("frappe.db.get_value", return_value="CUST-0001"):  # resolved docname differs from name
             lines = imp._party_lines(parties, "Customer", "default_receivable_account", result)
         self.assertEqual(len(lines), 1)
         self.assertEqual(lines[0]["party"], "CUST-0001")
@@ -385,6 +383,7 @@ class TestPartyOpeningOrchestration(unittest.TestCase):
                              "is_advance": is_advance})
 
         with mock.patch.object(imp, "_emit", side_effect=fake_emit), \
+                mock.patch.object(imp, "_is_foreign_currency_party", return_value=False), \
                 mock.patch("frappe.db.get_value", return_value="RESOLVED-NAME"):
             imp._process(parties, party_type, by_party, set(), result)
         return captured, result
@@ -425,11 +424,41 @@ class TestPartyOpeningOrchestration(unittest.TestCase):
         imp = self._imp()
         result = ImportResult("Opening Invoice")
         with mock.patch.object(imp, "_emit") as emit, \
+                mock.patch.object(imp, "_is_foreign_currency_party", return_value=False), \
                 mock.patch("frappe.db.get_value", return_value=None):  # never created
             imp._process([{"_name": "Ghost", "OpeningBalance": "-100"}],
                          "Customer", {}, set(), result)
         emit.assert_not_called()
         self.assertEqual(result.warned, 1)
+
+    def test_foreign_currency_party_skipped_with_warning(self):
+        # A party billing in a non-company currency is skipped (the export carries
+        # no rate); nothing is emitted and the user is warned to enter it manually.
+        imp = self._imp()
+        result = ImportResult("Opening Invoice")
+        with mock.patch.object(imp, "_emit") as emit, \
+                mock.patch.object(imp, "_is_foreign_currency_party", return_value=True), \
+                mock.patch("frappe.db.get_value", return_value="RESOLVED-NAME"):
+            imp._process([{"_name": "USD Corp", "OpeningBalance": "-5000"}],
+                         "Customer", {}, set(), result)
+        emit.assert_not_called()
+        self.assertEqual(result.warned, 1)
+
+    def test_rerun_skips_already_posted_bills(self):
+        # Idempotency at the orchestration level: a second run whose markers are
+        # all already in `seen` emits nothing new (every _emit is a no-op skip).
+        bills = [BillAllocation("ABC", "ABC/1", "2020-03-10", 30000.0, "Dr", False)]
+        imp = self._imp()
+        result = ImportResult("Opening Invoice")
+        seen = {"Tally opening: ABC | ABC/1"}
+        with mock.patch.object(imp, "_is_foreign_currency_party", return_value=False), \
+                mock.patch("frappe.db.get_value", return_value="RESOLVED-NAME"), \
+                mock.patch("frappe.get_doc") as get_doc:
+            imp._process([{"_name": "ABC", "OpeningBalance": "-30000"}],
+                         "Customer", {"ABC": bills}, seen, result)
+        get_doc.assert_not_called()       # nothing re-created
+        self.assertEqual(result.created, 0)
+        self.assertEqual(result.skipped, 1)
 
 
 class TestPartyOpeningEmit(unittest.TestCase):
@@ -530,6 +559,31 @@ class TestPartyOpeningDocBuilders(unittest.TestCase):
         self.assertEqual(d["payment_type"], "Pay")
         self.assertEqual(d["paid_from"], "Temporary Opening - TC")
         self.assertEqual(d["paid_to"], "Creditors - TC")     # to payable
+
+
+class TestPartyOpeningForeignCurrency(unittest.TestCase):
+    """_is_foreign_currency_party: blank/company currency is local; anything else
+    is foreign (and so skipped invoice-wise upstream)."""
+
+    def _imp(self):
+        imp = PartyOpeningImporter("_T Co", "TC", "2026-04-01")
+        imp._cur = "INR"   # company currency resolved
+        return imp
+
+    def test_blank_party_currency_is_local(self):
+        imp = self._imp()
+        with mock.patch("frappe.db.get_value", return_value=None):
+            self.assertFalse(imp._is_foreign_currency_party("Customer", "CUST"))
+
+    def test_same_currency_is_local(self):
+        imp = self._imp()
+        with mock.patch("frappe.db.get_value", return_value="INR"):
+            self.assertFalse(imp._is_foreign_currency_party("Customer", "CUST"))
+
+    def test_other_currency_is_foreign(self):
+        imp = self._imp()
+        with mock.patch("frappe.db.get_value", return_value="USD"):
+            self.assertTrue(imp._is_foreign_currency_party("Supplier", "SUPP"))
 
 
 if __name__ == "__main__":

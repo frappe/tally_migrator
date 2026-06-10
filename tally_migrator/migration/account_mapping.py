@@ -33,12 +33,17 @@ _ROOT_ORDER = ["Asset", "Liability", "Equity", "Income", "Expense"]
 # Opening balances within this much of zero are treated as clean (rounding dust).
 _PLUG_EPSILON = 0.01
 
+# Mirror of PartyOpeningImporter._PLUG_THRESHOLD - a bill/residual below this is
+# rounding noise and is not emitted as its own opening document.
+_PARTY_PLUG_THRESHOLD = 1.0
+
 
 def account_mapping(source) -> dict:
     """Build the accounts-mapping preview for an uploaded Tally masters file."""
     extractor = TallyExtractor(source)
     coa = extractor.extract_coa()
     masters = extractor.extract_all()
+    bills = extractor.extract_bill_allocations()
 
     groups = source.get_collection("Group", GROUP_FIELDS)
     ledgers = source.get_collection("Ledger", LEDGER_FIELDS, LEDGER_TAGS)
@@ -87,12 +92,92 @@ def account_mapping(source) -> dict:
         "inferred": inferred,
         "groups": groups_out,
         "opening": _opening_plug(ledger_accounts, masters),
+        "party_openings": _party_openings(masters, bills),
     }
 
 
 def _signed(amount: float, dr_cr: str) -> float:
     """Dr is positive, Cr negative - the convention the opening JE balances on."""
     return amount if dr_cr == "Dr" else -amount
+
+
+def _classify_party(party_type: str, signed: float, is_advance: bool) -> str:
+    """Mirror of PartyOpeningImporter._classify: an outstanding invoice (party's
+    natural side, not flagged advance) vs an advance/credit. Customer natural side
+    = Dr (signed > 0); Supplier = Cr (signed < 0); Tally's ISADVANCE forces advance."""
+    if is_advance:
+        return "advance"
+    on_natural_side = (signed > 0) if party_type == "Customer" else (signed < 0)
+    return "invoice" if on_natural_side else "advance"
+
+
+def _party_openings(masters, bills) -> dict:
+    """Preview of how party (customer/supplier) opening balances will post,
+    invoice-wise. Read-only twin of ``PartyOpeningImporter``: it groups bills per
+    party and applies the *same* classification and residual logic, but counts
+    documents instead of creating them. The four buckets are exactly what the
+    importer emits:
+
+      * **invoices**   - outstanding bills on the party's natural side -> one
+        opening Sales/Purchase Invoice each.
+      * **advances**   - ISADVANCE bills (or bills on the opposite side) -> one
+        opening Payment Entry each.
+      * **on_account** - parties whose bills did not add up to the ledger opening;
+        the gap posts as one 'On Account' opening (a mismatch worth reviewing).
+      * **lump**       - parties with an opening but no bill detail -> a single
+        opening document for the whole balance.
+    """
+    by_party: dict[str, list] = {}
+    for b in bills or []:
+        by_party.setdefault(b.party, []).append(b)
+
+    invoices = advances = on_account = lump = 0
+    party_count = 0
+    mismatches: list[dict] = []
+    for party_type, records in (("Customer", masters.customers),
+                                ("Supplier", masters.suppliers)):
+        for record in records:
+            name = record.get("_name", "")
+            ledger_amt, ledger_drcr = TallyExtractor._parse_opening(
+                record.get("OpeningBalance", ""))
+            party_bills = by_party.get(name, [])
+            if not ledger_amt and not party_bills:
+                continue
+            party_count += 1
+
+            ledger_signed = _signed(ledger_amt, ledger_drcr)
+            bills_signed = 0.0
+            for b in party_bills:
+                s = _signed(b.amount, b.dr_cr)
+                if abs(s) < _PARTY_PLUG_THRESHOLD:
+                    continue
+                bills_signed += s
+                if _classify_party(party_type, s, b.is_advance) == "advance":
+                    advances += 1
+                else:
+                    invoices += 1
+
+            residual = round(ledger_signed - bills_signed, 2)
+            if abs(residual) >= _PARTY_PLUG_THRESHOLD:
+                if party_bills:
+                    on_account += 1
+                    mismatches.append({
+                        "name": name,
+                        "party_type": party_type,
+                        "amount": round(abs(residual), 2),
+                    })
+                else:
+                    lump += 1
+
+    return {
+        "parties": party_count,
+        "invoices": invoices,
+        "advances": advances,
+        "on_account": on_account,
+        "lump": lump,
+        "documents": invoices + advances + on_account + lump,
+        "mismatches": mismatches,
+    }
 
 
 def _opening_plug(ledger_accounts, masters) -> dict:

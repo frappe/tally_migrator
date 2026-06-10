@@ -1633,6 +1633,23 @@ class PartyOpeningImporter:
                     "created (its import failed earlier). Fix it and re-run.")
                 continue
 
+            # Multi-currency guard (v1): the Tally masters export carries no
+            # per-party currency, and an opening document posted in the company
+            # currency for a party that bills in another currency would silently
+            # misstate the balance (the exchange rate is unknown). Skip it with a
+            # clear warning rather than post a wrong figure - the user enters that
+            # party's opening manually. Single-currency parties (the norm) post
+            # invoice-wise as usual.
+            if self._is_foreign_currency_party(party_type, party):
+                result.add_warning(
+                    tally_name,
+                    f"opening balance skipped - {party_type} '{tally_name}' uses a "
+                    "currency other than the company currency, and invoice-wise "
+                    "opening balances are single-currency in this version. Enter this "
+                    "party's opening invoices/payments manually so the exchange rate "
+                    "is correct.")
+                continue
+
             ledger_signed = self._signed(ledger_amt, ledger_drcr)
             bills_signed = 0.0
             for b in party_bills:
@@ -1790,6 +1807,13 @@ class PartyOpeningImporter:
         field = ("default_receivable_account" if party_type == "Customer"
                  else "default_payable_account")
         return frappe.get_cached_value("Company", self.company, field)
+
+    def _is_foreign_currency_party(self, party_type: str, party: str) -> bool:
+        """True when the party's own default currency is set and differs from the
+        company currency. Both Customer and Supplier expose ``default_currency``;
+        a blank value means 'follow the company', i.e. not foreign."""
+        cur = frappe.db.get_value(party_type, party, "default_currency")
+        return bool(cur) and cur != self._company_currency()
 
     def _existing_markers(self) -> set:
         """Markers already posted for this company, so a re-run skips exactly the

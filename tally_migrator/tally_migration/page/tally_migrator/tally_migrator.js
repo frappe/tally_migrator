@@ -201,6 +201,7 @@ class TallyMigratorPage {
 					</p>
 					<div id="review-summary" style="margin-bottom:16px;"></div>
 					<div id="review-exceptions" style="margin-bottom:16px;"></div>
+					<div id="review-parties" style="margin-bottom:16px;"></div>
 					<div id="review-all"></div>
 
 					<div style="margin-top:24px;">
@@ -1208,7 +1209,7 @@ class TallyMigratorPage {
 	renderAccountMapping() {
 		const m = this.accountMapping;
 		if (!m || !m.total_accounts) {
-			$("#review-summary, #review-exceptions, #review-all").empty();
+			$("#review-summary, #review-exceptions, #review-parties, #review-all").empty();
 			return;
 		}
 		const esc = frappe.utils.escape_html;
@@ -1355,6 +1356,91 @@ class TallyMigratorPage {
 			$body.toggle();
 			$("#review-all-caret").text($body.is(":visible") ? "▾" : "▸");
 		});
+
+		this.renderPartyOpenings();
+	}
+
+	// Party (customer/supplier) opening balances post invoice-wise: one opening
+	// invoice per outstanding bill, a payment entry per advance. Show the user the
+	// breakdown - and flag any party whose bills did not reconcile to its ledger
+	// opening (posted as an "On Account" plug) - before they commit.
+	renderPartyOpenings() {
+		const p = (this.accountMapping || {}).party_openings;
+		if (!p || !p.parties) {
+			$("#review-parties").empty();
+			return;
+		}
+		const esc = frappe.utils.escape_html;
+		const fmt = (n) => Number(n || 0).toLocaleString("en-IN");
+		const AMBER = "var(--yellow-600, #b8860b)";
+		const GREEN = "var(--green-600, #1e7e34)";
+		const card = (big, label, sub, color) => `
+			<div style="flex:1; border:1px solid #e0e6ed; border-radius:6px; padding:10px 12px;">
+				<div class="text-muted small">${label}</div>
+				<div style="font-size:20px; font-weight:700;${color ? `color:${color};` : ""}">${big}</div>
+				<div class="small" style="color:${color || "var(--text-muted, #8d99a6)"};">${sub}</div>
+			</div>`;
+
+		// Three cards: outstanding invoices, advances, and a mismatch/lump card that
+		// turns amber only when a party's bills did not tie to its ledger opening.
+		const cards = [
+			card(fmt(p.invoices), "Outstanding invoices", "one opening invoice each", GREEN),
+			card(
+				fmt(p.advances),
+				"Advance receipts/payments",
+				p.advances ? "one payment entry each" : "none",
+				p.advances ? null : "var(--text-muted, #8d99a6)"
+			),
+			p.on_account
+				? card(fmt(p.on_account), "Bills didn't reconcile", "⚠ posts 'On Account'", AMBER)
+				: card(fmt(p.lump), "No bill detail", p.lump ? "single opening invoice" : "none",
+						p.lump ? null : "var(--text-muted, #8d99a6)"),
+		].join("");
+
+		// Per-party mismatch detail: only the parties whose bills did not add up to
+		// the ledger opening - the rows actually worth checking in Tally.
+		let warn = "";
+		if (p.on_account && (p.mismatches || []).length) {
+			const rows = p.mismatches
+				.map(
+					(m) => `
+					<tr>
+						<td style="padding:6px 10px;"><strong>${esc(m.name)}</strong></td>
+						<td style="padding:6px 10px;" class="text-muted">${esc(m.party_type)}</td>
+						<td style="padding:6px 10px; text-align:right;">${fmt(m.amount)}</td>
+					</tr>`
+				)
+				.join("");
+			warn = `
+				<div class="alert alert-warning" style="margin:12px 0 0;">
+					<strong>⚠ ${fmt(p.on_account)} part${p.on_account === 1 ? "y's" : "ies'"} bills didn't add up to the ledger opening.</strong>
+					The difference posts as an 'On Account' opening so the party still ties to
+					the trial balance - but review these in Tally; a bill may be missing or mis-dated.
+					<div style="margin-top:10px; border:1px solid rgba(0,0,0,0.08); border-radius:6px; overflow:hidden; background:#fff;">
+						<table class="table table-condensed" style="margin:0; font-size:13px;">
+							<thead>
+								<tr>
+									<th style="border-top:0; padding:6px 10px;">Party</th>
+									<th style="border-top:0; padding:6px 10px;">Type</th>
+									<th style="border-top:0; padding:6px 10px; text-align:right;">On Account</th>
+								</tr>
+							</thead>
+							<tbody>${rows}</tbody>
+						</table>
+					</div>
+				</div>`;
+		}
+
+		$("#review-parties").html(`
+			<h5 style="margin-bottom:8px;">Customer &amp; supplier opening balances</h5>
+			<p class="text-muted" style="margin-bottom:10px; font-size:13px;">
+				${fmt(p.parties)} part${p.parties === 1 ? "y" : "ies"} with an opening balance -
+				posted bill-by-bill (${fmt(p.documents)} opening document${p.documents === 1 ? "" : "s"})
+				so you can reconcile future payments invoice-by-invoice.
+			</p>
+			<div style="display:flex; gap:10px;">${cards}</div>
+			${warn}
+		`);
 	}
 
 	gotoRun() {
