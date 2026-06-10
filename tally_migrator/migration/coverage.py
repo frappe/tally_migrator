@@ -193,26 +193,6 @@ def _norm(field: str) -> str:
 # so a curated dictionary would be a maintenance treadmill; these derivations work
 # on tags neither we nor the user have seen before. (See project principle.)
 
-def humanize_tag(tag: str) -> str:
-    """Best-effort readable label derived from the raw tag itself - no lookup.
-
-    Strips namespace / ``.LIST`` / separators and splits camelCase and
-    letter/digit boundaries, then Title-cases. Tally export tags are usually
-    UPPERCASE with no word boundaries (``CUSTOMERCATEGORY``), which no rule can
-    re-segment without a dictionary - so for those the label is simply a tidied,
-    Title-cased token. The value-shape phrase (``value_kind``) carries the real
-    "what is this" signal; the label is a secondary aid. Prefer Tally's own
-    display name upstream when an export provides one."""
-    s = tag.split("}")[-1].split("/")[-1]                 # drop namespace + path
-    s = s.replace(".LIST", "").replace(".", " ")
-    s = s.replace("_", " ").replace("-", " ")
-    s = re.sub(r"(?<=[a-z])(?=[A-Z])", " ", s)            # camelCase boundary
-    s = re.sub(r"(?<=[A-Za-z])(?=\d)", " ", s)            # letter->digit boundary
-    s = re.sub(r"(?<=\d)(?=[A-Za-z])", " ", s)            # digit->letter boundary
-    s = re.sub(r"\s+", " ", s).strip()
-    return s.title() if s else tag
-
-
 # Generic value-shape detectors: classify a sample VALUE, not the tag name, so the
 # signal generalises to any file. Ordered most- to least-specific; first match wins.
 _GSTIN_RE = re.compile(r"^\d{2}[A-Z]{5}\d{4}[A-Z][0-9A-Z]Z[0-9A-Z]$", re.I)
@@ -316,11 +296,11 @@ def coverage_report(source) -> dict:
             if tag not in mapped and _is_noise(tag, info):
                 noise_total += 1
                 continue
-            # Every reported field carries a derived label + value-shape phrase so
-            # the UI can speak plainly without a hand-maintained tag dictionary.
+            # The field is shown by its raw Tally name; a derived value-shape phrase
+            # ("Looks like GST numbers") gives the plain-language hint - no
+            # hand-maintained tag dictionary.
             row = {
                 "field": tag,
-                "label": humanize_tag(tag),
                 "kind": value_kind(info.get("sample", "")),
                 "count": info.get("count", 0),
                 "sample": info.get("sample", ""),

@@ -6,7 +6,7 @@ from unittest import mock
 
 from tally_migrator.migration import coverage as cov
 from tally_migrator.migration.coverage import (
-    coverage_report, read_tags, humanize_tag, value_kind,
+    coverage_report, read_tags, value_kind,
 )
 
 
@@ -200,14 +200,6 @@ class TestCoverage(unittest.TestCase):
 
     # ── Derivation layer (labels / value-shape / redundancy) ─────────────────
 
-    def test_humanize_tag_is_derived_not_looked_up(self):
-        # Works on tags we've never seen: strip .LIST/namespace, split boundaries.
-        self.assertEqual(humanize_tag("CREDITLIMIT"), "Creditlimit")
-        self.assertEqual(humanize_tag("CustomerCategory"), "Customer Category")
-        self.assertEqual(humanize_tag("LEDGSTREGDETAILS.LIST"), "Ledgstregdetails")
-        self.assertEqual(humanize_tag("WARRANTY_MONTHS"), "Warranty Months")
-        self.assertEqual(humanize_tag("BATCH2NAME"), "Batch 2 Name")
-
     def test_value_kind_reads_the_value_shape(self):
         self.assertEqual(value_kind("27AABCR1234A1Z5"), "GST numbers")
         self.assertEqual(value_kind("AABCR1234A"), "PAN numbers")
@@ -218,11 +210,12 @@ class TestCoverage(unittest.TestCase):
         self.assertEqual(value_kind("Wholesale"), "")   # plain text → no shape
         self.assertEqual(value_kind(""), "")
 
-    def test_rows_carry_derived_label_and_kind(self):
+    def test_rows_carry_raw_field_and_kind(self):
         tags = {"NAME": _tag(), "CUSTOMERCATEGORY": _tag(3, "Wholesale", ["Acme"])}
         report = coverage_report(_Src({"Ledger": tags}))
         row = report["types"][0]["unmapped"][0]
-        self.assertEqual(row["label"], "Customercategory")
+        self.assertEqual(row["field"], "CUSTOMERCATEGORY")   # raw Tally name, verbatim
+        self.assertNotIn("label", row)                       # no humanized label
         self.assertEqual(row["kind"], "")
 
     def test_flat_tag_matching_a_nested_path_is_redundant_not_loss(self):
