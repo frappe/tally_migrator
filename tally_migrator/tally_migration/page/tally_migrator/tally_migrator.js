@@ -246,12 +246,15 @@ class TallyMigratorPage {
 	// light grey for steps still ahead - matches standard Frappe desk styling.
 
 	// Accounts make the Preview step relevant; masters-only files skip it.
-	// Prefer the stable preview signal (known from upload) over accountMapping,
-	// which only loads at the Check step - otherwise the stepper would show 4
-	// steps through Upload/Configure/Check and then grow to 5 at Preview.
+	// Be optimistic: show all 5 steps by default and only drop Preview once we
+	// positively confirm the file carries no accounts. Otherwise step 1 (before
+	// any file is parsed) would show 4 steps and then grow to 5. Prefer the
+	// stable preview signal (known at upload) over accountMapping, which only
+	// loads at the Check step.
 	hasAccounts() {
 		if (this.accountMapping) return this.accountMapping.total_accounts > 0;
-		return !!(this.preview && this.preview.ledger_accounts > 0);
+		if (this.preview) return this.preview.ledger_accounts > 0;
+		return true;
 	}
 
 	// The steps actually shown in the stepper - Preview is dropped when the file
