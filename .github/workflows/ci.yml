@@ -1,0 +1,124 @@
+name: CI
+
+# Runs the FULL test suite on a real Frappe + ERPNext site. The pure tests run
+# under a bare interpreter, but the four frappe-dependent suites (test_importer,
+# test_file_source, test_critical_fixes, test_summary) can only run here - they
+# exercise the importers, the streaming parser, the IDOR guard, the opening-balance
+# idempotency and the per-company opening lock. See tally_migrator/tests/conftest.py.
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  tests:
+    name: bench run-tests
+    runs-on: ubuntu-22.04
+    timeout-minutes: 60
+
+    # Pin the Frappe/ERPNext line the app targets. Bump both together when you
+    # move the production site to a new major version.
+    env:
+      FRAPPE_BRANCH: version-15
+      ERPNEXT_BRANCH: version-15
+
+    services:
+      mariadb:
+        image: mariadb:10.6
+        env:
+          MARIADB_ROOT_PASSWORD: root
+        ports:
+          - 3306:3306
+        options: >-
+          --health-cmd="healthcheck.sh --connect --innodb_initialized"
+          --health-interval=5s --health-timeout=5s --health-retries=15
+      redis:
+        image: redis:7-alpine
+        ports:
+          - 6379:6379
+        options: >-
+          --health-cmd="redis-cli ping"
+          --health-interval=5s --health-timeout=5s --health-retries=10
+
+    steps:
+      - name: Check out the app
+        uses: actions/checkout@v4
+        with:
+          path: tally_migrator
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: "18"
+
+      - name: System dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libcups2-dev mariadb-client
+          sudo npm install -g yarn
+
+      - name: Cache pip
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/pip
+          key: pip-${{ runner.os }}-${{ hashFiles('tally_migrator/pyproject.toml') }}
+          restore-keys: pip-${{ runner.os }}-
+
+      - name: Verify MariaDB and set charset
+        run: |
+          mysql --host 127.0.0.1 --port 3306 -u root -proot -e "SET GLOBAL character_set_server = 'utf8mb4';"
+          mysql --host 127.0.0.1 --port 3306 -u root -proot -e "SET GLOBAL collation_server = 'utf8mb4_unicode_ci';"
+
+      - name: Install frappe-bench
+        run: pip install frappe-bench
+
+      - name: Initialise bench
+        run: |
+          bench init --skip-redis-config-generation \
+            --frappe-branch "$FRAPPE_BRANCH" \
+            --python "$(which python)" \
+            frappe-bench
+
+      - name: Point bench at the CI services
+        working-directory: frappe-bench
+        run: |
+          bench set-config -g db_host 127.0.0.1
+          bench set-config -g redis_cache "redis://127.0.0.1:6379"
+          bench set-config -g redis_queue "redis://127.0.0.1:6379"
+          bench set-config -g redis_socketio "redis://127.0.0.1:6379"
+
+      - name: Fetch ERPNext
+        working-directory: frappe-bench
+        run: bench get-app erpnext --branch "$ERPNEXT_BRANCH"
+
+      - name: Create the test site
+        working-directory: frappe-bench
+        run: |
+          bench new-site test_site \
+            --db-root-password root \
+            --admin-password admin \
+            --no-mariadb-socket
+          bench --site test_site install-app erpnext
+
+      - name: Install the app under test
+        working-directory: frappe-bench
+        run: |
+          bench get-app tally_migrator "${GITHUB_WORKSPACE}/tally_migrator"
+          bench --site test_site install-app tally_migrator
+
+      - name: Run the full test suite
+        working-directory: frappe-bench
+        run: |
+          bench --site test_site set-config allow_tests true
+          bench --site test_site run-tests --app tally_migrator
