@@ -204,6 +204,47 @@ class FileTallySource:
         self._collection_cache[cache_key] = records
         return records
 
+    def get_child_list(self, obj_type: str, child_tag: str,
+                       fields: list[str]) -> list[dict]:
+        """Read a *repeating* child list nested under each record of ``obj_type``.
+
+        Unlike :meth:`get_collection` - which flattens a nested ``.LIST`` to a
+        single joined value per record - this returns one dict per repeating child
+        element, so bill-wise opening detail (``BILLALLOCATIONS.LIST`` under each
+        ``LEDGER``) comes back as individual rows::
+
+            [{"_parent": "ABC Company Limited", "BillDate": "20200310",
+              "_name": "ABC/1", "IsAdvance": "No", "OpeningBalance": "-3000.00"},
+             ...]
+
+        Each returned row carries ``_parent`` (the owning record's NAME) and, when
+        a ``NAME`` field is requested, ``_name`` (the child's own NAME) alongside
+        the requested fields. ``child_tag`` is matched namespace-insensitively
+        against the direct children of each record (e.g. ``"BILLALLOCATIONS.LIST"``).
+        Records with no such children contribute nothing.
+        """
+        cache_key = ("child", obj_type, child_tag, tuple(fields))
+        cached = self._collection_cache.get(cache_key)
+        if cached is not None:
+            return cached
+        tag = obj_type.upper().replace(" ", "")
+        want_child = child_tag.upper().replace(" ", "")
+        rows: list[dict] = []
+        for elem in self._by_tag.get(tag, ()):
+            parent = (elem.get("NAME") or elem.findtext("NAME") or "").strip()
+            for child in elem:
+                if child.tag.split("}")[-1].upper() != want_child:
+                    continue
+                row = {"_parent": parent}
+                for f in fields:
+                    value = self._resolve_field(child, [f.upper().replace(" ", "")])
+                    row[f] = value
+                    if f.upper() == "NAME":
+                        row["_name"] = value
+                rows.append(row)
+        self._collection_cache[cache_key] = rows
+        return rows
+
     # ── Field resolution (tag overrides + nested .LIST descent) ────────────────
     @classmethod
     def _resolve_field(cls, elem, candidates: list) -> str:

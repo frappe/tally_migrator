@@ -351,5 +351,117 @@ class TestUtf16Decoding(unittest.TestCase):
         self.assertEqual(decode_tally_bytes(SAMPLE_XML), SAMPLE_XML)
 
 
+# A faithful slice of a real export's bill-wise opening detail: one debtor with
+# three outstanding bills that sum to its ledger opening (signs as Tally emits
+# them - negative = Dr), one ledger with an empty allocation list, and one
+# ledger carrying an advance flag. Mirrors what MAX.xml actually contains.
+BILLWISE_XML = """<ENVELOPE><BODY><IMPORTDATA><REQUESTDATA>
+  <TALLYMESSAGE>
+    <LEDGER NAME="ABC Company Limited"><PARENT>Sundry Debtors</PARENT>
+      <OPENINGBALANCE>-30000.00</OPENINGBALANCE>
+      <BILLALLOCATIONS.LIST>
+        <BILLDATE>20200310</BILLDATE><NAME>ABC/1</NAME>
+        <ISADVANCE>No</ISADVANCE><OPENINGBALANCE>-3000.00</OPENINGBALANCE>
+      </BILLALLOCATIONS.LIST>
+      <BILLALLOCATIONS.LIST>
+        <BILLDATE>20200312</BILLDATE><NAME>ABC/2</NAME>
+        <ISADVANCE>No</ISADVANCE><OPENINGBALANCE>-6000.00</OPENINGBALANCE>
+      </BILLALLOCATIONS.LIST>
+      <BILLALLOCATIONS.LIST>
+        <BILLDATE>20200314</BILLDATE><NAME>ABC/3</NAME>
+        <ISADVANCE>No</ISADVANCE><OPENINGBALANCE>-21000.00</OPENINGBALANCE>
+      </BILLALLOCATIONS.LIST>
+    </LEDGER>
+  </TALLYMESSAGE>
+  <TALLYMESSAGE>
+    <LEDGER NAME="No Bills Co"><PARENT>Sundry Debtors</PARENT>
+      <OPENINGBALANCE>-5000.00</OPENINGBALANCE>
+      <BILLALLOCATIONS.LIST>      </BILLALLOCATIONS.LIST>
+    </LEDGER>
+  </TALLYMESSAGE>
+  <TALLYMESSAGE>
+    <LEDGER NAME="Advance Holder"><PARENT>Sundry Debtors</PARENT>
+      <OPENINGBALANCE>2000.00</OPENINGBALANCE>
+      <BILLALLOCATIONS.LIST>
+        <BILLDATE>20200401</BILLDATE><NAME>ADV-1</NAME>
+        <ISADVANCE>Yes</ISADVANCE><OPENINGBALANCE>2000.00</OPENINGBALANCE>
+      </BILLALLOCATIONS.LIST>
+    </LEDGER>
+  </TALLYMESSAGE>
+</REQUESTDATA></IMPORTDATA></BODY></ENVELOPE>"""
+
+
+class TestGetChildList(unittest.TestCase):
+    """The repeating-child reader returns one row per BILLALLOCATIONS.LIST."""
+
+    def setUp(self):
+        self.source = FileTallySource(BILLWISE_XML)
+
+    def test_returns_one_row_per_bill_with_parent(self):
+        rows = self.source.get_child_list(
+            "Ledger", "BILLALLOCATIONS.LIST",
+            ["BillDate", "Name", "IsAdvance", "OpeningBalance"])
+        abc = [r for r in rows if r["_parent"] == "ABC Company Limited"]
+        self.assertEqual(len(abc), 3)
+        self.assertEqual(abc[0]["_name"], "ABC/1")          # NAME also under _name
+        self.assertEqual(abc[0]["BillDate"], "20200310")
+        self.assertEqual(abc[0]["OpeningBalance"], "-3000.00")
+
+    def test_empty_list_row_has_blank_fields(self):
+        # An empty <BILLALLOCATIONS.LIST> is still a child element, so the raw
+        # reader returns a blank-field row for it; dropping zero-amount bills is
+        # the extractor's job, not this reader's (kept faithful + unopinionated).
+        rows = self.source.get_child_list(
+            "Ledger", "BILLALLOCATIONS.LIST", ["Name", "OpeningBalance"])
+        empty = [r for r in rows if r["_parent"] == "No Bills Co"]
+        self.assertEqual(len(empty), 1)
+        self.assertEqual(empty[0]["Name"], "")
+        self.assertEqual(empty[0]["OpeningBalance"], "")
+
+    def test_cached_call_is_stable(self):
+        a = self.source.get_child_list("Ledger", "BILLALLOCATIONS.LIST", ["Name"])
+        b = self.source.get_child_list("Ledger", "BILLALLOCATIONS.LIST", ["Name"])
+        self.assertIs(a, b)
+
+
+class TestExtractBillAllocations(unittest.TestCase):
+    """End-to-end parse: XML → list[BillAllocation] with correct signs/dates."""
+
+    def setUp(self):
+        self.bills = TallyExtractor(
+            FileTallySource(BILLWISE_XML)).extract_bill_allocations()
+
+    def _by_party(self, party):
+        return [b for b in self.bills if b.party == party]
+
+    def test_outstanding_bills_parsed_with_dr_sign(self):
+        abc = self._by_party("ABC Company Limited")
+        self.assertEqual(len(abc), 3)
+        self.assertTrue(all(b.dr_cr == "Dr" for b in abc))   # negative → Dr
+        self.assertFalse(any(b.is_advance for b in abc))
+        self.assertEqual(round(sum(b.amount for b in abc), 2), 30000.0)
+
+    def test_bill_date_is_iso(self):
+        first = self._by_party("ABC Company Limited")[0]
+        self.assertEqual(first.bill_date, "2020-03-10")
+        self.assertEqual(first.bill_no, "ABC/1")
+
+    def test_advance_flag_and_cr_sign(self):
+        adv = self._by_party("Advance Holder")
+        self.assertEqual(len(adv), 1)
+        self.assertTrue(adv[0].is_advance)
+        self.assertEqual(adv[0].dr_cr, "Cr")                 # positive → Cr
+
+    def test_party_without_bills_absent(self):
+        self.assertEqual(self._by_party("No Bills Co"), [])
+
+    def test_source_without_child_support_degrades(self):
+        class _Flat:
+            def get_collection(self, *a, **k):
+                return []
+        self.assertEqual(
+            TallyExtractor(_Flat()).extract_bill_allocations(), [])
+
+
 if __name__ == "__main__":
     unittest.main()

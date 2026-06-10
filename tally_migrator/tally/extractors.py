@@ -144,6 +144,29 @@ class CostCentreNode:
 
 
 @dataclass
+class BillAllocation:
+    """One bill-wise opening reference under a party ledger.
+
+    Tally stores a party's opening balance bill-by-bill when "Maintain balances
+    bill-by-bill" is on (the default for Sundry Debtors/Creditors), and a real
+    masters export carries each bill inside ``BILLALLOCATIONS.LIST`` on the
+    ledger. ``amount``/``dr_cr`` use the same sign convention as the ledger
+    opening (see :meth:`TallyExtractor._parse_opening`); the bills net to the
+    ledger's own opening. ``is_advance`` is Tally's own flag (an opening advance
+    rather than an outstanding bill). Classification into an ERPNext opening
+    invoice vs an advance Payment Entry is left to the importer, which knows the
+    party type (and therefore the natural side) - this stays a faithful,
+    unopinionated parse of the file.
+    """
+    party: str             # owning ledger (the Tally party name)
+    bill_no: str           # the bill reference (Tally bill NAME)
+    bill_date: str         # ISO date "YYYY-MM-DD" ("" when absent/unparseable)
+    amount: float          # absolute amount
+    dr_cr: str             # "Dr" | "Cr" | ""
+    is_advance: bool       # Tally's ISADVANCE flag
+
+
+@dataclass
 class ExtractedCOA:
     accounts:     list[AccountNode]
     cost_centres: list[CostCentreNode]
@@ -336,3 +359,53 @@ class TallyExtractor:
         if suffix:
             return abs(val), suffix
         return abs(val), "Dr" if val < 0 else "Cr"
+
+    # ── Bill-wise opening balances ─────────────────────────────────────────────
+    def extract_bill_allocations(self) -> list[BillAllocation]:
+        """Extract every party's bill-wise opening references from the export.
+
+        Reads the repeating ``BILLALLOCATIONS.LIST`` under each ledger. Rows with
+        no usable amount are dropped (a zero/blank bill carries no balance). The
+        result is a flat list across all parties; the importer groups it by
+        ``party`` and decides, per party type, which bills become opening invoices
+        and which become advance Payment Entries.
+
+        Returns ``[]`` when the source cannot supply child lists (e.g. a live
+        client that only implements ``get_collection``), so callers degrade to the
+        ledger-level opening with no bill detail.
+        """
+        getter = getattr(self.client, "get_child_list", None)
+        if getter is None:
+            return []
+        rows = getter(
+            "Ledger", "BILLALLOCATIONS.LIST",
+            ["BillDate", "Name", "IsAdvance", "OpeningBalance"])
+        bills: list[BillAllocation] = []
+        for r in rows:
+            amount, drcr = self._parse_opening(r.get("OpeningBalance", ""))
+            if not amount:
+                continue
+            bills.append(BillAllocation(
+                party=(r.get("_parent") or "").strip(),
+                bill_no=(r.get("Name") or "").strip(),
+                bill_date=self._parse_tally_date(r.get("BillDate", "")),
+                amount=amount,
+                dr_cr=drcr,
+                is_advance=(r.get("IsAdvance") or "").strip().lower() == "yes",
+            ))
+        return bills
+
+    @staticmethod
+    def _parse_tally_date(raw) -> str:
+        """Tally ``YYYYMMDD`` (e.g. ``"20200310"``) → ISO ``"2020-03-10"``.
+
+        Returns "" for a blank or non-8-digit value rather than guessing - the
+        importer then falls back to the migration posting date for that bill.
+        """
+        s = str(raw or "").strip()
+        if not re.fullmatch(r"\d{8}", s):
+            return ""
+        y, m, d = s[:4], s[4:6], s[6:8]
+        if not ("01" <= m <= "12" and "01" <= d <= "31"):
+            return ""
+        return f"{y}-{m}-{d}"
