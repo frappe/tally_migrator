@@ -1928,14 +1928,21 @@ class StockOpeningImporter:
                         continue
                 else:
                     continue  # exact duplicate tag - same item exported twice
-            if rate == 0:
-                zero_value_items.append(it["_name"])
-            by_code[code] = {
+            row = {
                 "item_code": code,
                 "warehouse": warehouse,
                 "qty": qty,
                 "valuation_rate": rate,
             }
+            if rate == 0:
+                zero_value_items.append(it["_name"])
+                # ERPNext rejects a positive opening qty at a zero rate
+                # ("Valuation Rate required for Item …") unless the row explicitly
+                # allows it. Tally itself carries no value for these items, so we
+                # post the quantity faithfully at zero value rather than blocking
+                # the whole reconciliation.
+                row["allow_zero_valuation_rate"] = 1
+            by_code[code] = row
         if zero_value_items:
             # One summary line instead of one warning per item - these flood the log,
             # and an item Tally itself carries no rate/value for is posted faithfully

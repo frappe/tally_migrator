@@ -18,6 +18,13 @@ const STEPS = [
 	{ id: "section-run", label: "Migrate" },
 ];
 
+// Shared 4-column widths for the two collapsed Review tables (accounts + parties)
+// so they line up column-for-column with each other and header-to-body within each.
+// table-layout:fixed makes the browser honour these instead of sizing to content.
+const REVIEW_COLGROUP =
+	'<colgroup><col style="width:42%;"><col style="width:23%;">' +
+	'<col style="width:20%;"><col style="width:15%;"></colgroup>';
+
 class TallyMigratorPage {
 	constructor(page, wrapper) {
 		this.page = page;
@@ -162,7 +169,7 @@ class TallyMigratorPage {
 						<div id="dq-consent" style="display:none; margin-top:12px;" class="alert alert-danger">
 							<label style="margin:0; font-weight:400; cursor:pointer;">
 								<input type="checkbox" id="dq-consent-check" />
-								&nbsp;I understand some records have errors and will fail to import. Continue and migrate the rest.
+								&nbsp;I understand some records have errors and will fail to import. Continue and migrate the rest &mdash; you can always fix the remaining records and re-import them from the Tally Migration Log later.
 							</label>
 						</div>
 					</div>
@@ -201,8 +208,8 @@ class TallyMigratorPage {
 					</p>
 					<div id="review-summary" style="margin-bottom:16px;"></div>
 					<div id="review-exceptions" style="margin-bottom:16px;"></div>
-					<div id="review-parties" style="margin-bottom:16px;"></div>
-					<div id="review-all"></div>
+					<div id="review-all" style="margin-bottom:16px;"></div>
+					<div id="review-parties"></div>
 
 					<div style="margin-top:24px;">
 						<button id="btn-back-review" class="btn btn-default btn-sm">← Back</button>
@@ -1319,7 +1326,8 @@ class TallyMigratorPage {
 					These ledgers sit under a custom Tally group with no standard ancestor, so we
 					defaulted their type. Only you know if that's right - it's easy to fix the group in Tally and re-upload.
 					<div style="margin-top:10px; border:1px solid rgba(0,0,0,0.08); border-radius:6px; overflow:hidden; background:#fff;">
-						<table class="table table-condensed" style="margin:0; font-size:13px;">
+						<table class="table table-condensed" style="margin:0; font-size:13px; table-layout:fixed;">
+							${REVIEW_COLGROUP}
 							<thead>
 								<tr>
 									<th style="border-top:0; padding:6px 10px;">Tally ledger</th>
@@ -1459,7 +1467,8 @@ class TallyMigratorPage {
 					The difference posts as an 'On Account' opening so the party still ties to
 					the trial balance - but review these in Tally; a bill may be missing or mis-dated.
 					<div style="margin-top:10px; border:1px solid rgba(0,0,0,0.08); border-radius:6px; overflow:hidden; background:#fff;">
-						<table class="table table-condensed" style="margin:0; font-size:13px;">
+						<table class="table table-condensed" style="margin:0; font-size:13px; table-layout:fixed;">
+							${REVIEW_COLGROUP}
 							<thead>
 								<tr>
 									<th style="border-top:0; padding:6px 10px;">Party</th>
@@ -1556,8 +1565,9 @@ class TallyMigratorPage {
 		$("#progress-section").show();
 
 		// One stable handler reference, registered once and removed by reference, so
-		// repeated runs don't stack duplicate listeners and we never tear down other
-		// pages' "progress" subscribers with a blanket off("progress").
+		// repeated runs don't stack duplicate listeners. Listens on our own
+		// "tally_migration_progress" event (not Frappe's "progress", which also pops
+		// the native dialog) so only the step-5 bar reflects the run.
 		if (!this._onProgress) {
 			this._onProgress = (data) => {
 				if (data.title !== "Tally Masters Migration") return;
@@ -1567,8 +1577,8 @@ class TallyMigratorPage {
 				$("#progress-desc").text(data.description || "");
 			};
 		}
-		frappe.realtime.off("progress", this._onProgress);
-		frappe.realtime.on("progress", this._onProgress);
+		frappe.realtime.off("tally_migration_progress", this._onProgress);
+		frappe.realtime.on("tally_migration_progress", this._onProgress);
 
 		// Heartbeat: if no progress event arrives for a while (e.g. the realtime
 		// socket dropped), the striped bar would look frozen even though the run is
@@ -1611,7 +1621,7 @@ class TallyMigratorPage {
 					return;
 				}
 				this.stopHeartbeat();
-				frappe.realtime.off("progress", this._onProgress);
+				frappe.realtime.off("tally_migration_progress", this._onProgress);
 				$("#progress-bar")
 					.removeClass("active progress-bar-striped")
 					.css("width", "100%")
@@ -1626,7 +1636,7 @@ class TallyMigratorPage {
 				}
 			},
 			error: (err) => {
-				frappe.realtime.off("progress", this._onProgress);
+				frappe.realtime.off("tally_migration_progress", this._onProgress);
 				this.stopHeartbeat();
 				$("#btn-run").prop("disabled", false);
 				$("#btn-back-3").prop("disabled", false);
@@ -1659,7 +1669,7 @@ class TallyMigratorPage {
 	// then render the same results table from the log's stored summary.
 	pollLog(logName) {
 		const finishFromLog = (doc) => {
-			frappe.realtime.off("progress", this._onProgress);
+			frappe.realtime.off("tally_migration_progress", this._onProgress);
 			this.stopHeartbeat();
 			$("#progress-bar").removeClass("active progress-bar-striped").css("width", "100%").text("100%");
 			if (doc.status === "Failed") {
@@ -1697,7 +1707,7 @@ class TallyMigratorPage {
 		const start = Date.now();
 
 		const stalled = () => {
-			frappe.realtime.off("progress", this._onProgress);
+			frappe.realtime.off("tally_migration_progress", this._onProgress);
 			this.stopHeartbeat();
 			$("#btn-run").prop("disabled", false);
 			$("#btn-back-3").prop("disabled", false);

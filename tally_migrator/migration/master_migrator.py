@@ -277,10 +277,17 @@ class MasterMigrator:
     # ── Progress ────────────────────────────────────────────────────────────────
 
     def _progress(self, pct: int, description: str = "") -> None:
-        frappe.publish_progress(
-            pct,
-            title="Tally Masters Migration",
-            description=description or self.STEPS.get(pct, ""),
+        # A custom realtime event (not frappe.publish_progress) so only the wizard's
+        # own step-5 bar updates - publish_progress also triggers Frappe's native
+        # progress dialog, which double-rendered on top of our bar.
+        frappe.publish_realtime(
+            "tally_migration_progress",
+            {
+                "title": "Tally Masters Migration",
+                "percent": pct,
+                "description": description or self.STEPS.get(pct, ""),
+            },
+            user=frappe.session.user,
         )
 
     # ── Migration log lifecycle ──────────────────────────────────────────────────

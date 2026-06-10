@@ -320,8 +320,9 @@ def _validate_items(items: list[dict], report: ValidationReport) -> None:
         if not (it.get("HSNCode") or "").strip():
             report.add(ValidationIssue(
                 "Item", name, WARNING, "HSN_MISSING",
-                "No HSN/SAC code - GST invoices for this item won't be compliant.",
-                "Add the HSN code in Tally before invoicing."))
+                "No HSN/SAC code - the item will still be imported without an HSN, "
+                "but GST invoices for it won't be compliant until you add one.",
+                "Add the HSN code here now, or set it in Tally / ERPNext later."))
         code = safe_item_code(name)
         if code in seen_codes:
             report.add(ValidationIssue(

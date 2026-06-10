@@ -507,6 +507,32 @@ class TestERPNextImporter(unittest.TestCase):
                 posting_date="2024-04-01")
         self.assertEqual(captured["items"][0]["valuation_rate"], 25.0)
 
+    def test_zero_rate_rows_allow_zero_valuation(self):
+        """A zero-rate opening row must set allow_zero_valuation_rate, or ERPNext
+        rejects the whole reconciliation ('Valuation Rate required for Item …').
+        Items Tally carries no value for post faithfully as qty-only."""
+        from unittest import mock
+        from tally_migrator.erpnext.importers import StockOpeningImporter
+
+        imp = StockOpeningImporter("_TMTest Co", "TC")
+        imp._existing_opening_stock = lambda: False
+        imp._default_warehouse = lambda: "Stores - TC"
+        captured = {}
+
+        def fake_get_doc(d):
+            captured["items"] = d["items"]
+            raise Exception("stop")
+
+        with mock.patch("frappe.get_doc", side_effect=fake_get_doc):
+            imp.run(
+                items=[{"_name": "Envelope", "OpeningBalance": "55 Nos"},
+                       {"_name": "Mouse", "OpeningBalance": "100 Nos",
+                        "OpeningRate": "1.00/Nos"}],
+                posting_date="2024-04-01")
+        rows = {r["item_code"]: r for r in captured["items"]}
+        self.assertEqual(rows["Envelope"].get("allow_zero_valuation_rate"), 1)
+        self.assertNotIn("allow_zero_valuation_rate", rows["Mouse"])  # has a rate
+
     def test_zero_valuation_warnings_collapse_to_one_summary(self):
         """Items Tally carries no rate/value for flood the log one-per-item; they
         must collapse into a single summary warning listing the names."""
