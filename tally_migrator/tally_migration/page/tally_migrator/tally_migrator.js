@@ -727,8 +727,9 @@ class TallyMigratorPage {
 		const names = TallyMigratorPage.COVERAGE_ENTITY_NAMES;
 		const plur = (n, w) => `${n} ${w}${n === 1 ? "" : "s"}`;
 
-		// One plain sentence per lost field: derived label, what it contains, where
-		// it shows up, and the consequence - no raw tags, no jargon "status" column.
+		// One plain sentence per lost field: the field's own Tally name (shown
+		// verbatim, in the file's original capitalisation), what it contains, where
+		// it shows up, and the consequence - no jargon "status" column.
 		const line = (u, consequence) => {
 			const where = u.count
 				? ` (in ${plur(u.count, "record")}${
@@ -737,7 +738,7 @@ class TallyMigratorPage {
 				: "";
 			const looks = u.kind ? ` Looks like ${esc(u.kind)}.` : "";
 			return `<li style="margin-bottom:6px;">
-					<strong>${esc(u.label || u.field)}</strong>${where}.${looks}
+					<strong>${esc(u.field)}</strong>${where}.${looks}
 					<span class="text-muted">${consequence}</span>
 				</li>`;
 		};
