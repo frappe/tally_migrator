@@ -188,39 +188,125 @@ def _norm(field: str) -> str:
     return field.upper().replace(" ", "")
 
 
+# ── Derivation layer: read a field's meaning from its own shape, never from a
+# hand-maintained list of tag names. Open-ended Tally UDFs differ on every export,
+# so a curated dictionary would be a maintenance treadmill; these derivations work
+# on tags neither we nor the user have seen before. (See project principle.)
+
+def humanize_tag(tag: str) -> str:
+    """Best-effort readable label derived from the raw tag itself - no lookup.
+
+    Strips namespace / ``.LIST`` / separators and splits camelCase and
+    letter/digit boundaries, then Title-cases. Tally export tags are usually
+    UPPERCASE with no word boundaries (``CUSTOMERCATEGORY``), which no rule can
+    re-segment without a dictionary - so for those the label is simply a tidied,
+    Title-cased token. The value-shape phrase (``value_kind``) carries the real
+    "what is this" signal; the label is a secondary aid. Prefer Tally's own
+    display name upstream when an export provides one."""
+    s = tag.split("}")[-1].split("/")[-1]                 # drop namespace + path
+    s = s.replace(".LIST", "").replace(".", " ")
+    s = s.replace("_", " ").replace("-", " ")
+    s = re.sub(r"(?<=[a-z])(?=[A-Z])", " ", s)            # camelCase boundary
+    s = re.sub(r"(?<=[A-Za-z])(?=\d)", " ", s)            # letter->digit boundary
+    s = re.sub(r"(?<=\d)(?=[A-Za-z])", " ", s)            # digit->letter boundary
+    s = re.sub(r"\s+", " ", s).strip()
+    return s.title() if s else tag
+
+
+# Generic value-shape detectors: classify a sample VALUE, not the tag name, so the
+# signal generalises to any file. Ordered most- to least-specific; first match wins.
+_GSTIN_RE = re.compile(r"^\d{2}[A-Z]{5}\d{4}[A-Z][0-9A-Z]Z[0-9A-Z]$", re.I)
+_PAN_RE   = re.compile(r"^[A-Z]{5}\d{4}[A-Z]$", re.I)
+_EMAIL_RE = re.compile(r"^[^@\s]+@[^@\s]+\.[^@\s]+$")
+_PHONE_RE = re.compile(r"^\+?[\d][\d\s\-()]{6,18}$")
+_DATE_RE  = re.compile(r"^(\d{8}|\d{1,2}[-/.]\d{1,2}[-/.]\d{2,4})$")
+_AMOUNT_RE = re.compile(r"^-?[\d,]*\.?\d+(\s*(dr|cr))?$", re.I)
+
+
+def value_kind(sample: str) -> str:
+    """A human phrase for what a field's values LOOK like, derived from a sample.
+
+    Returns e.g. "GST numbers", "email addresses", "dates"; "" for plain text or
+    when there's no sample. Reads the data's shape, so it works on unknown fields.
+    """
+    s = (sample or "").strip()
+    if not s:
+        return ""
+    if _GSTIN_RE.match(s):
+        return "GST numbers"
+    if _PAN_RE.match(s):
+        return "PAN numbers"
+    if _EMAIL_RE.match(s):
+        return "email addresses"
+    if _DATE_RE.match(s):
+        return "dates"
+    if _PHONE_RE.match(s) and sum(c.isdigit() for c in s) >= 7:
+        return "phone numbers"
+    if _AMOUNT_RE.match(s):
+        return "numbers"
+    return ""
+
+
+def _read_leaf_tags(obj_type: str, fields: list) -> set[str]:
+    """Leaf (last-segment) names of every path the extractor reads for these fields.
+
+    Mirrors ``_read_tags`` but keeps the path's *leaf* instead of its container, so
+    a flat top-level tag can be matched against a value we already read from a
+    NESTED path. E.g. a flat ``<GSTIN>`` matches the leaf of the mapped
+    ``LEDGSTREGDETAILS.LIST/GSTIN`` - structural proof it's a redundant duplicate
+    of imported data, derived by comparison rather than a hard-coded "GSTIN" rule.
+    """
+    overrides = _TAGS_BY_TYPE.get(obj_type, {})
+    out: set[str] = set()
+    for f in fields:
+        for cand in (overrides.get(f) or [_norm(f)]):
+            path = cand["path"] if isinstance(cand, dict) else cand
+            out.add(_norm(path.split("/")[-1]))
+    return out
+
+
 def coverage_report(source) -> dict:
     """Compare file tags against the mapped allow-list, per object type.
 
     ``source`` must expose ``raw_tags(obj_type)``. Returns a UI-/audit-ready dict::
 
         {
-          "clean": bool,                       # nothing unmapped AND nothing unwritten
-          "unmapped_field_count": int,         # tags we never read
-          "unwritten_field_count": int,        # tags we read but never persist
+          "clean": bool,                       # no actual data loss
+          "unmapped_field_count": int,         # tags we never read (real loss)
+          "unwritten_field_count": int,        # read but never persisted (real loss)
+          "redundant_field_count": int,        # duplicate of data already imported
+          "noise_field_count": int,            # Tally-internal, hidden
           "types": [
             {"entity_type": "Ledger",
-             "unmapped":  [{"field","count","sample","examples":[names]}],
-             "unwritten": [{"field","count","sample","examples":[names]}]}
+             "unmapped":  [row], "unwritten": [row], "redundant": [row]}
           ]
         }
 
-    Two distinct losses are reported:
-      • **unmapped**  - a tag in the file that the extractor never fetches (UDFs).
-      • **unwritten** - a tag the extractor *does* fetch but no importer persists,
-        so it's silently dropped despite looking "covered". This is the subtle
-        gap the allow-list-only check used to miss.
+    where each ``row`` is
+    ``{field, label, kind, count, sample, examples:[names]}`` - ``label`` and
+    ``kind`` are derived (from the tag string / the value's shape), never looked
+    up, so the report reads plainly for tags we've never seen.
+
+    Three field classes are distinguished:
+      • **unmapped**   - a tag in the file the extractor never fetches (a UDF). Loss.
+      • **unwritten**  - a tag the extractor fetches but no importer persists. Loss.
+      • **redundant**  - a flat tag whose values we already import via a nested path
+        (e.g. flat ``<GSTIN>`` vs nested ``LEDGSTREGDETAILS.LIST/GSTIN``). NOT a loss;
+        detected by leaf-name comparison, not a hard-coded rule.
     """
     types = []
     unmapped_total = 0
     unwritten_total = 0
     noise_total = 0
+    redundant_total = 0
     for obj_type, fields in MAPPED_FIELDS.items():
         mapped = _read_tags(obj_type, fields) | {"NAME"}
         written = _read_tags(obj_type, WRITTEN_FIELDS.get(obj_type, fields)) | {"NAME"}
         read_not_written = mapped - written
+        read_leaves = _read_leaf_tags(obj_type, fields)
         tags = source.raw_tags(obj_type)
 
-        unmapped, unwritten = [], []
+        unmapped, unwritten, redundant = [], [], []
         for tag, info in sorted(tags.items()):
             if tag in IGNORED_TAGS:
                 continue
@@ -230,29 +316,44 @@ def coverage_report(source) -> dict:
             if tag not in mapped and _is_noise(tag, info):
                 noise_total += 1
                 continue
+            # Every reported field carries a derived label + value-shape phrase so
+            # the UI can speak plainly without a hand-maintained tag dictionary.
             row = {
                 "field": tag,
+                "label": humanize_tag(tag),
+                "kind": value_kind(info.get("sample", "")),
                 "count": info.get("count", 0),
                 "sample": info.get("sample", ""),
                 "examples": info.get("records", []),
             }
             if tag not in mapped:
-                unmapped.append(row)
+                # A flat tag whose name matches a NESTED path we already read is a
+                # duplicate of imported data, not a loss - reassure, don't alarm.
+                if tag in read_leaves:
+                    redundant.append(row)
+                else:
+                    unmapped.append(row)
             elif tag in read_not_written:
                 unwritten.append(row)
 
-        if unmapped or unwritten:
+        if unmapped or unwritten or redundant:
             unmapped_total += len(unmapped)
             unwritten_total += len(unwritten)
+            redundant_total += len(redundant)
             types.append({
                 "entity_type": obj_type,
                 "unmapped": unmapped,
                 "unwritten": unwritten,
+                "redundant": redundant,
             })
     return {
+        # "clean" = no actual data loss. Redundant duplicates and hidden noise are
+        # not losses, so they don't make a file un-clean.
         "clean": unmapped_total == 0 and unwritten_total == 0,
         "unmapped_field_count": unmapped_total,
         "unwritten_field_count": unwritten_total,
+        # Fields already imported via another (nested) path; shown reassuringly.
+        "redundant_field_count": redundant_total,
         # Tally-internal fields intentionally suppressed from the per-field tables.
         "noise_field_count": noise_total,
         "types": types,

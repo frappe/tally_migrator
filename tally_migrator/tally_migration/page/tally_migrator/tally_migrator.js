@@ -650,86 +650,131 @@ class TallyMigratorPage {
 
 	// Read-only notice: fields present in the file that we do NOT migrate (Tally
 	// UDFs / unmapped attributes). Informational - it never blocks Continue.
+	// Friendly names for our OWN object types (a closed, fixed set - safe to label,
+	// unlike open-ended Tally tags which are derived, never enumerated).
+	static get COVERAGE_ENTITY_NAMES() {
+		return {
+			Ledger: "Customers, suppliers & accounts",
+			"Stock Item": "Items",
+			Godown: "Warehouses",
+			Group: "Account groups",
+			"Cost Centre": "Cost centres",
+			"Stock Group": "Item groups",
+			Unit: "Units",
+		};
+	}
+
 	renderCoverage() {
 		const report = this.coverageReport;
 		const $sec = $("#coverage-section");
-		if (!report || report.clean || !(report.types || []).length) {
+		const types = report && report.types ? report.types : [];
+		// Only genuine losses (unmapped / read-but-not-saved) are worth the user's
+		// attention. Redundant duplicates and hidden noise are reassurance, not loss.
+		const lossCount =
+			(report ? report.unmapped_field_count || 0 : 0) +
+			(report ? report.unwritten_field_count || 0 : 0);
+		const redundant = report ? report.redundant_field_count || 0 : 0;
+		const noise = report ? report.noise_field_count || 0 : 0;
+		// Stay silent on a clean file whose only skips are internal noise (every real
+		// export has hundreds) - that count still lives on the migration log. Speak up
+		// only for a real loss, or to explain a redundant duplicate the user may miss.
+		if (!report || (lossCount === 0 && redundant === 0)) {
 			$sec.hide().empty();
 			return;
 		}
 		const esc = frappe.utils.escape_html;
-		const row = (u, status) => `<tr>
-				<td style="font-family:monospace;">${esc(u.field)}</td>
-				<td class="text-right text-muted">${u.count}</td>
-				<td class="text-muted">${u.sample ? esc(String(u.sample)) : ""}</td>
-				<td class="text-muted">${status}</td>
-			</tr>`;
-		const blocks = report.types
+		const names = TallyMigratorPage.COVERAGE_ENTITY_NAMES;
+		const plur = (n, w) => `${n} ${w}${n === 1 ? "" : "s"}`;
+
+		// One plain sentence per lost field: derived label, what it contains, where
+		// it shows up, and the consequence - no raw tags, no jargon "status" column.
+		const line = (u, consequence) => {
+			const where = u.count
+				? ` (in ${plur(u.count, "record")}${
+						u.sample ? `, e.g. "${esc(String(u.sample))}"` : ""
+				  })`
+				: "";
+			const looks = u.kind ? ` Looks like ${esc(u.kind)}.` : "";
+			return `<li style="margin-bottom:6px;">
+					<strong>${esc(u.label || u.field)}</strong>${where}.${looks}
+					<span class="text-muted">${consequence}</span>
+				</li>`;
+		};
+		const lossBlocks = types
 			.map((t) => {
-				// Both kinds are reported: "Not mapped" (a Tally custom field we never
-				// read) and "Read, not imported" (a field we parse but no importer
-				// persists). The second used to be hidden, making the count read 0.
-				const rows = [
-					...(t.unmapped || []).map((u) => row(u, "Not mapped")),
-					...(t.unwritten || []).map((u) => row(u, "Read, not imported")),
+				const items = [
+					...(t.unmapped || []).map((u) =>
+						line(u, "No matching ERPNext field, so it will not be imported.")
+					),
+					...(t.unwritten || []).map((u) =>
+						line(u, "ERPNext has no field to store it, so it will not be imported.")
+					),
 				].join("");
-				if (!rows) return "";
-				return `
-					<div style="margin-bottom:8px;">
-						<div style="font-weight:600; margin-bottom:3px;">${esc(t.entity_type)}</div>
-						<table class="table table-condensed" style="margin:0;">
-							<thead><tr>
-								<th style="border-top:0;">Field</th>
-								<th style="border-top:0;" class="text-right">Count</th>
-								<th style="border-top:0;">Sample value</th>
-								<th style="border-top:0;">Status</th>
-							</tr></thead>
-							<tbody>${rows}</tbody>
-						</table>
+				if (!items) return "";
+				const label = names[t.entity_type] || t.entity_type;
+				return `<div style="margin-bottom:10px;">
+						<div style="font-weight:600; margin-bottom:4px;">${esc(label)}</div>
+						<ul style="margin:0; padding-left:18px;">${items}</ul>
 					</div>`;
 			})
 			.join("");
-		const total =
-			(report.unmapped_field_count || 0) + (report.unwritten_field_count || 0);
-		const noise = report.noise_field_count || 0;
-		const noiseNote = noise
-			? `<div style="margin-top:8px; font-size:12px; color:#888;">
-					(${noise} Tally internal field${noise === 1 ? "" : "s"} - config flags,
-					empty containers, audit/legacy-tax data - were hidden as they carry no
-					business value.)
+
+		const redundantNote = redundant
+			? `<div style="margin-top:8px; font-size:12px; color:#777;">
+					${plur(redundant, "field")} in your file duplicate data we already
+					import from elsewhere (e.g. a flat GST number alongside the full GST
+					details) - safely skipped, nothing lost.
 				</div>`
 			: "";
-		// Collapsed by default with a reassuring one-liner: this is informational,
-		// not a problem. The detail (and the full copy on the migration log) is one
-		// click away, so we stay transparent without a wall of text on screen.
-		const n = total;
-		$sec.html(`
-			<div class="alert alert-info" style="margin:0;">
-				<div style="display:flex; align-items:center; gap:8px;">
-					<span>ℹ</span>
-					<div style="flex:1;">
-						<strong>All your records will import fully.</strong>
-						${n} minor Tally field${n === 1 ? "" : "s"} (custom or housekeeping data
-						ERPNext has no place for) ${n === 1 ? "is" : "are"} skipped - nothing you
-						need to act on. A full list is saved on the migration log.
+		const noiseNote = noise
+			? `<div style="margin-top:6px; font-size:12px; color:#888;">
+					${plur(noise, "Tally internal field")} (config flags, empty containers,
+					audit / legacy-tax data) were hidden as they carry no business value.
+				</div>`
+			: "";
+
+		// Tone follows content. With NO real loss, the calm reassurance is honest.
+		// With real loss, we must NOT say "nothing to act on" - name the fields and
+		// ask the user to review, since only they know if a custom field matters.
+		if (lossCount === 0) {
+			$sec.html(`
+				<div class="alert alert-info" style="margin:0;">
+					<div style="display:flex; align-items:flex-start; gap:8px;">
+						<span>ℹ</span>
+						<div style="flex:1;">
+							<strong>All your records will import fully.</strong>
+							No fields with a place in ERPNext were left behind.
+							${redundantNote}${noiseNote}
+						</div>
 					</div>
-					<button class="btn btn-xs btn-default" id="btn-coverage-toggle" style="white-space:nowrap;">
-						Show fields ▸
-					</button>
 				</div>
-				<div id="coverage-detail" style="display:none; margin-top:12px;">
-					${blocks}
-					${noiseNote}
+			`).show();
+			return;
+		}
+
+		// Real loss: amber, expanded by default, fields named in plain language.
+		$sec.html(`
+			<div class="alert alert-warning" style="margin:0;">
+				<div style="display:flex; align-items:flex-start; gap:8px;">
+					<span>⚠</span>
+					<div style="flex:1;">
+						<strong>Most of your data imports fully - but ${plur(
+							lossCount,
+							"field"
+						)} in your file ${
+			lossCount === 1 ? "has" : "have"
+		} no place in ERPNext.</strong>
+						Review what ${
+							lossCount === 1 ? "it holds" : "they hold"
+						} below: only you can tell whether a custom field matters for your
+						business. Nothing is changed automatically, and the full list is
+						saved on the migration log.
+						<div style="margin-top:10px;">${lossBlocks}</div>
+						${redundantNote}${noiseNote}
+					</div>
 				</div>
 			</div>
 		`).show();
-
-		$("#btn-coverage-toggle").on("click", function () {
-			const $d = $("#coverage-detail");
-			const open = $d.is(":visible");
-			$d.toggle();
-			$(this).text(open ? "Show fields ▸" : "Hide fields ▾");
-		});
 	}
 
 	static get DQ_LABELS() {

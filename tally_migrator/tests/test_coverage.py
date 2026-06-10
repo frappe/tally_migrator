@@ -5,7 +5,9 @@ import unittest
 from unittest import mock
 
 from tally_migrator.migration import coverage as cov
-from tally_migrator.migration.coverage import coverage_report, read_tags
+from tally_migrator.migration.coverage import (
+    coverage_report, read_tags, humanize_tag, value_kind,
+)
 
 
 class _Src:
@@ -194,6 +196,47 @@ class TestCoverage(unittest.TestCase):
         report = coverage_report(_Src({"Stock Item": tags}))
         self.assertTrue(report["clean"], report["types"])
         self.assertEqual(report["unwritten_field_count"], 0)
+
+
+    # ── Derivation layer (labels / value-shape / redundancy) ─────────────────
+
+    def test_humanize_tag_is_derived_not_looked_up(self):
+        # Works on tags we've never seen: strip .LIST/namespace, split boundaries.
+        self.assertEqual(humanize_tag("CREDITLIMIT"), "Creditlimit")
+        self.assertEqual(humanize_tag("CustomerCategory"), "Customer Category")
+        self.assertEqual(humanize_tag("LEDGSTREGDETAILS.LIST"), "Ledgstregdetails")
+        self.assertEqual(humanize_tag("WARRANTY_MONTHS"), "Warranty Months")
+        self.assertEqual(humanize_tag("BATCH2NAME"), "Batch 2 Name")
+
+    def test_value_kind_reads_the_value_shape(self):
+        self.assertEqual(value_kind("27AABCR1234A1Z5"), "GST numbers")
+        self.assertEqual(value_kind("AABCR1234A"), "PAN numbers")
+        self.assertEqual(value_kind("sales@acme.in"), "email addresses")
+        self.assertEqual(value_kind("20240401"), "dates")
+        self.assertEqual(value_kind("+91 98200 12345"), "phone numbers")
+        self.assertEqual(value_kind("15000.50"), "numbers")
+        self.assertEqual(value_kind("Wholesale"), "")   # plain text → no shape
+        self.assertEqual(value_kind(""), "")
+
+    def test_rows_carry_derived_label_and_kind(self):
+        tags = {"NAME": _tag(), "CUSTOMERCATEGORY": _tag(3, "Wholesale", ["Acme"])}
+        report = coverage_report(_Src({"Ledger": tags}))
+        row = report["types"][0]["unmapped"][0]
+        self.assertEqual(row["label"], "Customercategory")
+        self.assertEqual(row["kind"], "")
+
+    def test_flat_tag_matching_a_nested_path_is_redundant_not_loss(self):
+        # A flat <GSTIN> duplicates LEDGSTREGDETAILS.LIST/GSTIN, which we already
+        # read - so it's redundant (not a loss) and the file stays clean. Detected
+        # by leaf-name comparison, no hard-coded "GSTIN" rule.
+        tags = {"NAME": _tag(), "GSTIN": _tag(8, "27AABCR1234A1Z5", ["Acme"])}
+        report = coverage_report(_Src({"Ledger": tags}))
+        self.assertTrue(report["clean"])
+        self.assertEqual(report["unmapped_field_count"], 0)
+        self.assertEqual(report["redundant_field_count"], 1)
+        red = report["types"][0]["redundant"][0]
+        self.assertEqual(red["field"], "GSTIN")
+        self.assertEqual(red["kind"], "GST numbers")
 
 
 if __name__ == "__main__":
