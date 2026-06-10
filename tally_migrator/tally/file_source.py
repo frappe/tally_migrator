@@ -32,6 +32,30 @@ _CHAR_REF = re.compile(r"&#(x[0-9a-fA-F]+|\d+);")
 _DTD_DECL = re.compile(r"<!(DOCTYPE|ENTITY)\b", re.IGNORECASE)
 
 
+def _select_iterparse():
+    """Prefer defusedxml's iterparse (rejects DTDs/entities at the *parser* level)
+    when available and compatible, else fall back to the stdlib parser.
+
+    The ``reject_unsafe_xml`` regex already neutralises entity-expansion attacks
+    before parsing, so this is defense-in-depth, not the sole guard. defusedxml's
+    iterparse signature has differed across versions, so we probe it once at import
+    against our exact usage (file object + start/end events) and only adopt it if
+    the probe parses cleanly - guaranteeing we never break the real parse path."""
+    try:
+        from defusedxml.ElementTree import iterparse as safe
+    except Exception:
+        return ET.iterparse
+    try:
+        for _ in safe(io.StringIO("<r><a/></r>"), events=("start", "end")):
+            pass
+        return safe
+    except Exception:
+        return ET.iterparse
+
+
+_ITERPARSE = _select_iterparse()
+
+
 def decode_tally_bytes(raw) -> str:
     """Decode raw upload bytes to text, honouring Tally's UTF-16 export encoding.
 
@@ -131,7 +155,7 @@ class FileTallySource:
         """
         buckets: dict = {tag: [] for tag in keep}
         try:
-            context = ET.iterparse(io.StringIO(cleaned), events=("start", "end"))
+            context = _ITERPARSE(io.StringIO(cleaned), events=("start", "end"))
             _, root = next(context)   # grab the root so we can clear it as we go
             for event, elem in context:
                 if event != "end":
