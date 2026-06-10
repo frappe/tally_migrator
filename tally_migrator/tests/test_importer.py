@@ -414,6 +414,117 @@ class TestERPNextImporter(unittest.TestCase):
         self.assertEqual(result.warned, 1)
         self.assertIn("negative", result.warnings[0]["reason"].lower())
 
+    def test_duplicate_items_deduped_into_one_row(self):
+        """A masters export can list the same Stock Item twice; both rows would land
+        in one warehouse and trip 'Same item and warehouse combination should be
+        unique', failing the whole document. Identical duplicates must collapse to a
+        single row. (regression: opening stock posts nothing)"""
+        from unittest import mock
+        from tally_migrator.erpnext.importers import StockOpeningImporter
+
+        imp = StockOpeningImporter("_TMTest Co", "TC")
+        imp._existing_opening_stock = lambda: False
+        imp._default_warehouse = lambda: "Stores - TC"
+        captured = {}
+
+        def fake_get_doc(d):
+            captured["items"] = d["items"]
+            raise Exception("stop")  # before insert/submit; we only inspect the rows
+
+        with mock.patch("frappe.get_doc", side_effect=fake_get_doc):
+            imp.run(
+                items=[{"_name": "Pen", "OpeningBalance": "55 Nos"},
+                       {"_name": "Pen", "OpeningBalance": "55 Nos"}],
+                posting_date="2024-04-01")
+        self.assertEqual(len(captured["items"]), 1)        # one row, not two
+        self.assertEqual(captured["items"][0]["qty"], 55.0)  # not summed to 110
+
+    def test_conflicting_duplicate_quantities_keep_larger_and_warn(self):
+        """When the same item appears with different opening quantities, keep the
+        larger and warn rather than silently picking one."""
+        from unittest import mock
+        from tally_migrator.erpnext.importers import StockOpeningImporter
+
+        imp = StockOpeningImporter("_TMTest Co", "TC")
+        imp._existing_opening_stock = lambda: False
+        imp._default_warehouse = lambda: "Stores - TC"
+        captured = {}
+
+        def fake_get_doc(d):
+            captured["items"] = d["items"]
+            raise Exception("stop")
+
+        with mock.patch("frappe.get_doc", side_effect=fake_get_doc):
+            result = imp.run(
+                items=[{"_name": "Pen", "OpeningBalance": "55 Nos"},
+                       {"_name": "Pen", "OpeningBalance": "60 Nos"}],
+                posting_date="2024-04-01")
+        self.assertEqual(len(captured["items"]), 1)
+        self.assertEqual(captured["items"][0]["qty"], 60.0)
+        self.assertTrue(any("more than once" in w["reason"] for w in result.warnings))
+
+    def test_opening_rate_with_unit_suffix_is_valued(self):
+        """The valued case from real exports: OpeningRate '1.00/Nos' must produce a
+        valuation_rate of 1.0, not 0 (which _to_float would give)."""
+        from unittest import mock
+        from tally_migrator.erpnext.importers import StockOpeningImporter
+
+        imp = StockOpeningImporter("_TMTest Co", "TC")
+        imp._existing_opening_stock = lambda: False
+        imp._default_warehouse = lambda: "Stores - TC"
+        captured = {}
+
+        def fake_get_doc(d):
+            captured["items"] = d["items"]
+            raise Exception("stop")
+
+        with mock.patch("frappe.get_doc", side_effect=fake_get_doc):
+            imp.run(
+                items=[{"_name": "Wireless Mouse", "OpeningBalance": "100 Nos",
+                        "OpeningRate": "1.00/Nos", "OpeningValue": "-100.00"}],
+                posting_date="2024-04-01")
+        self.assertEqual(captured["items"][0]["valuation_rate"], 1.0)
+
+    def test_opening_value_fallback_when_no_rate(self):
+        """With no parseable rate but an OpeningValue present, valuation_rate falls
+        back to |value| ÷ qty (sign is direction, not magnitude)."""
+        from unittest import mock
+        from tally_migrator.erpnext.importers import StockOpeningImporter
+
+        imp = StockOpeningImporter("_TMTest Co", "TC")
+        imp._existing_opening_stock = lambda: False
+        imp._default_warehouse = lambda: "Stores - TC"
+        captured = {}
+
+        def fake_get_doc(d):
+            captured["items"] = d["items"]
+            raise Exception("stop")
+
+        with mock.patch("frappe.get_doc", side_effect=fake_get_doc):
+            imp.run(
+                items=[{"_name": "Widget", "OpeningBalance": "10 Nos",
+                        "OpeningRate": "", "OpeningValue": "-250.00"}],
+                posting_date="2024-04-01")
+        self.assertEqual(captured["items"][0]["valuation_rate"], 25.0)
+
+    def test_zero_valuation_warnings_collapse_to_one_summary(self):
+        """Items Tally carries no rate/value for flood the log one-per-item; they
+        must collapse into a single summary warning listing the names."""
+        from unittest import mock
+        from tally_migrator.erpnext.importers import StockOpeningImporter
+
+        imp = StockOpeningImporter("_TMTest Co", "TC")
+        imp._existing_opening_stock = lambda: False
+        imp._default_warehouse = lambda: "Stores - TC"
+        with mock.patch("frappe.get_doc", side_effect=Exception("stop")):
+            result = imp.run(
+                items=[{"_name": f"Item{i}", "OpeningBalance": "5 Nos"}
+                       for i in range(4)],
+                posting_date="2024-04-01")
+        zero_warnings = [w for w in result.warnings if "zero valuation" in w["reason"]]
+        self.assertEqual(len(zero_warnings), 1)             # one summary, not four
+        self.assertIn("4 item(s)", zero_warnings[0]["reason"])
+
     # ── Opening-balance batching (no DB - residual maths only) ──────────────────
 
     def test_warn_residual_only_fires_above_threshold(self):

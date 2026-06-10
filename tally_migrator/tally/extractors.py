@@ -19,7 +19,7 @@ LEDGER_FIELDS = [
 
 ITEM_FIELDS = [
     "Name", "Parent", "BaseUnits", "StandardCost", "StandardPrice",
-    "OpeningBalance", "OpeningRate", "Description",
+    "OpeningBalance", "OpeningRate", "OpeningValue", "Description",
     "HSNCode", "GSTTaxability", "TypeOfSupply",
     # Inventory valuation method (→ Item.valuation_method) and the flat item-level
     # GST flag (→ India-Compliance is_non_gst). Both have real ERPNext targets.
@@ -321,6 +321,27 @@ class TallyExtractor:
             return 0.0
         try:
             return float(m.group(0))
+        except ValueError:
+            return 0.0
+
+    @staticmethod
+    def _parse_rate(raw) -> float:
+        """Parse a Tally stock *rate* → float.
+
+        Opening rates export unit-suffixed, e.g. ``"1.00/Nos"`` or ``"12.50/Kg"``,
+        which a plain ``float`` (and :meth:`BaseImporter._to_float`) read as 0. Take
+        the leading signed-decimal token and ignore the trailing ``/unit``. Returns
+        0.0 when there is no leading number. Rates are magnitudes, so a Tally sign
+        is dropped (``abs``) - direction lives on the quantity/value, not the rate.
+        """
+        s = str(raw or "").strip().replace(",", "")
+        if not s:
+            return 0.0
+        m = re.match(r"[-+]?\d*\.?\d+", s)
+        if not m:
+            return 0.0
+        try:
+            return abs(float(m.group(0)))
         except ValueError:
             return 0.0
 

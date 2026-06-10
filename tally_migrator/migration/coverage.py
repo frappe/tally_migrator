@@ -128,7 +128,7 @@ _NO_TARGET_TAGS = {
     "PRIORSTATENAME",                        # historical GST state (only current kept)
     "DEFAULTTRANSFERMODE",                   # payment mode; no ERPNext party field
     "TAXTYPE", "RATEOFVAT",                  # legacy tax classification / VAT rate
-    "DENOMINATOR", "OPENINGVALUE",           # derived from qty × rate (already imported)
+    "DENOMINATOR",                           # unit conversion denominator (internal)
     "BASEUNITS",                             # stock-group default unit; Item Group has no UOM
     "COSTINGMETHOD", "VALUATIONMETHOD",      # only unmapped at stock-GROUP level
     "JOBNAME", "TAXUNITNAME",                # excise job-work / tax unit (pre-GST)

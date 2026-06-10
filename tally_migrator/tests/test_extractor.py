@@ -102,6 +102,20 @@ class TestTallyExtractor(unittest.TestCase):
         # separate quantity parser.
         self.assertEqual(TallyExtractor._parse_opening(" 55 Nos")[0], 0.0)
 
+    def test_parse_rate_handles_unit_suffix(self):
+        """Opening rates export unit-suffixed ('1.00/Nos'); _to_float reads them as
+        0, losing valuation. The rate parser must recover the number (and drop the
+        Tally sign - direction lives on qty/value, not the rate)."""
+        pr = TallyExtractor._parse_rate
+        self.assertEqual(pr("1.00/Nos"), 1.0)
+        self.assertEqual(pr("12.50/Kg"), 12.5)
+        self.assertEqual(pr("1,250.00/Box"), 1250.0)
+        self.assertEqual(pr("-1.00/Nos"), 1.0)   # magnitude only
+        self.assertEqual(pr("75.00"), 75.0)
+        self.assertEqual(pr(""), 0.0)
+        self.assertEqual(pr(None), 0.0)
+        self.assertEqual(pr("/Nos"), 0.0)
+
     def test_bfs_handles_deep_nesting(self):
         """Groups 3 levels deep must still be recognised as Debtors."""
 

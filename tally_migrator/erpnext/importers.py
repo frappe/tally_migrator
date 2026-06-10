@@ -1871,7 +1871,14 @@ class StockOpeningImporter:
             result.add_error("Opening Stock", "no warehouse found to hold opening stock")
             return result
 
-        rows = []
+        # Aggregate by item_code: a masters export can list the same Stock Item more
+        # than once (Tally names are unique, so duplicate tags are the same item), and
+        # all opening stock lands in one warehouse - so two rows for the same item
+        # would trip ERPNext's "Same item and warehouse combination should be unique"
+        # and fail the whole document. Keep one row per item; on a genuine quantity
+        # conflict keep the larger and warn rather than silently picking one.
+        by_code: dict[str, dict] = {}
+        zero_value_items: list[str] = []
         for it in items:
             raw_qty = it.get("OpeningBalance")
             qty = TallyExtractor._parse_quantity(raw_qty)
@@ -1896,23 +1903,52 @@ class StockOpeningImporter:
                         f"opening stock not posted - could not read quantity "
                         f"'{raw_qty}'. Set this item's opening stock manually.")
                 continue
-            rate = (BaseImporter._to_float(it.get("OpeningRate"))
-                    or BaseImporter._to_float(it.get("StandardCost")))
+            # Valuation: prefer the opening rate (unit-suffixed, e.g. "1.00/Nos"), then
+            # the value Tally already computed (OpeningValue ÷ qty - sign is direction,
+            # so abs), then the item's standard cost. _to_float can't read the unit
+            # suffix, hence _parse_rate.
+            rate = TallyExtractor._parse_rate(it.get("OpeningRate"))
             if rate == 0:
-                # Posting a positive quantity at zero valuation creates stock with no
-                # book value, quietly understating inventory. Still post it (the qty
-                # is real), but surface the missing rate so it can be corrected.
-                result.add_warning(
-                    it["_name"],
-                    f"opening stock posted with a zero valuation rate - the item has "
-                    "no opening rate or standard cost in Tally, so its opening stock "
-                    "carries no value. Set the item's valuation rate in ERPNext.")
-            rows.append({
-                "item_code": safe_item_code(it["_name"]),
+                value = abs(BaseImporter._to_float(it.get("OpeningValue")))
+                if value:
+                    rate = value / qty
+            if rate == 0:
+                rate = TallyExtractor._parse_rate(it.get("StandardCost"))
+
+            code = safe_item_code(it["_name"])
+            prev = by_code.get(code)
+            if prev is not None:
+                if abs(prev["qty"] - qty) > 1e-9:
+                    result.add_warning(
+                        it["_name"],
+                        f"item appears more than once in the export with different "
+                        f"opening quantities ({prev['qty']:g} vs {qty:g}); kept the "
+                        f"larger. Verify the item's opening stock in Tally.")
+                    if qty <= prev["qty"]:
+                        continue
+                else:
+                    continue  # exact duplicate tag - same item exported twice
+            if rate == 0:
+                zero_value_items.append(it["_name"])
+            by_code[code] = {
+                "item_code": code,
                 "warehouse": warehouse,
                 "qty": qty,
                 "valuation_rate": rate,
-            })
+            }
+        if zero_value_items:
+            # One summary line instead of one warning per item - these flood the log,
+            # and an item Tally itself carries no rate/value for is posted faithfully
+            # (qty only). Listing the names keeps it actionable without the noise.
+            preview = ", ".join(zero_value_items[:10])
+            more = f" (+{len(zero_value_items) - 10} more)" if len(zero_value_items) > 10 else ""
+            result.add_warning(
+                "Opening Stock",
+                f"{len(zero_value_items)} item(s) posted with a zero valuation rate - "
+                f"Tally carries no opening rate, value or standard cost for them, so "
+                f"their opening stock has no book value: {preview}{more}. Set valuation "
+                f"rates in ERPNext if these items should carry value.")
+        rows = list(by_code.values())
         if not rows:
             return result  # no opening stock to post
 
