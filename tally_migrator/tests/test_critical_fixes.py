@@ -25,6 +25,7 @@ from tally_migrator.erpnext.importers import (
     StockGroupImporter,
     AccountImporter,
     CostCentreImporter,
+    ItemImporter,
     ImportResult,
 )
 
@@ -208,6 +209,89 @@ class TestActiveRunGuard(unittest.TestCase):
                 mock.patch("frappe.utils.now", return_value="ignored"), \
                 mock.patch("frappe.utils.time_diff_in_seconds", return_value=10 * 3600):
             self._api()._assert_no_active_run("Acme")   # stale -> must not raise
+
+
+class TestItemHsnRecovery(unittest.TestCase):
+    """An India-Compliance HSN rejection must not lose the item: the importer
+    retries once with the HSN cleared so the item still lands (HSN filled later)."""
+
+    def _imp(self):
+        return ItemImporter(company="_T Co", abbr="TC")
+
+    def test_recover_clears_invalid_hsn_and_warns(self):
+        data = {"item_code": "X", "item_name": "X", "gst_hsn_code": "9999"}
+        out = self._imp().recover_insert(
+            data, Exception("Could not find Row #1: GST HSN Code: 9999"))
+        self.assertIsNotNone(out)
+        retry, warning = out
+        self.assertEqual(retry["gst_hsn_code"], "")     # cleared for the retry
+        self.assertIn("HSN", warning)
+        self.assertEqual(data["gst_hsn_code"], "9999")  # original dict not mutated
+
+    def test_no_recovery_when_hsn_blank(self):
+        # A blank HSN can't be salvaged by clearing it - nothing to clear.
+        out = self._imp().recover_insert(
+            {"item_code": "X", "gst_hsn_code": ""}, Exception("HSN is mandatory"))
+        self.assertIsNone(out)
+
+    def test_no_recovery_for_unrelated_error(self):
+        out = self._imp().recover_insert(
+            {"item_code": "X", "gst_hsn_code": "9999"}, Exception("some other failure"))
+        self.assertIsNone(out)
+
+
+class TestHsnValidationToggle(unittest.TestCase):
+    """The item import temporarily disables India Compliance's HSN validation and
+    restores it, self-healing via a cache marker if a worker is hard-killed."""
+
+    def test_noop_when_india_compliance_absent(self):
+        with mock.patch.object(importers, "_hsn_validation_field_present",
+                               return_value=False):
+            with importers._hsn_validation_suspended() as suspended:
+                self.assertFalse(suspended)
+
+    def test_disables_on_entry_and_restores_on_exit(self):
+        calls = []
+        with mock.patch.object(importers, "_hsn_validation_field_present",
+                               return_value=True), \
+                mock.patch("frappe.db.get_single_value", return_value=1), \
+                mock.patch.object(importers, "_set_hsn_validation",
+                                  side_effect=lambda v: calls.append(v)), \
+                mock.patch("frappe.cache") as cache:
+            with importers._hsn_validation_suspended() as suspended:
+                self.assertTrue(suspended)
+                self.assertEqual(calls, [0])     # disabled while inside
+            self.assertEqual(calls, [0, 1])      # re-enabled on exit
+            cache.return_value.set_value.assert_called_once()
+            cache.return_value.delete_value.assert_called_once()
+
+    def test_noop_when_setting_already_off(self):
+        calls = []
+        with mock.patch.object(importers, "_hsn_validation_field_present",
+                               return_value=True), \
+                mock.patch("frappe.db.get_single_value", return_value=0), \
+                mock.patch.object(importers, "_set_hsn_validation",
+                                  side_effect=lambda v: calls.append(v)):
+            with importers._hsn_validation_suspended() as suspended:
+                self.assertFalse(suspended)
+            self.assertEqual(calls, [])          # user's choice left untouched
+
+    def test_restore_guard_reenables_when_marker_present(self):
+        with mock.patch("frappe.cache") as cache, \
+                mock.patch.object(importers, "_hsn_validation_field_present",
+                                  return_value=True), \
+                mock.patch.object(importers, "_set_hsn_validation") as setter:
+            cache.return_value.get_value.return_value = "1"
+            importers._restore_hsn_validation()
+            setter.assert_called_once_with(1)    # fail-safe: validation back ON
+            cache.return_value.delete_value.assert_called_once()
+
+    def test_restore_guard_noop_without_marker(self):
+        with mock.patch("frappe.cache") as cache, \
+                mock.patch.object(importers, "_set_hsn_validation") as setter:
+            cache.return_value.get_value.return_value = None
+            importers._restore_hsn_validation()
+            setter.assert_not_called()
 
 
 if __name__ == "__main__":
