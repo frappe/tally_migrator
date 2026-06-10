@@ -32,8 +32,11 @@ class TallyMigratorPage {
 		this.recordOverrides = {}; // {entityType: {name: {field: value}}} inline fixes
 		this.states = [];          // ERPNext state names for the inline state dropdown
 		this._currentStep = "section-upload";
+		this._draftPending = null; // latest unsent draft snapshot (see saveDraft/flushDraft)
 		this.render();
 		this.loadDraft();          // offer to resume an in-progress migration, if any
+		// Flush any pending draft if the user reloads/closes before the debounce fires.
+		$(window).on("beforeunload.tallymig", () => this.flushDraft());
 	}
 
 	render() {
@@ -445,7 +448,9 @@ class TallyMigratorPage {
 
 	saveDraft() {
 		if (!this.fileUrl) return;
-		const payload = {
+		// Hold the latest snapshot so a reload mid-debounce can still flush it (see
+		// flushDraft); cleared once the debounced call actually fires.
+		this._draftPending = {
 			file_url: this.fileUrl,
 			file_name: this.fileName,
 			erpnext_company: $("#erpnext-company").val() || "",
@@ -457,12 +462,33 @@ class TallyMigratorPage {
 		};
 		clearTimeout(this._draftTimer);
 		this._draftTimer = setTimeout(() => {
+			const payload = this._draftPending;
+			if (!payload) return;
+			this._draftPending = null;
 			frappe.call({
 				method: "tally_migrator.api.save_draft",
 				args: { payload: JSON.stringify(payload) },
 				callback: () => {},
 			});
 		}, 600);
+	}
+
+	// Best-effort flush of an un-sent draft when the page is being unloaded
+	// (reload/close). A normal frappe.call would be cancelled mid-flight, so we use
+	// sendBeacon, which the browser delivers after the page is gone. The server
+	// reads the CSRF token from the form body, so no custom header is needed.
+	flushDraft() {
+		const payload = this._draftPending;
+		if (!payload || !navigator.sendBeacon) return;
+		try {
+			const fd = new FormData();
+			fd.append("payload", JSON.stringify(payload));
+			fd.append("csrf_token", frappe.csrf_token || "");
+			navigator.sendBeacon("/api/method/tally_migrator.api.save_draft", fd);
+			this._draftPending = null;
+		} catch (e) {
+			/* best effort - the debounced call or next save will catch up */
+		}
 	}
 
 	loadDraft() {
@@ -532,6 +558,7 @@ class TallyMigratorPage {
 
 	clearDraft() {
 		clearTimeout(this._draftTimer);
+		this._draftPending = null;   // don't let the unload beacon re-save a cleared draft
 		$("#resume-banner").hide().empty();
 		frappe.call({ method: "tally_migrator.api.clear_draft", callback: () => {} });
 	}
@@ -569,14 +596,16 @@ class TallyMigratorPage {
 	// ── Step 3: pre-flight check ─────────────────────────────────────────────────
 
 	proceedToCheck() {
+		// Reset only the server-derived scan results - they're recomputed below.
+		// The user's own edits (uomOverrides, recordOverrides) must survive: this
+		// step is re-entered on every back/forward and right after resuming a draft,
+		// so wiping them here silently discarded the user's fixes before the run.
 		this.uomIssues = [];
 		this.allUoms = [];
-		this.uomOverrides = {};
 		this.qualityReport = null;
 		this.coverageReport = null;
 		this.accountMapping = null;
 		this.readiness = null;
-		this.recordOverrides = {};
 		this.states = [];
 
 		$("#check-loading").show();
@@ -896,7 +925,9 @@ class TallyMigratorPage {
 			$body.toggle();
 			$("#dq-caret-" + idx).text($body.is(":visible") ? "▾" : "▸");
 		});
-		$("#dq-list .dq-edit").on("change", (e) => this.captureEdit(e.currentTarget));
+		// Capture on input (every keystroke), not just change (blur): an edit the
+		// user hasn't tabbed away from must still be in memory when they reload or run.
+		$("#dq-list .dq-edit").on("input change", (e) => this.captureEdit(e.currentTarget));
 		$("#btn-dq-recheck").on("click", () => this.recheck());
 
 		// Errors require explicit consent before Continue.
@@ -1023,26 +1054,37 @@ class TallyMigratorPage {
 	// click; per-row dropdowns let the user map specific units to existing ones.
 	renderUomIssues() {
 		const esc = frappe.utils.escape_html;
-		// Bare unit names grouped under one "map to existing" heading, so the prefix
-		// is shown once (on the optgroup) instead of repeated on every option.
-		const existingOptions = this.allUoms.length
-			? `<optgroup label="Or map to an existing unit">${this.allUoms
-					.map((u) => `<option value="${esc(u)}">${esc(u)}</option>`)
-					.join("")}</optgroup>`
-			: "";
+
+		// Restore the user's earlier choice for a row: a saved override that maps to
+		// an existing unit selects that unit; anything else (or nothing saved) falls
+		// back to "create as new". Lets a resumed draft show the choices the user made.
+		const savedChoice = (issue) => {
+			const sel = (this.uomOverrides || {})[issue.tally_uom];
+			return sel && sel !== issue.erpnext_uom ? sel : "__create__";
+		};
 
 		const rows = this.uomIssues
-			.map((issue) => `
+			.map((issue) => {
+				const chosen = savedChoice(issue);
+				// Bare unit names grouped under one "map to existing" heading, so the
+				// prefix is shown once (on the optgroup) not on every option.
+				const existingOptions = this.allUoms.length
+					? `<optgroup label="Or map to an existing unit">${this.allUoms
+							.map((u) => `<option value="${esc(u)}" ${u === chosen ? "selected" : ""}>${esc(u)}</option>`)
+							.join("")}</optgroup>`
+					: "";
+				return `
 				<tr class="uom-row" data-tally-uom="${esc(issue.tally_uom)}">
 					<td style="font-weight:600; vertical-align:middle;">${esc(issue.tally_uom)}</td>
 					<td class="text-muted text-center" style="width:28px; vertical-align:middle;">→</td>
 					<td>
 						<select class="form-control input-sm uom-choice">
-							<option value="__create__">Create new unit: "${esc(issue.erpnext_uom)}"</option>
+							<option value="__create__" ${chosen === "__create__" ? "selected" : ""}>Create new unit: "${esc(issue.erpnext_uom)}"</option>
 							${existingOptions}
 						</select>
 					</td>
-				</tr>`)
+				</tr>`;
+			})
 			.join("");
 
 		const n = this.uomIssues.length;
@@ -1065,8 +1107,26 @@ class TallyMigratorPage {
 			</div>
 		`);
 
+		// Persist each row's choice into the override map as it's made, so a reload
+		// before "Continue" keeps the user's UOM decisions (mirrors the inline fixes).
+		const persistRow = ($row) => {
+			const tally = $row.data("tally-uom");
+			const issue = this.uomIssues.find((i) => i.tally_uom === tally);
+			if (!issue) return;
+			const choice = $row.find(".uom-choice").val();
+			this.uomOverrides = this.uomOverrides || {};
+			this.uomOverrides[tally] = choice === "__create__" ? issue.erpnext_uom : choice;
+		};
+
+		$("#uom-issue-list .uom-choice").on("change", (e) => {
+			persistRow($(e.currentTarget).closest(".uom-row"));
+			this.saveDraft();
+		});
+
 		$("#btn-uom-all-create").on("click", () => {
 			$("#uom-issue-list .uom-choice").val("__create__");
+			$("#uom-issue-list .uom-row").each((_, el) => persistRow($(el)));
+			this.saveDraft();
 		});
 	}
 
