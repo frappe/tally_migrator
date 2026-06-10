@@ -1002,11 +1002,17 @@ class TallyMigratorPage {
 				frappe.dom.unfreeze();
 				this.qualityReport = r.message || null;
 				this.states = (r.message && r.message.states) || this.states;
+				// The server recomputes coverage + account mapping against the fixed
+				// data on every call; refresh them too, or the Review step (and the
+				// coverage notice) would keep showing the pre-fix snapshot.
+				this.coverageReport = (r.message && r.message.coverage) || null;
+				this.accountMapping = (r.message && r.message.account_mapping) || null;
 				if (r.message && r.message.readiness) {
 					this.readiness = r.message.readiness;
 					this.renderReadiness();
 				}
 				this.renderDataQuality();
+				this.renderCoverage();
 			},
 			error: () => frappe.dom.unfreeze(),
 		});
@@ -1248,8 +1254,8 @@ class TallyMigratorPage {
 								? ` <span title="inferred" style="color:${AMBER};">⚠</span>`
 								: ""
 						}</td>
-							<td style="padding:6px 10px;" class="text-muted">${esc(r.account_type || "—")}</td>
-							<td style="padding:6px 10px;" class="text-muted">${esc(r.parent || "—")}</td>
+							<td style="padding:6px 10px;" class="text-muted">${esc(r.account_type || "-")}</td>
+							<td style="padding:6px 10px;" class="text-muted">${esc(r.parent || "-")}</td>
 							<td style="padding:6px 10px; text-align:right;">${ob(r)}</td>
 						</tr>`
 					)
@@ -1300,7 +1306,7 @@ class TallyMigratorPage {
 		this.show("section-run");
 	}
 
-	// ── Step 4: run ──────────────────────────────────────────────────────────────
+	// ── Step 5: run ──────────────────────────────────────────────────────────────
 
 	runMigration() {
 		const erpnext = $("#erpnext-company").val();
@@ -1445,7 +1451,33 @@ class TallyMigratorPage {
 			this.renderResults(summary);
 			$("#run-actions").hide();
 		};
+		// Stop auto-polling after this long without a terminal status. A worker that
+		// is hard-killed (OOM, redeploy) never writes 'Failed', so without a cap the
+		// log stays 'Running' and the page would poll forever. The run may still be
+		// alive (a very large import), so the terminal state is non-committal and
+		// offers to keep checking rather than claiming failure.
+		const POLL_CAP_MS = 30 * 60 * 1000;
+		const start = Date.now();
+
+		const stalled = () => {
+			frappe.realtime.off("progress", this._onProgress);
+			this.stopHeartbeat();
+			$("#btn-run").prop("disabled", false);
+			$("#btn-back-3").prop("disabled", false);
+			$("#progress-desc").html(
+				"This is taking longer than expected. The migration may still be running - " +
+				'open <a href="#" class="err-logs-link">the migration log</a> to check its ' +
+				'status. <button class="btn btn-xs btn-default" id="btn-keep-checking">Keep checking</button>'
+			);
+			$(".err-logs-link").on("click", (e) => {
+				e.preventDefault();
+				frappe.set_route("Form", "Tally Migration Log", logName);
+			});
+			$("#btn-keep-checking").on("click", () => this.pollLog(logName));
+		};
+
 		const poll = () => {
+			if (Date.now() - start > POLL_CAP_MS) { stalled(); return; }
 			frappe.call({
 				method: "frappe.client.get_value",
 				args: { doctype: "Tally Migration Log", filters: { name: logName }, fieldname: ["status", "import_summary"] },
