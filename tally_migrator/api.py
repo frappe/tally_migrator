@@ -207,9 +207,9 @@ def run_masters_migration_from_file(file_url, erpnext_company="", uom_overrides=
                                     posting_date=""):
     """Run the masters migration from an uploaded Tally masters XML export.
 
-    ``file_url``        – URL of the File uploaded via the standard Frappe uploader.
-    ``erpnext_company`` – target Company inside ERPNext.
-    ``uom_overrides``   – JSON object ``{"TallyUOM": "ERPNextUOM", ...}`` resolved
+    ``file_url``        - URL of the File uploaded via the standard Frappe uploader.
+    ``erpnext_company`` - target Company inside ERPNext.
+    ``uom_overrides``   - JSON object ``{"TallyUOM": "ERPNextUOM", ...}`` resolved
                           by the user in the pre-flight check. Takes precedence over
                           the built-in UOM_MAP for the listed keys.
 
@@ -218,6 +218,7 @@ def run_masters_migration_from_file(file_url, erpnext_company="", uom_overrides=
     the UI can link directly to the migration log.
     """
     frappe.only_for(ALLOWED_ROLES)
+    _assert_no_active_run(erpnext_company)
     uom: dict = json.loads(uom_overrides) if uom_overrides else {}
     records: dict = json.loads(record_overrides) if record_overrides else {}
 
@@ -249,6 +250,7 @@ def rerun_from_log(log_name):
     """
     frappe.only_for(ALLOWED_ROLES)
     log = frappe.get_doc("Tally Migration Log", log_name)
+    _assert_no_active_run(log.company)
     if not log.source_file:
         frappe.throw(
             "This log has no source file stored, so it can't be re-run automatically. "
@@ -304,6 +306,37 @@ _DEFAULT_MAX_UPLOAD_MB = 150
 # timeout). Below it, the run stays synchronous and returns the summary directly.
 RUN_ASYNC_THRESHOLD = 5000
 
+# A 'Running' log older than this is treated as stale (its worker likely died
+# without finalising), so it no longer blocks a fresh run - otherwise a crashed run
+# would lock the company out forever. The per-company opening lock (importers) is
+# the real double-post guard; this guard is an early, clearer message for the
+# common two-tab / double-click mistake.
+_ACTIVE_RUN_STALE_SECONDS = 2 * 60 * 60
+
+
+def _assert_no_active_run(company: str) -> None:
+    """Refuse to start a second migration while one is already running for the
+    same company. Only a *recent* 'Running' log blocks; a stale one (crashed
+    worker) is ignored so re-runs aren't locked out. Best-effort UX guard - the
+    opening lock in the importer is what actually protects the books."""
+    if not company:
+        return
+    rows = frappe.get_all(
+        "Tally Migration Log",
+        filters={"company": company, "status": "Running"},
+        fields=["name", "modified"], order_by="modified desc", limit=1,
+    )
+    if not rows:
+        return
+    modified = rows[0].modified
+    if frappe.utils.time_diff_in_seconds(frappe.utils.now(), modified) < _ACTIVE_RUN_STALE_SECONDS:
+        frappe.throw(
+            frappe._(
+                "A migration for '{0}' is already running (started {1}). Please wait "
+                "for it to finish, or open the migration log to check its status."
+            ).format(company, frappe.utils.pretty_date(modified))
+        )
+
 
 def _assert_file_access(file_doc) -> None:
     """Refuse to read a File the current user has no claim to.
@@ -333,7 +366,18 @@ def _source_from_file(file_url):
     migration run also reads ``file_doc.file_name`` for the log label. Access is
     checked (see ``_assert_file_access``) and the parse is cached per file version.
     """
-    file_doc = frappe.get_doc("File", {"file_url": file_url})
+    # A stale draft (or a re-run from a log) can point at a File that has since been
+    # deleted; surface that as a clear, actionable message instead of a raw 500.
+    name = frappe.db.exists("File", {"file_url": file_url})
+    if not name:
+        frappe.throw(
+            frappe._(
+                "The uploaded file could not be found - it may have been deleted. "
+                "Please upload your Tally Masters XML again."
+            ),
+            frappe.DoesNotExistError,
+        )
+    file_doc = frappe.get_doc("File", name)
     _assert_file_access(file_doc)
     cache_key = (frappe.session.user, file_doc.name, str(file_doc.modified))
     with _SOURCE_CACHE_LOCK:

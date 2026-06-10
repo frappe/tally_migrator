@@ -23,6 +23,7 @@ Insert rules (shared by every importer)
 - Per-record commit isolates partial failures so one bad record cannot undo
   successfully imported ones.
 """
+import contextlib
 from dataclasses import dataclass, field
 
 import frappe
@@ -1097,6 +1098,50 @@ class CostCentreImporter:
             frappe.db.rollback()
 
 
+# ── Concurrency guard for opening entries ─────────────────────────────────────
+# The opening Journal Entry and Stock Reconciliation are aggregate, submitted
+# documents guarded against re-posting by an existence check (see
+# OpeningBalanceImporter._existing_opening_state). That check is read-then-write,
+# so two runs of the SAME company racing each other could both read "none exist"
+# and both post - doubling the opening trial balance. A short, self-expiring Redis
+# lock per company serialises the check-and-post: only one run posts at a time, and
+# the other then sees the now-committed entries (via the existence check) and stands
+# down. Lock + existence check together close the window with no stale-lock risk.
+_OPENING_LOCK_TTL = 3600   # seconds; ample to post, self-expiring if a worker dies
+
+
+@contextlib.contextmanager
+def _company_opening_lock(company: str):
+    """Best-effort per-company lock around opening-balance/stock posting.
+
+    Yields True when this process holds the lock, False when another run already
+    does. Site-namespaced so it is safe on shared Redis. If the cache is
+    unavailable the lock is treated as acquired - the DB-level existence check
+    remains the correctness backstop, so a cache outage never blocks a real run.
+    """
+    site = getattr(frappe.local, "site", "") or ""
+    key = f"tally_migrator:opening:{site}:{company}"
+    cache = frappe.cache()
+    acquired = False
+    try:
+        # redis SETNX + TTL: set only if absent, auto-expire so a dead worker can't
+        # hold the lock forever.
+        acquired = bool(cache.set(key, frappe.utils.now(), nx=True, ex=_OPENING_LOCK_TTL))
+    except Exception:
+        # Cache down / unavailable: proceed without the lock. The existence check
+        # still prevents the common (sequential) double-post.
+        yield True
+        return
+    try:
+        yield acquired
+    finally:
+        if acquired:
+            try:
+                cache.delete(key)
+            except Exception:
+                pass
+
+
 # ── Opening balance importer ─────────────────────────────────────────────────
 
 class OpeningBalanceImporter:
@@ -1519,12 +1564,32 @@ class ERPNextImporter:
 
     def import_opening_balances(self, accounts: list, customers: list,
                                 suppliers: list, posting_date: str = "") -> ImportResult:
-        return OpeningBalanceImporter(self.company, self.abbr).run(
-            accounts, customers, suppliers, self._opening_date(posting_date))
+        with _company_opening_lock(self.company) as got:
+            if not got:
+                result = ImportResult("Journal Entry")
+                result.skipped += 1
+                result.add_warning(
+                    "Opening Entry",
+                    "another migration for this company is posting opening balances "
+                    "right now - skipped here to avoid double-posting. Re-run after it "
+                    "finishes; already-posted batches are skipped and any gaps filled.")
+                return result
+            return OpeningBalanceImporter(self.company, self.abbr).run(
+                accounts, customers, suppliers, self._opening_date(posting_date))
 
     def import_opening_stock(self, items: list, posting_date: str = "") -> ImportResult:
-        return StockOpeningImporter(self.company, self.abbr).run(
-            items, self._opening_date(posting_date))
+        with _company_opening_lock(self.company) as got:
+            if not got:
+                result = ImportResult("Stock Reconciliation")
+                result.skipped += 1
+                result.add_warning(
+                    "Opening Stock",
+                    "another migration for this company is posting opening stock right "
+                    "now - skipped here to avoid double-counting. Re-run after it "
+                    "finishes to fill any gaps.")
+                return result
+            return StockOpeningImporter(self.company, self.abbr).run(
+                items, self._opening_date(posting_date))
 
     def import_stock_groups(self, groups: list[dict]) -> ImportResult:
         return StockGroupImporter(self.company, self.abbr).run(groups)
