@@ -76,6 +76,17 @@ class TestAccountMapping(unittest.TestCase):
         self.assertEqual(plug["plug_dr_cr"], "Cr")   # balancing line opposes the net
         self.assertFalse(plug["clean"])
 
+    def test_party_openings_list_per_party(self):
+        # The collapsed "all parties" list carries one row per party with an
+        # opening, with the ledger amount/side - Acme Corp is the lone customer.
+        plist = self.m["party_openings"]["parties_list"]
+        acme = next(r for r in plist if r["name"] == "Acme Corp")
+        self.assertEqual(acme["party_type"], "Customer")
+        self.assertEqual(acme["amount"], 15000.0)
+        self.assertEqual(acme["dr_cr"], "Dr")
+        # No bill detail in this fixture, so it posts a single lump opening document.
+        self.assertEqual(acme["documents"], 1)
+
     def test_balanced_book_reads_clean(self):
         ledgers = [
             _l("HDFC Bank", "Bank Accounts", "50000.00 Dr"),

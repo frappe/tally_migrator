@@ -539,6 +539,7 @@ class TallyMigratorPage {
 			company: d.erpnext_company,
 			coa: d.coa_mode,
 			posting: d.posting_date,
+			step: d.step,
 		};
 		$("#resume-banner").hide().empty();
 		$("#file-status").html(
@@ -597,6 +598,17 @@ class TallyMigratorPage {
 				if (this._restore && this._restore.company) {
 					$select.val(this._restore.company);
 					this.saveDraft();   // persist the restored selection
+					// Resume at the step the user actually left off on. Landing on
+					// Configure (step 1) every time forced them to re-walk the wizard
+					// and re-trigger the scans; jump back to Check/Preview/Migrate with
+					// their data (and saved fixes) loaded. The company is needed for the
+					// scans, so this can only run once it's restored here.
+					const step = this._restore.step;
+					this._restore = null;   // consumed - don't re-jump on later Configure visits
+					if (step && step !== "section-upload" && step !== "section-configure") {
+						this._resumeStep = step;
+						this.proceedToCheck();
+					}
 				} else if (companies.length === 1) {
 					$select.val(companies[0].name);
 				}
@@ -638,11 +650,31 @@ class TallyMigratorPage {
 			if (noUom && noDq) {
 				$("#check-clean").show();
 			}
+			// When resuming a draft that was past the Check step, advance to the saved
+			// step now that the scans (and account mapping) have loaded. Readiness
+			// blockers still gate Migrate, exactly as a forward walk would.
+			if (this._resumeStep) {
+				const step = this._resumeStep;
+				this._resumeStep = null;
+				if (step === "section-review" && this.hasAccounts()) {
+					this.show("section-review");
+				} else if (step === "section-run") {
+					this.gotoRun();
+				}
+			}
 		};
 
 		frappe.call({
 			method: "tally_migrator.api.validate_masters_data",
-			args: { file_url: this.fileUrl, erpnext_company: $("#erpnext-company").val() },
+			args: {
+				file_url: this.fileUrl,
+				erpnext_company: $("#erpnext-company").val(),
+				// Apply the user's saved inline fixes (e.g. a resumed draft) so the
+				// scan reflects them on first load - otherwise edits stay invisible
+				// until the user manually clicks Re-check. Mirrors recheck()'s args.
+				record_overrides: JSON.stringify(this.recordOverrides || {}),
+				posting_date: $("#opening-date").val() || "",
+			},
 			callback: (r) => {
 				this.qualityReport = r.message || null;
 				this.states = (r.message && r.message.states) || [];
@@ -1441,6 +1473,49 @@ class TallyMigratorPage {
 				</div>`;
 		}
 
+		// Collapsed per-party list - the twin of the COA book, so the user can drill
+		// into every party's opening, side and document count without it dominating
+		// the screen.
+		const partyRows = (p.parties_list || [])
+			.map((r) => {
+				const amt = r.amount
+					? `${fmt(r.amount)} ${esc(r.dr_cr || "")}`.trim()
+					: "-";
+				const flag = r.on_account
+					? ` <span title="posts On Account" style="color:${AMBER};">⚠</span>`
+					: "";
+				return `
+					<tr>
+						<td style="padding:6px 10px;">${esc(r.name)}${flag}</td>
+						<td style="padding:6px 10px;" class="text-muted">${esc(r.party_type)}</td>
+						<td style="padding:6px 10px; text-align:right;" class="text-muted">${fmt(r.documents)}</td>
+						<td style="padding:6px 10px; text-align:right;">${amt}</td>
+					</tr>`;
+			})
+			.join("");
+		const partyBook = partyRows
+			? `
+			<div id="review-parties-head" style="cursor:pointer; display:flex; align-items:center; justify-content:space-between;
+				border:1px solid #e0e6ed; border-radius:6px; padding:10px 12px; margin-top:12px;">
+				<span class="text-muted">Show all ${fmt(p.parties)} part${p.parties === 1 ? "y" : "ies"}</span>
+				<span class="text-muted" id="review-parties-caret">▸</span>
+			</div>
+			<div id="review-parties-body" style="display:none; margin-top:8px; max-height:360px; overflow-y:auto;
+				border:1px solid #e0e6ed; border-radius:6px;">
+				<table class="table table-condensed" style="margin:0; font-size:13px;">
+					<thead>
+						<tr>
+							<th style="border-top:0; padding:6px 10px;">Party</th>
+							<th style="border-top:0; padding:6px 10px;">Type</th>
+							<th style="border-top:0; padding:6px 10px; text-align:right;">Docs</th>
+							<th style="border-top:0; padding:6px 10px; text-align:right;">Opening</th>
+						</tr>
+					</thead>
+					<tbody>${partyRows}</tbody>
+				</table>
+			</div>`
+			: "";
+
 		$("#review-parties").html(`
 			<h5 style="margin-bottom:8px;">Customer &amp; supplier opening balances</h5>
 			<p class="text-muted" style="margin-bottom:10px; font-size:13px;">
@@ -1450,7 +1525,13 @@ class TallyMigratorPage {
 			</p>
 			<div style="display:flex; gap:10px;">${cards}</div>
 			${warn}
+			${partyBook}
 		`);
+		$("#review-parties-head").on("click", () => {
+			const $body = $("#review-parties-body");
+			$body.toggle();
+			$("#review-parties-caret").text($body.is(":visible") ? "▾" : "▸");
+		});
 	}
 
 	gotoRun() {

@@ -134,6 +134,7 @@ def _party_openings(masters, bills) -> dict:
     invoices = advances = on_account = lump = 0
     party_count = 0
     mismatches: list[dict] = []
+    parties_list: list[dict] = []
     for party_type, records in (("Customer", masters.customers),
                                 ("Supplier", masters.suppliers)):
         for record in records:
@@ -147,28 +148,50 @@ def _party_openings(masters, bills) -> dict:
 
             ledger_signed = _signed(ledger_amt, ledger_drcr)
             bills_signed = 0.0
+            p_invoices = p_advances = 0
             for b in party_bills:
                 s = _signed(b.amount, b.dr_cr)
                 if abs(s) < _PARTY_PLUG_THRESHOLD:
                     continue
                 bills_signed += s
                 if _classify_party(party_type, s, b.is_advance) == "advance":
-                    advances += 1
+                    p_advances += 1
                 else:
-                    invoices += 1
+                    p_invoices += 1
+            invoices += p_invoices
+            advances += p_advances
 
             residual = round(ledger_signed - bills_signed, 2)
+            p_on_account = p_lump = 0
             if abs(residual) >= _PARTY_PLUG_THRESHOLD:
                 if party_bills:
                     on_account += 1
+                    p_on_account = round(abs(residual), 2)
                     mismatches.append({
                         "name": name,
                         "party_type": party_type,
-                        "amount": round(abs(residual), 2),
+                        "amount": p_on_account,
                     })
                 else:
                     lump += 1
+                    p_lump = 1
 
+            # Per-party row for the collapsed "all parties" list (mirrors the COA
+            # book). Amount/side is the ledger opening; docs is how many opening
+            # documents this party produces.
+            parties_list.append({
+                "name": name,
+                "party_type": party_type,
+                "amount": round(ledger_amt, 2),
+                "dr_cr": ledger_drcr,
+                "invoices": p_invoices,
+                "advances": p_advances,
+                "on_account": p_on_account,
+                "documents": p_invoices + p_advances
+                             + (1 if p_on_account else 0) + p_lump,
+            })
+
+    parties_list.sort(key=lambda r: (r["party_type"], r["name"].lower()))
     return {
         "parties": party_count,
         "invoices": invoices,
@@ -177,6 +200,7 @@ def _party_openings(masters, bills) -> dict:
         "lump": lump,
         "documents": invoices + advances + on_account + lump,
         "mismatches": mismatches,
+        "parties_list": parties_list,
     }
 
 
