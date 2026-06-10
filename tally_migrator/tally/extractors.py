@@ -306,7 +306,13 @@ class TallyExtractor:
         """Parse a Tally opening balance → (abs_amount, 'Dr'|'Cr'|'').
 
         Handles multi-currency cells like '10.00$ = 800.00' (takes the base amount
-        after '='). Sign convention: positive = Dr, negative = Cr.
+        after '='). Sign convention: **negative = Dr, positive = Cr**. Tally stores
+        a Debit opening as a negative number and a Credit opening as positive -
+        verified against real exports where the Capital Account (always a credit)
+        exports positive and bank/asset balances export negative, and where Sundry
+        Debtors (normally Dr) are predominantly negative while Sundry Creditors
+        (normally Cr) are predominantly positive. An explicit 'Dr'/'Cr' suffix, when
+        present, always wins over the bare sign.
         """
         s = str(raw or "").strip()
         if not s:
@@ -329,4 +335,4 @@ class TallyExtractor:
             return 0.0, ""
         if suffix:
             return abs(val), suffix
-        return abs(val), "Dr" if val > 0 else "Cr"
+        return abs(val), "Dr" if val < 0 else "Cr"

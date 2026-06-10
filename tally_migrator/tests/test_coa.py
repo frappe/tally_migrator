@@ -137,10 +137,24 @@ class TestParseOpening(unittest.TestCase):
         self.assertEqual(self._p("45000.00 Cr"), (45000.0, "Cr"))
 
     def test_multicurrency_takes_base(self):
-        self.assertEqual(self._p("10.00$ = 800.00"), (800.0, "Dr"))
+        # Positive base amount → Credit (Tally's bare-sign convention).
+        self.assertEqual(self._p("10.00$ = 800.00"), (800.0, "Cr"))
 
-    def test_negative_is_cr(self):
-        self.assertEqual(self._p("-1000"), (1000.0, "Cr"))
+    def test_negative_is_dr(self):
+        # Tally stores a Debit opening as a negative number.
+        self.assertEqual(self._p("-1000"), (1000.0, "Dr"))
+
+    def test_positive_is_cr(self):
+        # ...and a Credit opening as positive.
+        self.assertEqual(self._p("1000"), (1000.0, "Cr"))
+
+    def test_real_export_anchor_signs(self):
+        # Regression guard against a silent re-inversion of the sign convention,
+        # pinned to real-export ground truth (see _parse_opening docstring):
+        #   Capital Account exports POSITIVE and is always a Credit;
+        #   a bank/asset opening exports NEGATIVE and is a Debit.
+        self.assertEqual(self._p("100000.00"), (100000.0, "Cr"))   # Capital → Cr
+        self.assertEqual(self._p("-10200.00"), (10200.0, "Dr"))    # HDFC Bank → Dr
 
     def test_blank_and_zero(self):
         self.assertEqual(self._p(""), (0.0, ""))
