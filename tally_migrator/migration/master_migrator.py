@@ -9,6 +9,50 @@ from tally_migrator.erpnext.importers import ERPNextImporter, ImportResult
 from tally_migrator.migration.overrides import apply_record_overrides
 
 
+def _collapse_identical(rows: list[dict], sample: int = 5) -> list[dict]:
+    """Merge issue rows that share the exact same (record_type, reason).
+
+    A systemic problem hits many records with byte-identical messages (no HSN,
+    zero-rate opening stock, the same dependent-doc drop). Collapsing them keeps
+    the log's issues table readable: one row per distinct issue, whose Record
+    column lists the affected records (a short sample + an "(+N more)" tail) and
+    whose reason is prefixed with the count. Rows whose reason embeds the record
+    name are naturally unique and pass through unchanged.
+
+    Order is preserved by first appearance, so the table still reads top-to-bottom
+    in pipeline order.
+    """
+    groups: dict[tuple, dict] = {}
+    order: list[tuple] = []
+    for r in rows:
+        key = (r["record_type"], r["reason"])
+        if key not in groups:
+            groups[key] = {"record_type": r["record_type"],
+                           "names": [], "reason": r["reason"]}
+            order.append(key)
+        groups[key]["names"].append(str(r["record_name"]))
+
+    out: list[dict] = []
+    for key in order:
+        g = groups[key]
+        names, n = g["names"], len(g["names"])
+        if n == 1:
+            out.append({"record_type": g["record_type"],
+                        "record_name": names[0], "reason": g["reason"]})
+            continue
+        shown = ", ".join(names[:sample])
+        more = f" (+{n - sample} more)" if n > sample else ""
+        # Reason keeps its warning prefix (the ⚠ already leads it); prepend the
+        # count so the table headline reads e.g. "13 records · opening stock …".
+        prefix, body = ("⚠ ", g["reason"][2:]) if g["reason"].startswith("⚠ ") else ("", g["reason"])
+        out.append({
+            "record_type": g["record_type"],
+            "record_name": f"{shown}{more}",
+            "reason": f"{prefix}{n} records · {body}",
+        })
+    return out
+
+
 def _has_opening(raw) -> bool:
     """True when a Tally opening-balance cell carries a non-zero amount.
 
@@ -83,7 +127,12 @@ class MigrationSummary:
 
         Both land in the log's issues table so nothing is lost silently; warnings
         are prefixed so they're distinguishable from hard failures and do not flip
-        the run status to 'Completed with Errors'."""
+        the run status to 'Completed with Errors'.
+
+        Rows that share the *exact* same (record_type, reason) are collapsed into a
+        single row so one systemic issue (e.g. dozens of items with no HSN, or
+        opening stock posted at a zero rate) reads as one line listing the affected
+        records, instead of flooding the table with identical messages."""
         rows = [
             {"record_type": label, "record_name": e["name"], "reason": e["reason"]}
             for label, result in self.results.items()
@@ -95,7 +144,7 @@ class MigrationSummary:
             for label, result in self.results.items()
             for w in result.warnings
         ]
-        return rows
+        return _collapse_identical(rows)
 
 
 class MasterMigrator:

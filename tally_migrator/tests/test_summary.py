@@ -5,13 +5,15 @@ from tally_migrator.erpnext.importers import ImportResult
 from tally_migrator.migration.master_migrator import MigrationSummary
 
 
-def _result(doctype, created=0, skipped=0, errors=(), created_names=()):
+def _result(doctype, created=0, skipped=0, errors=(), created_names=(), warnings=()):
     r = ImportResult(doctype)
     r.created = created
     r.skipped = skipped
     r.created_names = list(created_names)
     for name, reason in errors:
         r.add_error(name, reason)
+    for name, reason in warnings:
+        r.add_warning(name, reason)
     return r
 
 
@@ -56,6 +58,36 @@ class TestMigrationSummary(unittest.TestCase):
         self.assertIn(
             {"record_type": "Items", "record_name": "Widget", "reason": "bad UOM"},
             records)
+
+    def test_identical_reasons_collapse_to_one_row(self):
+        # Three items, byte-identical reason -> one row listing all three, count
+        # prefixed; a fourth item with a *different* reason stays its own row.
+        same = "no HSN/SAC code - imported without one."
+        s = _summary(
+            _result("Warehouse"),
+            _result("Customer"),
+            _result("Supplier"),
+            _result("Item", warnings=[("Pen", same), ("Pencil", same),
+                                      ("Eraser", same), ("Glue", "bad UOM")]))
+        records = s.error_records()
+        collapsed = next(r for r in records if "no HSN" in r["reason"])
+        self.assertIn("3 records", collapsed["reason"])
+        self.assertEqual(collapsed["record_name"], "Pen, Pencil, Eraser")
+        self.assertTrue(collapsed["reason"].startswith("⚠ "))  # warning prefix kept
+        # The odd-one-out is untouched and not merged.
+        self.assertTrue(any("bad UOM" in r["reason"] for r in records))
+        self.assertEqual(len(records), 2)
+
+    def test_unique_reasons_pass_through_unchanged(self):
+        # Reasons that embed the record name are naturally distinct -> no collapse.
+        s = _summary(
+            _result("Warehouse"),
+            _result("Customer", errors=[("Acme", "Acme failed"), ("Beta", "Beta failed")]),
+            _result("Supplier"),
+            _result("Item"))
+        records = s.error_records()
+        self.assertEqual(len(records), 2)
+        self.assertTrue(all("records ·" not in r["reason"] for r in records))
 
     def test_created_records_lists_only_nonempty_entities(self):
         s = _summary(

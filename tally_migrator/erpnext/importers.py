@@ -1878,7 +1878,6 @@ class StockOpeningImporter:
         # and fail the whole document. Keep one row per item; on a genuine quantity
         # conflict keep the larger and warn rather than silently picking one.
         by_code: dict[str, dict] = {}
-        zero_value_items: list[str] = []
         for it in items:
             raw_qty = it.get("OpeningBalance")
             qty = TallyExtractor._parse_quantity(raw_qty)
@@ -1935,26 +1934,20 @@ class StockOpeningImporter:
                 "valuation_rate": rate,
             }
             if rate == 0:
-                zero_value_items.append(it["_name"])
                 # ERPNext rejects a positive opening qty at a zero rate
                 # ("Valuation Rate required for Item …") unless the row explicitly
                 # allows it. Tally itself carries no value for these items, so we
                 # post the quantity faithfully at zero value rather than blocking
-                # the whole reconciliation.
+                # the whole reconciliation. One warning per item, with identical
+                # text - the log groups same-reason rows into a single line.
                 row["allow_zero_valuation_rate"] = 1
+                result.add_warning(
+                    it["_name"],
+                    "opening stock posted with a zero valuation rate - Tally carries "
+                    "no opening rate, value or standard cost for this item, so its "
+                    "opening stock has no book value. Set a valuation rate in ERPNext "
+                    "if it should carry value.")
             by_code[code] = row
-        if zero_value_items:
-            # One summary line instead of one warning per item - these flood the log,
-            # and an item Tally itself carries no rate/value for is posted faithfully
-            # (qty only). Listing the names keeps it actionable without the noise.
-            preview = ", ".join(zero_value_items[:10])
-            more = f" (+{len(zero_value_items) - 10} more)" if len(zero_value_items) > 10 else ""
-            result.add_warning(
-                "Opening Stock",
-                f"{len(zero_value_items)} item(s) posted with a zero valuation rate - "
-                f"Tally carries no opening rate, value or standard cost for them, so "
-                f"their opening stock has no book value: {preview}{more}. Set valuation "
-                f"rates in ERPNext if these items should carry value.")
         rows = list(by_code.values())
         if not rows:
             return result  # no opening stock to post

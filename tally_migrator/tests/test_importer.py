@@ -533,9 +533,10 @@ class TestERPNextImporter(unittest.TestCase):
         self.assertEqual(rows["Envelope"].get("allow_zero_valuation_rate"), 1)
         self.assertNotIn("allow_zero_valuation_rate", rows["Mouse"])  # has a rate
 
-    def test_zero_valuation_warnings_collapse_to_one_summary(self):
-        """Items Tally carries no rate/value for flood the log one-per-item; they
-        must collapse into a single summary warning listing the names."""
+    def test_zero_valuation_warns_per_item_with_identical_text(self):
+        """The importer emits one warning per zero-rate item, all with byte-identical
+        text - the log's error table is what collapses them (test_collapse_identical),
+        so a generic mechanism handles every repeated message, not just this one."""
         from unittest import mock
         from tally_migrator.erpnext.importers import StockOpeningImporter
 
@@ -547,9 +548,9 @@ class TestERPNextImporter(unittest.TestCase):
                 items=[{"_name": f"Item{i}", "OpeningBalance": "5 Nos"}
                        for i in range(4)],
                 posting_date="2024-04-01")
-        zero_warnings = [w for w in result.warnings if "zero valuation" in w["reason"]]
-        self.assertEqual(len(zero_warnings), 1)             # one summary, not four
-        self.assertIn("4 item(s)", zero_warnings[0]["reason"])
+        zero = [w for w in result.warnings if "zero valuation" in w["reason"]]
+        self.assertEqual(len(zero), 4)                       # one per item
+        self.assertEqual(len({w["reason"] for w in zero}), 1)  # identical text
 
     # ── Opening-balance batching (no DB - residual maths only) ──────────────────
 
