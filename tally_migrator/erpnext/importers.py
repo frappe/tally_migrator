@@ -1551,6 +1551,268 @@ class OpeningBalanceImporter:
             "whether the full trial balance was migrated.")
 
 
+# ── Party opening balances (invoice-wise) ────────────────────────────────────
+
+class PartyOpeningImporter:
+    """Posts party (customer/supplier) opening balances *invoice-wise*.
+
+    The lump-sum JE line per party (the old ``OpeningBalanceImporter`` party path)
+    is trial-balance correct but destroys bill-level traceability: every future
+    payment reconciles against a single lump, so aged debtors/creditors and
+    invoice-by-invoice matching are lost. This importer instead reproduces each
+    outstanding bill Tally carries in ``BILLALLOCATIONS.LIST`` (extracted as
+    :class:`~tally_migrator.tally.extractors.BillAllocation`) as a real ERPNext
+    opening document:
+
+    - **Outstanding bill** (on the party's natural side) -> a one-line opening
+      Sales/Purchase Invoice (``is_opening='Yes'``), contra'd to Temporary Opening
+      exactly like ERPNext's own Opening Invoice Creation Tool. Future Payment
+      Entries then reconcile against it individually.
+    - **Advance / credit balance** (Tally's ISADVANCE flag, or a bill on the side
+      opposite the party's natural side) -> an opening Payment Entry, left
+      unallocated so it is ready to apply against a later invoice.
+    - **No bill detail** (party opening with an empty BILLALLOCATIONS list) -> a
+      single lump opening invoice for the whole ledger opening (chosen fallback),
+      so the party is still reconcilable as one outstanding rather than a JE line.
+    - **Bills do not reconcile to the ledger opening** -> the bills post as-is and
+      the residual (ledger opening minus bills) posts as one "On Account" plug on
+      the natural side, with a warning, so the party's net still ties to the
+      ledger figure (and thus the trial balance).
+
+    Non-party balances (cash, assets, P&L) stay with ``OpeningBalanceImporter``;
+    the two compose in the orchestrator. Idempotency: every document carries a
+    marker in ``remarks`` (``party | bill``); a re-run reads the markers already
+    posted and skips exactly those, so "fix and re-run" fills gaps without
+    double-posting.
+
+    Posting date is the migration opening date (not the original bill date): an
+    opening invoice backdated into a year with no Fiscal Year record would be
+    rejected, so the original bill date is preserved in ``bill_no``/``bill_date``
+    (Purchase) or ``remarks`` (Sales) instead. Single-currency only (v1); a
+    foreign-currency party is handled by the ledger-level fallback upstream.
+    """
+
+    _MARKER = "Tally opening"          # remarks prefix → idempotency key
+    _PLUG_THRESHOLD = 1.0              # a residual below this is rounding noise
+    _PARTY_KEY_FIELD = {"Customer": "customer_name", "Supplier": "supplier_name"}
+
+    def __init__(self, company: str, abbr: str, posting_date: str):
+        self.company = company
+        self.abbr = abbr
+        self.posting_date = posting_date
+
+    # ── Orchestration ─────────────────────────────────────────────────────────
+    def run(self, bills: list, customers: list[dict],
+            suppliers: list[dict]) -> ImportResult:
+        result = ImportResult("Opening Invoice")
+        by_party: dict[str, list] = {}
+        for b in bills or []:
+            by_party.setdefault(b.party, []).append(b)
+        seen = self._existing_markers()
+        self._process(customers, "Customer", by_party, seen, result)
+        self._process(suppliers, "Supplier", by_party, seen, result)
+        return result
+
+    def _process(self, parties: list[dict], party_type: str,
+                 by_party: dict, seen: set, result: ImportResult) -> None:
+        if not parties:
+            return
+        key_field = self._PARTY_KEY_FIELD[party_type]
+        for record in parties:
+            tally_name = record["_name"]
+            ledger_amt, ledger_drcr = TallyExtractor._parse_opening(
+                record.get("OpeningBalance", ""))
+            party_bills = by_party.get(tally_name, [])
+            if not ledger_amt and not party_bills:
+                continue  # nothing to post for this party
+            party = frappe.db.get_value(party_type, {key_field: tally_name}, "name")
+            if not party:
+                result.add_warning(
+                    tally_name,
+                    f"opening balance skipped - {party_type} '{tally_name}' was not "
+                    "created (its import failed earlier). Fix it and re-run.")
+                continue
+
+            ledger_signed = self._signed(ledger_amt, ledger_drcr)
+            bills_signed = 0.0
+            for b in party_bills:
+                bills_signed += self._signed(b.amount, b.dr_cr)
+                self._emit(party_type, party, tally_name, self._signed(b.amount, b.dr_cr),
+                           b.bill_no, b.bill_date, b.is_advance, seen, result)
+
+            residual = round(ledger_signed - bills_signed, 2)
+            if abs(residual) >= self._PLUG_THRESHOLD:
+                # No bills at all -> this *is* the party's opening (normal lump, no
+                # warning). Bills present but short -> a real mismatch (warn).
+                if party_bills:
+                    result.add_warning(
+                        tally_name,
+                        f"bill-wise openings for '{tally_name}' did not add up to its "
+                        f"ledger opening; {abs(residual):,.2f} was posted as an "
+                        "'On Account' opening to match the ledger. Review the party's "
+                        "outstanding bills in Tally.")
+                label = "On Account" if party_bills else "Opening"
+                self._emit(party_type, party, tally_name, residual,
+                           label, self.posting_date, False, seen, result)
+
+    # ── Per-bill emission ─────────────────────────────────────────────────────
+    def _emit(self, party_type: str, party: str, tally_name: str, signed: float,
+              bill_no: str, bill_date: str, is_advance: bool,
+              seen: set, result: ImportResult) -> None:
+        amount = abs(signed)
+        if amount < self._PLUG_THRESHOLD:
+            return
+        marker = f"{self._MARKER}: {tally_name} | {bill_no}"
+        if marker in seen:
+            result.skipped += 1
+            return
+        kind = self._classify(party_type, signed, is_advance)
+        try:
+            if kind == "advance":
+                data = self._advance_dict(party_type, party, amount, bill_no, marker)
+            else:
+                data = self._invoice_dict(
+                    party_type, party, amount, bill_no, bill_date, marker)
+            doc = frappe.get_doc(data)
+            doc.flags.ignore_mandatory = True
+            doc.insert(ignore_permissions=True)
+            doc.submit()
+            frappe.db.commit()
+            seen.add(marker)
+            result.add_created(doc.name)
+        except Exception as exc:
+            frappe.db.rollback()
+            result.add_error(f"{tally_name} | {bill_no}", exc)
+
+    @staticmethod
+    def _classify(party_type: str, signed: float, is_advance: bool) -> str:
+        """An outstanding invoice (party's natural side, not flagged advance) vs an
+        advance/credit. Customer natural side = Dr (signed > 0); Supplier = Cr
+        (signed < 0). Tally's ISADVANCE flag forces 'advance' regardless of side."""
+        if is_advance:
+            return "advance"
+        on_natural_side = (signed > 0) if party_type == "Customer" else (signed < 0)
+        return "invoice" if on_natural_side else "advance"
+
+    @staticmethod
+    def _signed(amount: float, dr_cr: str) -> float:
+        """Dr-positive signed amount (so a customer receivable is positive)."""
+        return amount if dr_cr == "Dr" else -amount
+
+    # ── Document builders (pure given the resolved company context) ────────────
+    def _invoice_dict(self, party_type: str, party: str, amount: float,
+                      bill_no: str, bill_date: str, marker: str) -> dict:
+        is_sales = party_type == "Customer"
+        item = {
+            "item_name": f"Opening - {bill_no}"[:140],
+            "description": f"Opening balance ({bill_no})",
+            "uom": self._stock_uom(),
+            "conversion_factor": 1.0,
+            "qty": 1,
+            "rate": amount,
+            ("income_account" if is_sales else "expense_account"): self._temp_account(),
+            "cost_center": self._cost_center(),
+        }
+        data = {
+            "doctype": "Sales Invoice" if is_sales else "Purchase Invoice",
+            "company": self.company,
+            "is_opening": "Yes",
+            "set_posting_time": 1,
+            "posting_date": self.posting_date,
+            "due_date": self.posting_date,
+            frappe.scrub(party_type): party,
+            "items": [item],
+            "update_stock": 0,
+            "disable_rounded_total": 1,
+            "remarks": marker,
+        }
+        if not is_sales:
+            # Purchase Invoice has native supplier-bill fields - preserve the real
+            # Tally bill reference and date here (Sales Invoice has none, so the
+            # marker in remarks is the only carrier there).
+            data["bill_no"] = bill_no
+            data["bill_date"] = bill_date or self.posting_date
+        return data
+
+    def _advance_dict(self, party_type: str, party: str, amount: float,
+                      bill_no: str, marker: str) -> dict:
+        """An opening advance as an unallocated Payment Entry. A customer advance is
+        money Received (Debtors -> Temporary Opening); a supplier advance is money
+        Paid (Temporary Opening -> Creditors). No references, so the whole amount
+        sits as an advance ready to apply against a future invoice."""
+        is_customer = party_type == "Customer"
+        party_account = self._party_account(party_type)
+        temp = self._temp_account()
+        currency = self._company_currency()
+        data = {
+            "doctype": "Payment Entry",
+            "payment_type": "Receive" if is_customer else "Pay",
+            "company": self.company,
+            "posting_date": self.posting_date,
+            "party_type": party_type,
+            "party": party,
+            "paid_amount": amount,
+            "received_amount": amount,
+            "paid_from": party_account if is_customer else temp,
+            "paid_to": temp if is_customer else party_account,
+            "paid_from_account_currency": currency,
+            "paid_to_account_currency": currency,
+            "remarks": marker,
+            "reference_no": bill_no,
+            "reference_date": self.posting_date,
+        }
+        return data
+
+    # ── Resolved-once company context ──────────────────────────────────────────
+    def _temp_account(self) -> str:
+        if not hasattr(self, "_temp"):
+            self._temp = company_scoped("Temporary Opening", self.abbr)
+        return self._temp
+
+    def _cost_center(self) -> str:
+        if not hasattr(self, "_cc"):
+            self._cc = frappe.get_cached_value("Company", self.company, "cost_center")
+        return self._cc
+
+    def _company_currency(self) -> str:
+        if not hasattr(self, "_cur"):
+            self._cur = frappe.get_cached_value(
+                "Company", self.company, "default_currency") or "INR"
+        return self._cur
+
+    def _stock_uom(self) -> str:
+        if not hasattr(self, "_uom"):
+            self._uom = frappe.db.get_single_value(
+                "Stock Settings", "stock_uom") or "Nos"
+        return self._uom
+
+    def _party_account(self, party_type: str) -> str:
+        field = ("default_receivable_account" if party_type == "Customer"
+                 else "default_payable_account")
+        return frappe.get_cached_value("Company", self.company, field)
+
+    def _existing_markers(self) -> set:
+        """Markers already posted for this company, so a re-run skips exactly the
+        bills it has posted before and fills only the gaps. Reads opening Sales/
+        Purchase Invoices and Payment Entries this importer created (identified by
+        the remarks marker)."""
+        seen: set = set()
+        prefix = f"{self._MARKER}:"
+        for doctype, extra in (
+            ("Sales Invoice", {"is_opening": "Yes"}),
+            ("Purchase Invoice", {"is_opening": "Yes"}),
+            ("Payment Entry", {}),
+        ):
+            filters = {"company": self.company, "docstatus": ["<", 2],
+                       "remarks": ["like", f"{prefix}%"]}
+            filters.update(extra)
+            for remark in frappe.get_all(
+                    doctype, filters=filters, pluck="remarks") or []:
+                if remark and remark.startswith(prefix):
+                    seen.add(remark.strip())
+        return seen
+
+
 # ── Opening stock importer ───────────────────────────────────────────────────
 
 class StockOpeningImporter:
@@ -1712,6 +1974,27 @@ class ERPNextImporter:
                 return result
             return OpeningBalanceImporter(self.company, self.abbr).run(
                 accounts, customers, suppliers, self._opening_date(posting_date))
+
+    def import_party_openings(self, bills: list, customers: list,
+                              suppliers: list, posting_date: str = "") -> ImportResult:
+        """Post party opening balances invoice-wise (see PartyOpeningImporter).
+
+        Shares the per-company opening lock with the JE/stock openings so two
+        concurrent runs can't both post; stands down with a warning when another
+        run holds it (its own idempotency markers then fill any gaps on re-run)."""
+        with _company_opening_lock(self.company) as got:
+            if not got:
+                result = ImportResult("Opening Invoice")
+                result.skipped += 1
+                result.add_warning(
+                    "Party Openings",
+                    "another migration for this company is posting opening balances "
+                    "right now - skipped here to avoid double-posting. Re-run after it "
+                    "finishes; already-posted bills are skipped and any gaps filled.")
+                return result
+            return PartyOpeningImporter(
+                self.company, self.abbr, self._opening_date(posting_date)).run(
+                    bills, customers, suppliers)
 
     def import_opening_stock(self, items: list, posting_date: str = "") -> ImportResult:
         with _company_opening_lock(self.company) as got:

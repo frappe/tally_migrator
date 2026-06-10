@@ -21,6 +21,7 @@ import frappe
 from tally_migrator.erpnext import importers
 from tally_migrator.erpnext.importers import (
     OpeningBalanceImporter,
+    PartyOpeningImporter,
     WarehouseImporter,
     StockGroupImporter,
     AccountImporter,
@@ -28,6 +29,7 @@ from tally_migrator.erpnext.importers import (
     ItemImporter,
     ImportResult,
 )
+from tally_migrator.tally.extractors import BillAllocation
 
 
 def _node(name, parent):
@@ -335,6 +337,199 @@ class TestHsnValidationToggle(unittest.TestCase):
             cache.return_value.get_value.return_value = None
             importers._restore_hsn_validation()
             setter.assert_not_called()
+
+
+class TestPartyOpeningClassification(unittest.TestCase):
+    """Per-bill routing: outstanding invoice (natural side) vs advance (opposite
+    side, or Tally's ISADVANCE flag)."""
+
+    def _c(self, party_type, signed, is_advance=False):
+        return PartyOpeningImporter._classify(party_type, signed, is_advance)
+
+    def test_customer_dr_is_invoice(self):
+        self.assertEqual(self._c("Customer", 5000), "invoice")     # receivable
+
+    def test_customer_cr_is_advance(self):
+        self.assertEqual(self._c("Customer", -5000), "advance")    # credit balance
+
+    def test_supplier_cr_is_invoice(self):
+        self.assertEqual(self._c("Supplier", -5000), "invoice")    # payable
+
+    def test_supplier_dr_is_advance(self):
+        self.assertEqual(self._c("Supplier", 5000), "advance")     # advance paid
+
+    def test_advance_flag_forces_advance_on_natural_side(self):
+        # A customer Dr bill is normally an invoice, but Tally's ISADVANCE wins.
+        self.assertEqual(self._c("Customer", 5000, is_advance=True), "advance")
+
+    def test_signed_dr_positive(self):
+        self.assertEqual(PartyOpeningImporter._signed(100.0, "Dr"), 100.0)
+        self.assertEqual(PartyOpeningImporter._signed(100.0, "Cr"), -100.0)
+
+
+class TestPartyOpeningOrchestration(unittest.TestCase):
+    """_process routes bills, reconciles to the ledger opening, and plugs the gap.
+    _emit is stubbed to capture routing decisions without touching ERPNext."""
+
+    def _imp(self):
+        return PartyOpeningImporter("_T Co", "TC", "2026-04-01")
+
+    def _run(self, parties, party_type, by_party):
+        imp = self._imp()
+        result = ImportResult("Opening Invoice")
+        captured = []
+
+        def fake_emit(pt, party, tally_name, signed, bill_no, bill_date,
+                      is_advance, seen, result):
+            captured.append({"signed": round(signed, 2), "bill_no": bill_no,
+                             "is_advance": is_advance})
+
+        with mock.patch.object(imp, "_emit", side_effect=fake_emit), \
+                mock.patch("frappe.db.get_value", return_value="RESOLVED-NAME"):
+            imp._process(parties, party_type, by_party, set(), result)
+        return captured, result
+
+    def test_bills_that_tie_emit_each_with_no_plug(self):
+        # ABC: ledger Dr 30000, three Dr bills summing 30000 -> 3 emits, no plug.
+        bills = [BillAllocation("ABC", "ABC/1", "2020-03-10", 3000.0, "Dr", False),
+                 BillAllocation("ABC", "ABC/2", "2020-03-12", 6000.0, "Dr", False),
+                 BillAllocation("ABC", "ABC/3", "2020-03-14", 21000.0, "Dr", False)]
+        captured, result = self._run(
+            [{"_name": "ABC", "OpeningBalance": "-30000"}], "Customer",
+            {"ABC": bills})
+        self.assertEqual(len(captured), 3)
+        self.assertEqual({c["bill_no"] for c in captured}, {"ABC/1", "ABC/2", "ABC/3"})
+        self.assertEqual(result.warned, 0)
+
+    def test_no_bill_party_emits_single_lump_no_warning(self):
+        captured, result = self._run(
+            [{"_name": "Solo", "OpeningBalance": "-8000"}], "Customer", {})
+        self.assertEqual(len(captured), 1)
+        self.assertEqual(captured[0]["bill_no"], "Opening")     # lump label
+        self.assertEqual(captured[0]["signed"], 8000.0)         # Dr receivable
+        self.assertEqual(result.warned, 0)                      # normal, not a gap
+
+    def test_bill_ledger_mismatch_plugs_on_account_with_warning(self):
+        # National Traders: ledger Dr 15400, single Cr 15000 bill -> bill emit +
+        # an On Account plug for the residual, plus a warning.
+        bills = [BillAllocation("NT", "6542", "2020-03-20", 15000.0, "Cr", False)]
+        captured, result = self._run(
+            [{"_name": "NT", "OpeningBalance": "-15400"}], "Customer", {"NT": bills})
+        self.assertEqual(len(captured), 2)
+        plug = [c for c in captured if c["bill_no"] == "On Account"]
+        self.assertEqual(len(plug), 1)
+        self.assertEqual(plug[0]["signed"], 30400.0)            # 15400 - (-15000)
+        self.assertEqual(result.warned, 1)
+
+    def test_missing_party_skipped_with_warning(self):
+        imp = self._imp()
+        result = ImportResult("Opening Invoice")
+        with mock.patch.object(imp, "_emit") as emit, \
+                mock.patch("frappe.db.get_value", return_value=None):  # never created
+            imp._process([{"_name": "Ghost", "OpeningBalance": "-100"}],
+                         "Customer", {}, set(), result)
+        emit.assert_not_called()
+        self.assertEqual(result.warned, 1)
+
+
+class TestPartyOpeningEmit(unittest.TestCase):
+    """_emit honours the idempotency marker and records create/error outcomes."""
+
+    def _imp(self):
+        return PartyOpeningImporter("_T Co", "TC", "2026-04-01")
+
+    def test_existing_marker_is_skipped(self):
+        imp, result = self._imp(), ImportResult("Opening Invoice")
+        seen = {"Tally opening: ABC | ABC/1"}
+        with mock.patch("frappe.get_doc") as get_doc:
+            imp._emit("Customer", "CUST", "ABC", 3000.0, "ABC/1", "2020-03-10",
+                      False, seen, result)
+        get_doc.assert_not_called()
+        self.assertEqual(result.skipped, 1)
+        self.assertEqual(result.created, 0)
+
+    def test_create_adds_marker_and_counts(self):
+        imp, result = self._imp(), ImportResult("Opening Invoice")
+        seen = set()
+        doc = mock.Mock(name="SI-OPEN-1")
+        doc.name = "SI-OPEN-1"
+        with mock.patch.object(imp, "_invoice_dict", return_value={"doctype": "Sales Invoice"}), \
+                mock.patch("frappe.get_doc", return_value=doc), \
+                mock.patch("frappe.db.commit"):
+            imp._emit("Customer", "CUST", "ABC", 3000.0, "ABC/1", "2020-03-10",
+                      False, seen, result)
+        doc.insert.assert_called_once()
+        doc.submit.assert_called_once()
+        self.assertEqual(result.created, 1)
+        self.assertIn("Tally opening: ABC | ABC/1", seen)
+
+    def test_failure_rolls_back_and_records_error(self):
+        imp, result = self._imp(), ImportResult("Opening Invoice")
+        with mock.patch.object(imp, "_invoice_dict", return_value={}), \
+                mock.patch("frappe.get_doc", side_effect=Exception("boom")), \
+                mock.patch("frappe.db.rollback") as rollback:
+            imp._emit("Customer", "CUST", "ABC", 3000.0, "ABC/1", "2020-03-10",
+                      False, set(), result)
+            rollback.assert_called_once()
+        self.assertEqual(result.failed, 1)
+        self.assertEqual(result.created, 0)
+
+    def test_below_threshold_is_noop(self):
+        imp, result = self._imp(), ImportResult("Opening Invoice")
+        with mock.patch("frappe.get_doc") as get_doc:
+            imp._emit("Customer", "CUST", "ABC", 0.4, "ABC/1", "", False,
+                      set(), result)
+        get_doc.assert_not_called()
+        self.assertEqual(result.created, 0)
+
+
+class TestPartyOpeningDocBuilders(unittest.TestCase):
+    """The Sales/Purchase Invoice and Payment Entry dicts have the right shape."""
+
+    def _imp(self):
+        imp = PartyOpeningImporter("_T Co", "TC", "2026-04-01")
+        imp._temp, imp._cc, imp._uom, imp._cur = (
+            "Temporary Opening - TC", "Main - TC", "Nos", "INR")
+        return imp
+
+    def test_sales_invoice_dict(self):
+        d = self._imp()._invoice_dict(
+            "Customer", "CUST", 3000.0, "ABC/1", "2020-03-10", "marker")
+        self.assertEqual(d["doctype"], "Sales Invoice")
+        self.assertEqual(d["is_opening"], "Yes")
+        self.assertEqual(d["customer"], "CUST")
+        self.assertEqual(d["posting_date"], "2026-04-01")   # opening date, not bill
+        self.assertEqual(d["items"][0]["rate"], 3000.0)
+        self.assertEqual(d["items"][0]["income_account"], "Temporary Opening - TC")
+        self.assertEqual(d["items"][0]["cost_center"], "Main - TC")
+        self.assertNotIn("bill_no", d)                      # Sales Invoice has none
+
+    def test_purchase_invoice_dict_preserves_bill_ref(self):
+        d = self._imp()._invoice_dict(
+            "Supplier", "SUPP", 7000.0, "Bill 1", "2020-03-10", "marker")
+        self.assertEqual(d["doctype"], "Purchase Invoice")
+        self.assertEqual(d["supplier"], "SUPP")
+        self.assertEqual(d["items"][0]["expense_account"], "Temporary Opening - TC")
+        self.assertEqual(d["bill_no"], "Bill 1")            # native supplier-bill no
+        self.assertEqual(d["bill_date"], "2020-03-10")
+
+    def test_customer_advance_payment_entry(self):
+        imp = self._imp()
+        with mock.patch("frappe.get_cached_value", return_value="Debtors - TC"):
+            d = imp._advance_dict("Customer", "CUST", 2000.0, "ADV-1", "marker")
+        self.assertEqual(d["doctype"], "Payment Entry")
+        self.assertEqual(d["payment_type"], "Receive")
+        self.assertEqual(d["paid_from"], "Debtors - TC")     # from receivable
+        self.assertEqual(d["paid_to"], "Temporary Opening - TC")
+        self.assertEqual(d["paid_amount"], 2000.0)
+
+    def test_supplier_advance_payment_entry(self):
+        imp = self._imp()
+        with mock.patch("frappe.get_cached_value", return_value="Creditors - TC"):
+            d = imp._advance_dict("Supplier", "SUPP", 2000.0, "ADV-2", "marker")
+        self.assertEqual(d["payment_type"], "Pay")
+        self.assertEqual(d["paid_from"], "Temporary Opening - TC")
+        self.assertEqual(d["paid_to"], "Creditors - TC")     # to payable
 
 
 if __name__ == "__main__":
