@@ -127,6 +127,49 @@ class TestOpeningBalanceGuards(unittest.TestCase):
         self.assertEqual(result.warned, 0)
 
 
+class TestPLOpeningCostCenter(unittest.TestCase):
+    """A P&L (Income/Expense) opening line needs a cost center or ERPNext rejects the
+    whole Opening Entry batch on submit. Attach the company default; skip with a
+    warning when none is set. Balance-sheet lines must stay cost-center-free."""
+
+    def _imp(self):
+        return OpeningBalanceImporter(company="_T Co", abbr="TC")
+
+    def _ledger(self, root_type):
+        n = _node("Sales", None)
+        n.opening_balance, n.is_group, n.opening_dr_cr = 1000.0, 0, "Cr"
+        n.root_type = root_type
+        return n
+
+    def test_pl_line_gets_default_cost_center(self):
+        imp, result = self._imp(), ImportResult("Journal Entry")
+        with mock.patch("frappe.db") as db, \
+                mock.patch("frappe.get_cached_value", return_value="Main - TC"):
+            db.exists.return_value = True
+            lines = imp._account_lines([self._ledger("Income")], result)
+        self.assertEqual(len(lines), 1)
+        self.assertEqual(lines[0]["cost_center"], "Main - TC")
+
+    def test_pl_line_skipped_when_no_default_cost_center(self):
+        imp, result = self._imp(), ImportResult("Journal Entry")
+        with mock.patch("frappe.db") as db, \
+                mock.patch("frappe.get_cached_value", return_value=None):
+            db.exists.return_value = True
+            lines = imp._account_lines([self._ledger("Expense")], result)
+        self.assertEqual(lines, [])
+        self.assertEqual(result.warned, 1)
+        self.assertEqual(result.failed, 0)
+
+    def test_balance_sheet_line_has_no_cost_center(self):
+        imp, result = self._imp(), ImportResult("Journal Entry")
+        with mock.patch("frappe.db") as db, \
+                mock.patch("frappe.get_cached_value", return_value="Main - TC"):
+            db.exists.return_value = True
+            lines = imp._account_lines([self._ledger("Asset")], result)
+        self.assertEqual(len(lines), 1)
+        self.assertNotIn("cost_center", lines[0])
+
+
 class TestOpeningConcurrencyLock(unittest.TestCase):
     """H3: a self-expiring per-company Redis lock serialises opening posting so two
     concurrent runs can't both pass the existence check and double-post the books."""

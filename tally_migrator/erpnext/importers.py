@@ -1437,8 +1437,32 @@ class OpeningBalanceImporter:
                     f"opening balance skipped - account '{account}' was not created "
                     "(its import failed earlier). Fix the account and re-run.")
                 continue
-            lines.append(self._line(account, node.opening_balance, node.opening_dr_cr))
+            line = self._line(account, node.opening_balance, node.opening_dr_cr)
+            # ERPNext requires a cost center on every journal line that posts to a
+            # P&L (Income/Expense) account - without it the whole Opening Entry batch
+            # fails on submit. Balance-sheet lines need none. P&L openings only occur
+            # in a mid-year migration; attach the company default so the figure posts
+            # rather than dropping it. Skip with a warning if no default is set.
+            if node.root_type in ("Income", "Expense"):
+                cost_center = self._default_cost_center()
+                if not cost_center:
+                    result.add_warning(
+                        node.name,
+                        "opening balance skipped - it posts to a P&L account, which "
+                        "needs a cost center, but the company has no default cost "
+                        "center set. Set it on the Company and re-run.")
+                    continue
+                line["cost_center"] = cost_center
+            lines.append(line)
         return lines
+
+    def _default_cost_center(self) -> str:
+        """The company's default cost center (required on P&L opening lines).
+        Resolved once per run."""
+        if not hasattr(self, "_cost_center"):
+            self._cost_center = frappe.get_cached_value(
+                "Company", self.company, "cost_center") or ""
+        return self._cost_center
 
     # Tally party name → the field ERPNext stores it under; the document's own
     # ``name`` can differ (e.g. a naming series), so we resolve it rather than
