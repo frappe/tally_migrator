@@ -38,7 +38,7 @@ class TallyMigratorPage {
 
 	render() {
 		$(this.wrapper).find(".page-content").html(`
-			<div class="container" style="max-width:680px; padding-top: 24px;">
+			<div class="container" style="max-width:680px; padding-top: 24px; padding-bottom: 48px;">
 
 				<!-- Persistent stepper -->
 				<div id="stepper" style="display:flex; align-items:center; margin-bottom:28px;"></div>

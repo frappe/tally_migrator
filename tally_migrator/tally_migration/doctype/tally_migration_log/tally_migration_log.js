@@ -88,7 +88,7 @@ function render_coverage(frm) {
 		: "";
 
 	wrapper.html(`
-		<div style="border:1px solid #e0e6ed; border-radius:8px; padding:12px 16px;">
+		<div style="border:1px solid #e0e6ed; border-radius:8px; padding:12px 16px; margin:8px 0;">
 			<div class="text-muted small" style="margin-bottom:8px;">
 				<strong>${report.unmapped_field_count}</strong> field(s) in your file were
 				<strong>not migrated</strong> (Tally custom fields / attributes outside the
@@ -161,7 +161,7 @@ function render_mapping(frm) {
 			</div>`;
 
 	wrapper.html(`
-		<div style="border:1px solid #e0e6ed; border-radius:8px; padding:12px 16px;">
+		<div style="border:1px solid #e0e6ed; border-radius:8px; padding:12px 16px; margin:8px 0;">
 			<div class="text-muted small" style="margin-bottom:4px;">
 				<strong>${fmt(m.total_accounts)}</strong> ledger account(s) classified -
 				<strong>${fmt(confident)}</strong> by Tally's standard groups, <strong>${fmt(inferred)}</strong> inferred.
@@ -232,7 +232,7 @@ function render_created(frm) {
 		.join("");
 
 	wrapper.html(`
-		<div style="border:1px solid #e0e6ed; border-radius:8px; padding:12px 16px;">
+		<div style="border:1px solid #e0e6ed; border-radius:8px; padding:12px 16px; margin:8px 0;">
 			<div class="text-muted small" style="margin-bottom:8px;">
 				<strong>${total}</strong> ERPNext document(s) were created by this run.
 				Use these to review or reverse the migration.
@@ -277,7 +277,7 @@ function render_edits(frm) {
 		.join("");
 
 	wrapper.html(`
-		<div style="border:1px solid #e0e6ed; border-radius:8px; padding:12px 16px;">
+		<div style="border:1px solid #e0e6ed; border-radius:8px; padding:12px 16px; margin:8px 0;">
 			<div class="text-muted small" style="margin-bottom:6px;">
 				<strong>${edits.length}</strong> field edit(s) were applied on the pre-flight
 				screen before this run. The uploaded file was not modified.
@@ -363,7 +363,7 @@ function render_quality(frm) {
 		.join("");
 
 	wrapper.html(`
-		<div style="border:1px solid #e0e6ed; border-radius:8px; padding:12px 16px;">
+		<div style="border:1px solid #e0e6ed; border-radius:8px; padding:12px 16px; margin:8px 0;">
 			<div style="margin-bottom:6px;">
 				<span class="text-danger"><strong>${report.error_count}</strong> error(s)</span>
 				&nbsp;·&nbsp;
@@ -439,7 +439,7 @@ function render_summary(frm) {
 		.join("");
 
 	wrapper.html(`
-		<div style="border:1px solid #e0e6ed; border-radius:8px; padding:14px 16px;">
+		<div style="border:1px solid #e0e6ed; border-radius:8px; padding:14px 16px; margin:8px 0;">
 			<table class="table table-condensed" style="margin:0;">
 				<thead>
 					<tr>
