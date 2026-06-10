@@ -20,6 +20,7 @@ class TallyMigrationLog(Document):
     errors: DF.Table[TallyMigrationError]
     extracted_counts: DF.Code | None
     import_summary: DF.Code | None
+    mapping_report: DF.Code | None
     migration_date: DF.Datetime | None
     migration_type: DF.Literal["Masters", "Transactions"]
     posting_date: DF.Date | None

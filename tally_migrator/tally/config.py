@@ -15,5 +15,6 @@ class TallyConfig:
     source_file: str = ""      # file_url of the uploaded XML, stored on the log for re-runs
     validation_report: str = ""  # JSON of the pre-flight data-quality report, stored on the log
     coverage_report: str = ""  # JSON of the field-coverage report (unmapped fields), stored on the log
+    mapping_report: str = ""   # JSON of the accounts-mapping preview (classification + opening plug), stored on the log
     coa_mode: str = "reuse"    # Chart of Accounts: "reuse" ERPNext defaults | "mirror" Tally tree
     posting_date: str = ""     # Opening-balance posting date; blank → company's fiscal-year start

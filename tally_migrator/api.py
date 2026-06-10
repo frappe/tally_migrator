@@ -263,6 +263,7 @@ def rerun_from_log(log_name):
         validation_report=log.validation_report or "",
         # Recomputed from the (unchanged) source so the new log's coverage is current.
         coverage_report=frappe.as_json(coverage_report(source)),
+        mapping_report=frappe.as_json(account_mapping(source)),
         # Repeat the original run's options rather than silently reverting to
         # defaults (reuse / fiscal-year start).
         coa_mode=log.coa_mode or "reuse",
@@ -400,6 +401,7 @@ def _build_masters_config(file_url, file_name, erpnext_company, source,
         # Computed server-side from the actual file so the stored audit record of
         # un-migrated fields is authoritative, not client-supplied.
         coverage_report=frappe.as_json(coverage_report(source)),
+        mapping_report=frappe.as_json(account_mapping(source)),
         coa_mode=coa_mode if coa_mode in ("reuse", "mirror") else "reuse",
         posting_date=posting_date or "",
     )

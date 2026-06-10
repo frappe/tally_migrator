@@ -5,6 +5,7 @@ frappe.ui.form.on("Tally Migration Log", {
 		render_quality(frm);
 		render_edits(frm);
 		render_coverage(frm);
+		render_mapping(frm);
 		add_buttons(frm);
 	},
 });
@@ -95,6 +96,78 @@ function render_coverage(frm) {
 			</div>
 			${unwrittenNote}
 			${blocks}
+		</div>
+	`);
+}
+
+// ── Accounts-mapping audit ──────────────────────────────────────────────────
+// Durable record of how each Tally ledger was classified into ERPNext accounts,
+// the rows whose nature had to be inferred (no reserved Tally ancestor), and the
+// opening-balance residual that posts to Temporary Opening. Mirrors the Review
+// step the user saw pre-flight, kept here so the classification is reviewable
+// after the run. Derived from the resolver - no hand-maintained labels.
+
+function render_mapping(frm) {
+	const field = frm.get_field("mapping_view");
+	if (!field) return;
+	const wrapper = field.$wrapper;
+	wrapper.empty();
+
+	let m = null;
+	try {
+		m = JSON.parse(frm.doc.mapping_report || "null");
+	} catch (e) {
+		m = null;
+	}
+	if (!m || !m.total_accounts) return;
+
+	const esc = frappe.utils.escape_html;
+	const fmt = (n) => Number(n || 0).toLocaleString("en-IN");
+	const inferred = m.inferred_count || 0;
+	const confident = m.total_accounts - inferred;
+	const plug = m.opening || {};
+	const ob = (r) =>
+		r.amount ? `${fmt(r.amount)} <span class="text-muted">${esc(r.dr_cr)}</span>` : `<span class="text-muted">0</span>`;
+	const classifiedAs = (r) => esc(r.root_type) + (r.account_type ? ` · ${esc(r.account_type)}` : "");
+
+	const plugLine = plug.clean
+		? `<span class="text-success">✓ opening balances balanced (Dr = Cr)</span>`
+		: `<span style="color:#f0a500;">⚠ <strong>${fmt(plug.temporary_opening_plug)} ${esc(
+				plug.plug_dr_cr
+		  )}</strong> posted to Temporary Opening</span>`;
+
+	const inferredBlock = inferred
+		? `<div class="small" style="margin:8px 0 4px; color:#f0a500;">
+				⚠ <strong>${fmt(inferred)}</strong> account(s) had no standard Tally group - their type was inferred:
+			</div>
+			<table class="table table-condensed" style="margin:0;">
+				<thead><tr>
+					<th style="border-top:0;">Tally ledger</th>
+					<th style="border-top:0;">Classified as</th>
+					<th style="border-top:0;" class="text-right">Opening</th>
+				</tr></thead>
+				<tbody>${m.inferred
+					.map(
+						(r) => `<tr>
+							<td>${esc(r.name)}</td>
+							<td class="text-muted">${classifiedAs(r)}</td>
+							<td class="text-right">${ob(r)}</td>
+						</tr>`
+					)
+					.join("")}</tbody>
+			</table>`
+		: `<div class="text-success small" style="margin:8px 0;">
+				✓ All ${fmt(m.total_accounts)} accounts mapped using Tally's standard groups - none inferred.
+			</div>`;
+
+	wrapper.html(`
+		<div style="border:1px solid #e0e6ed; border-radius:8px; padding:12px 16px;">
+			<div class="text-muted small" style="margin-bottom:4px;">
+				<strong>${fmt(m.total_accounts)}</strong> ledger account(s) classified -
+				<strong>${fmt(confident)}</strong> by Tally's standard groups, <strong>${fmt(inferred)}</strong> inferred.
+			</div>
+			<div class="small" style="margin-bottom:4px;">${plugLine}</div>
+			${inferredBlock}
 		</div>
 	`);
 }

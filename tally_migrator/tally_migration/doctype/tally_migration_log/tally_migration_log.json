@@ -205,6 +205,26 @@
       "hidden": 1
     },
     {
+      "fieldname": "section_mapping",
+      "fieldtype": "Section Break",
+      "label": "Accounts Mapping",
+      "collapsible": 1,
+      "depends_on": "eval:doc.mapping_report && doc.mapping_report != '{}'"
+    },
+    {
+      "fieldname": "mapping_view",
+      "fieldtype": "HTML",
+      "label": "Accounts Mapping"
+    },
+    {
+      "fieldname": "mapping_report",
+      "fieldtype": "Code",
+      "label": "Accounts Mapping (JSON)",
+      "options": "JSON",
+      "read_only": 1,
+      "hidden": 1
+    },
+    {
       "fieldname": "section_raw",
       "fieldtype": "Section Break",
       "label": "Raw Data (JSON)",

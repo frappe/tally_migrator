@@ -280,6 +280,8 @@ class MasterMigrator:
             log.validation_report = self.config.validation_report
         if getattr(self.config, "coverage_report", ""):
             log.coverage_report = self.config.coverage_report
+        if getattr(self.config, "mapping_report", ""):
+            log.mapping_report = self.config.mapping_report
         # Persisted so a re-run from this log repeats the original options faithfully.
         log.coa_mode = getattr(self.config, "coa_mode", "reuse") or "reuse"
         if self.posting_date:
