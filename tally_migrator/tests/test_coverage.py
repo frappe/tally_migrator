@@ -44,6 +44,29 @@ class TestCoverage(unittest.TestCase):
         self.assertEqual(report["unmapped_field_count"], 0)
         self.assertEqual(report["noise_field_count"], 2)
 
+    def test_internal_shapes_are_auto_detected_as_noise(self):
+        # Generic shape heuristics catch internal tags without a curated entry:
+        # GUID value, zeroed id pointer, effective-date marker, and empty-everywhere.
+        tags = {
+            "NAME": _tag(),
+            "SOMEOBJGUID": _tag(11, "a1b2c3d4-1111-2222-3333", ["Acme"]),
+            "WIDGETMASTERID": _tag(11, "0", ["Acme"]),
+            "APPLICABLEFROM": _tag(11, "20240401", ["Acme"]),
+            "BLANKUDF": _tag(11, "", ["Acme"]),
+        }
+        report = coverage_report(_Src({"Ledger": tags}))
+        self.assertTrue(report["clean"])
+        self.assertEqual(report["unmapped_field_count"], 0)
+        self.assertEqual(report["noise_field_count"], 4)
+
+    def test_real_idlike_udf_is_not_hidden(self):
+        # A field ending in ID but carrying a real (non-zero) value might be a
+        # meaningful external code - it must stay visible, not be auto-hidden.
+        tags = {"NAME": _tag(), "LOYALTYCARDID": _tag(11, "884412", ["Acme"])}
+        report = coverage_report(_Src({"Ledger": tags}))
+        self.assertFalse(report["clean"])
+        self.assertEqual(report["unmapped_field_count"], 1)
+
     def test_flags_udf_field(self):
         tags = {
             "NAME": _tag(),
@@ -68,8 +91,10 @@ class TestCoverage(unittest.TestCase):
 
     def test_multiple_entity_types(self):
         report = coverage_report(_Src({
-            "Ledger": {"CUSTOMERCATEGORY": _tag()},  # a UDF, genuinely unmapped
-            "Stock Item": {"BATCHNAME": _tag(), "PARENT": _tag()},  # PARENT is mapped
+            # Genuine UDFs carry a real value in at least one record (an empty-
+            # everywhere field is noise, covered separately); PARENT is mapped.
+            "Ledger": {"CUSTOMERCATEGORY": _tag(3, "Wholesale", ["Acme"])},
+            "Stock Item": {"BATCHNAME": _tag(2, "B-204", ["Bolt"]), "PARENT": _tag()},
         }))
         self.assertEqual(report["unmapped_field_count"], 2)
         kinds = {t["entity_type"] for t in report["types"]}

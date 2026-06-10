@@ -15,6 +15,8 @@ it is fully unit-testable with a stub source.
 """
 from __future__ import annotations
 
+import re
+
 from tally_migrator.tally.extractors import (
     LEDGER_FIELDS, ITEM_FIELDS, GODOWN_FIELDS, GROUP_FIELDS, COSTCENTRE_FIELDS,
     STOCKGROUP_FIELDS, UNIT_FIELDS,
@@ -138,17 +140,47 @@ _NO_TARGET_TAGS = {
 }
 
 
+# Generic, high-precision shape signals so new internal tags are caught without
+# being hand-listed - deliberately conservative, because wrongly hiding a real
+# field is a silent data loss (the very thing this report guards against). Each
+# rule fires only when a tag is almost certainly Tally-internal; anything with a
+# real textual value (a city, a category, an account number) is left visible.
+_GUID_RE = re.compile(r"^[0-9a-fA-F]{8}(?:-[0-9a-fA-F]{4,}){2,}")  # Tally GUID-ish
+_YYYYMMDD_RE = re.compile(r"^\d{8}$")
+_EFFECTIVE_DATE_SUFFIXES = ("FROM", "UPTO", "TILL")
+
+
+def _looks_internal(tag: str, sample: str) -> bool:
+    """Heuristic 'this tag is Tally-internal' test. High precision by design: it
+    only returns True for shapes that carry no business meaning, never for a tag
+    that holds a real value with a possible ERPNext home."""
+    s = (sample or "").strip()
+    if not s:
+        return True                          # empty in every record - nothing to migrate
+    if _GUID_RE.match(s):
+        return True                          # GUID / internal object id
+    if tag.endswith("ID") and s in ("0", "00"):
+        return True                          # zeroed internal pointer (e.g. ...CONFIGBANKID)
+    if tag.endswith(_EFFECTIVE_DATE_SUFFIXES) and _YYYYMMDD_RE.match(s):
+        return True                          # config 'effective from/upto' date marker
+    return False
+
+
 def _is_noise(tag: str, info: dict) -> bool:
     """True for Tally housekeeping tags that are never business data: audit fields,
-    legacy-tax scaffolding, no-ERPNext-target attributes, empty ``.LIST`` containers
-    and pure Yes/No/Not-Applicable config toggles. Tags carrying a real value with a
-    real destination (a bank number, a city, a rate) are NOT noise and still surface."""
+    legacy-tax scaffolding, no-ERPNext-target attributes, empty ``.LIST`` containers,
+    pure Yes/No/Not-Applicable config toggles, and (via ``_looks_internal``) generic
+    internal shapes - GUIDs, zeroed id pointers, effective-date markers, empties.
+    Tags carrying a real value with a real destination (a bank number, a city, a
+    rate) are NOT noise and still surface."""
     if tag in _AUDIT_TAGS or tag in _NO_TARGET_TAGS or tag.startswith(_LEGACY_TAX_PREFIXES):
         return True
     sample = (info.get("sample") or "").strip().lower()
     if tag.endswith(".LIST") and not sample:
         return True                          # empty structural container
-    return sample in _NOISE_VALUE_SENTINELS  # boolean toggle / unused-feature sentinel
+    if sample in _NOISE_VALUE_SENTINELS:     # boolean toggle / unused-feature sentinel
+        return True
+    return _looks_internal(tag, info.get("sample", ""))
 
 
 def _norm(field: str) -> str:
