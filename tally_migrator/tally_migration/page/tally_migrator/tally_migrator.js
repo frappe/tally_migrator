@@ -14,7 +14,7 @@ const STEPS = [
 	{ id: "section-check", label: "Check" },
 	// "Review" only appears when the file carries accounts - masters-only files
 	// skip it (see visibleSteps / hasAccounts).
-	{ id: "section-review", label: "Review" },
+	{ id: "section-review", label: "Preview" },
 	{ id: "section-run", label: "Migrate" },
 ];
 
@@ -193,7 +193,7 @@ class TallyMigratorPage {
 
 				<!-- STEP 4: Review accounts (only when the file carries accounts) -->
 				<div id="section-review" style="display:none;">
-					<h4>Review your accounts</h4>
+					<h4>Preview your accounts</h4>
 					<p class="text-muted">
 						Here's how your Tally ledgers will be classified in ERPNext's chart of
 						accounts, with their opening balances. Nothing is changed automatically -
@@ -245,12 +245,16 @@ class TallyMigratorPage {
 	// Frappe default (near-black) for the active step, green for completed,
 	// light grey for steps still ahead - matches standard Frappe desk styling.
 
-	// Accounts make the Review step relevant; masters-only files skip it.
+	// Accounts make the Preview step relevant; masters-only files skip it.
+	// Prefer the stable preview signal (known from upload) over accountMapping,
+	// which only loads at the Check step - otherwise the stepper would show 4
+	// steps through Upload/Configure/Check and then grow to 5 at Preview.
 	hasAccounts() {
-		return !!(this.accountMapping && this.accountMapping.total_accounts > 0);
+		if (this.accountMapping) return this.accountMapping.total_accounts > 0;
+		return !!(this.preview && this.preview.ledger_accounts > 0);
 	}
 
-	// The steps actually shown in the stepper - Review is dropped when the file
+	// The steps actually shown in the stepper - Preview is dropped when the file
 	// carries no accounts, so a masters-only run still reads as a clean 4-step flow.
 	visibleSteps() {
 		return STEPS.filter((s) => s.id !== "section-review" || this.hasAccounts());
@@ -372,6 +376,9 @@ class TallyMigratorPage {
 			callback: (r) => {
 				const p = r.message || {};
 				this.preview = p;
+				// Now that we know whether the file carries accounts, refresh the
+				// stepper so its step count is stable from here on (no 4 -> 5 jump).
+				this.renderStepper("section-upload");
 				const total =
 					(p.customers || 0) + (p.suppliers || 0) + (p.items || 0) + (p.warehouses || 0);
 				if (total === 0) {
