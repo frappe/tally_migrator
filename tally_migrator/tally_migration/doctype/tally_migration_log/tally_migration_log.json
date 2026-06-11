@@ -1,271 +1,292 @@
 {
-  "name": "Tally Migration Log",
-  "doctype": "DocType",
-  "module": "Tally Migration",
-  "custom": 0,
-  "is_submittable": 0,
-  "is_single": 0,
-  "is_child_table": 0,
-  "naming_rule": "Expression",
-  "autoname": "TML-.YYYY.-.#####",
-  "track_changes": 1,
-  "search_fields": "company,tally_company,status",
-  "title_field": "company",
-  "fields": [
-    {
-      "fieldname": "company",
-      "fieldtype": "Link",
-      "label": "ERPNext Company",
-      "options": "Company",
-      "reqd": 1,
-      "in_list_view": 1,
-      "in_standard_filter": 1
-    },
-    {
-      "fieldname": "tally_company",
-      "fieldtype": "Data",
-      "label": "Tally Company",
-      "reqd": 1,
-      "in_list_view": 1
-    },
-    {
-      "fieldname": "source_file",
-      "fieldtype": "Attach",
-      "label": "Source File",
-      "read_only": 1,
-      "description": "The Tally Masters XML this run imported from. Kept so the run can be repeated."
-    },
-    {
-      "fieldname": "coa_mode",
-      "fieldtype": "Data",
-      "label": "COA Mode",
-      "read_only": 1,
-      "hidden": 1,
-      "description": "Chart-of-Accounts mode used (reuse/mirror). Kept so a re-run repeats it faithfully."
-    },
-    {
-      "fieldname": "posting_date",
-      "fieldtype": "Date",
-      "label": "Opening Posting Date",
-      "read_only": 1,
-      "hidden": 1,
-      "description": "Opening-balance posting date used. Kept so a re-run repeats it faithfully."
-    },
-    {
-      "fieldname": "uom_overrides",
-      "fieldtype": "Code",
-      "label": "UOM Overrides (JSON)",
-      "options": "JSON",
-      "read_only": 1,
-      "hidden": 1,
-      "description": "Tally→ERPNext unit mappings chosen on the pre-flight screen. Kept so a re-run reproduces the same UOM resolution instead of reverting to defaults."
-    },
-    {
-      "fieldname": "record_overrides",
-      "fieldtype": "Code",
-      "label": "Record Overrides (JSON)",
-      "options": "JSON",
-      "read_only": 1,
-      "hidden": 1,
-      "description": "Per-record field fixes (GSTIN/state/HSN/…) made on the pre-flight screen. Kept so a re-run re-applies the same fixes instead of importing the unfixed data."
-    },
-    {
-      "fieldname": "col_break_1",
-      "fieldtype": "Column Break"
-    },
-    {
-      "fieldname": "migration_type",
-      "fieldtype": "Select",
-      "label": "Migration Type",
-      "options": "Masters\nTransactions",
-      "reqd": 1,
-      "default": "Masters",
-      "in_list_view": 1
-    },
-    {
-      "fieldname": "status",
-      "fieldtype": "Select",
-      "label": "Status",
-      "options": "\nRunning\nCompleted\nCompleted with Errors\nFailed",
-      "default": "Running",
-      "in_list_view": 1,
-      "in_standard_filter": 1
-    },
-    {
-      "fieldname": "migration_date",
-      "fieldtype": "Datetime",
-      "label": "Migration Date",
-      "default": "Now",
-      "read_only": 1,
-      "in_list_view": 1
-    },
-    {
-      "fieldname": "section_summary",
-      "fieldtype": "Section Break",
-      "label": "Summary"
-    },
-    {
-      "fieldname": "summary_view",
-      "fieldtype": "HTML",
-      "label": "Summary"
-    },
-    {
-      "fieldname": "section_created",
-      "fieldtype": "Section Break",
-      "label": "Records Created",
-      "collapsible": 1,
-      "depends_on": "eval:doc.created_records && doc.created_records != '{}'"
-    },
-    {
-      "fieldname": "created_view",
-      "fieldtype": "HTML",
-      "label": "Records Created"
-    },
-    {
-      "fieldname": "created_records",
-      "fieldtype": "Code",
-      "label": "Created Records (JSON)",
-      "options": "JSON",
-      "read_only": 1,
-      "hidden": 1,
-      "description": "Per-entity list of the ERPNext documents this run inserted, including the opening Journal Entry and Stock Reconciliation — the authoritative record of what was touched."
-    },
-    {
-      "fieldname": "section_errors",
-      "fieldtype": "Section Break",
-      "label": "Records with Issues",
-      "depends_on": "eval:(doc.errors && doc.errors.length) || doc.status == 'Failed'"
-    },
-    {
-      "fieldname": "errors",
-      "fieldtype": "Table",
-      "label": "Failed Records & Non-fatal Drops",
-      "options": "Tally Migration Error",
-      "read_only": 1,
-      "description": "Hard failures, plus '(warning)' rows where a record imported but a dependent piece (e.g. its address or item group) was dropped."
-    },
-    {
-      "fieldname": "section_edits",
-      "fieldtype": "Section Break",
-      "label": "Edits Applied Before Import",
-      "collapsible": 1,
-      "depends_on": "eval:doc.applied_edits && doc.applied_edits != '[]'"
-    },
-    {
-      "fieldname": "edits_view",
-      "fieldtype": "HTML",
-      "label": "Applied Edits"
-    },
-    {
-      "fieldname": "applied_edits",
-      "fieldtype": "Code",
-      "label": "Applied Edits (JSON)",
-      "options": "JSON",
-      "read_only": 1,
-      "hidden": 1
-    },
-    {
-      "fieldname": "section_quality",
-      "fieldtype": "Section Break",
-      "label": "Pre-flight Data Quality",
-      "collapsible": 1,
-      "depends_on": "eval:doc.validation_report"
-    },
-    {
-      "fieldname": "quality_view",
-      "fieldtype": "HTML",
-      "label": "Data Quality"
-    },
-    {
-      "fieldname": "validation_report",
-      "fieldtype": "Code",
-      "label": "Validation Report",
-      "options": "JSON",
-      "read_only": 1,
-      "hidden": 1
-    },
-    {
-      "fieldname": "section_coverage",
-      "fieldtype": "Section Break",
-      "label": "Fields Not Migrated",
-      "collapsible": 1,
-      "depends_on": "eval:doc.coverage_report && doc.coverage_report != '{}'"
-    },
-    {
-      "fieldname": "coverage_view",
-      "fieldtype": "HTML",
-      "label": "Field Coverage"
-    },
-    {
-      "fieldname": "coverage_report",
-      "fieldtype": "Code",
-      "label": "Coverage Report (JSON)",
-      "options": "JSON",
-      "read_only": 1,
-      "hidden": 1
-    },
-    {
-      "fieldname": "section_mapping",
-      "fieldtype": "Section Break",
-      "label": "Accounts Mapping",
-      "collapsible": 1,
-      "depends_on": "eval:doc.mapping_report && doc.mapping_report != '{}'"
-    },
-    {
-      "fieldname": "mapping_view",
-      "fieldtype": "HTML",
-      "label": "Accounts Mapping"
-    },
-    {
-      "fieldname": "mapping_report",
-      "fieldtype": "Code",
-      "label": "Accounts Mapping (JSON)",
-      "options": "JSON",
-      "read_only": 1,
-      "hidden": 1
-    },
-    {
-      "fieldname": "section_raw",
-      "fieldtype": "Section Break",
-      "label": "Raw Data (JSON)",
-      "collapsible": 1
-    },
-    {
-      "fieldname": "extracted_counts",
-      "fieldtype": "Code",
-      "label": "Extracted Counts",
-      "options": "JSON",
-      "read_only": 1
-    },
-    {
-      "fieldname": "import_summary",
-      "fieldtype": "Code",
-      "label": "Import Summary",
-      "options": "JSON",
-      "read_only": 1
-    },
-    {
-      "fieldname": "error_log",
-      "fieldtype": "Long Text",
-      "label": "Error Log (plain text)",
-      "read_only": 1
-    }
-  ],
-  "permissions": [
-    {
-      "role": "System Manager",
-      "read": 1,
-      "write": 1,
-      "create": 0,
-      "delete": 1,
-      "export": 1
-    },
-    {
-      "role": "Tally Migration Manager",
-      "read": 1,
-      "write": 1,
-      "create": 0,
-      "export": 1
-    }
-  ]
+ "name": "Tally Migration Log",
+ "doctype": "DocType",
+ "module": "Tally Migration",
+ "custom": 0,
+ "is_submittable": 0,
+ "is_single": 0,
+ "is_child_table": 0,
+ "naming_rule": "Expression",
+ "autoname": "TML-.YYYY.-.#####",
+ "track_changes": 1,
+ "search_fields": "company,tally_company,status",
+ "title_field": "company",
+ "fields": [
+  {
+   "fieldname": "company",
+   "fieldtype": "Link",
+   "label": "ERPNext Company",
+   "options": "Company",
+   "reqd": 1,
+   "in_list_view": 1,
+   "in_standard_filter": 1
+  },
+  {
+   "fieldname": "tally_company",
+   "fieldtype": "Data",
+   "label": "Tally Company",
+   "reqd": 1,
+   "in_list_view": 1
+  },
+  {
+   "fieldname": "source_file",
+   "fieldtype": "Attach",
+   "label": "Source File",
+   "read_only": 1,
+   "description": "The Tally Masters XML this run imported from. Kept so the run can be repeated."
+  },
+  {
+   "fieldname": "coa_mode",
+   "fieldtype": "Data",
+   "label": "COA Mode",
+   "read_only": 1,
+   "hidden": 1,
+   "description": "Chart-of-Accounts mode used (reuse/mirror). Kept so a re-run repeats it faithfully."
+  },
+  {
+   "fieldname": "posting_date",
+   "fieldtype": "Date",
+   "label": "Opening Posting Date",
+   "read_only": 1,
+   "hidden": 1,
+   "description": "Opening-balance posting date used. Kept so a re-run repeats it faithfully."
+  },
+  {
+   "fieldname": "uom_overrides",
+   "fieldtype": "Code",
+   "label": "UOM Overrides (JSON)",
+   "options": "JSON",
+   "read_only": 1,
+   "hidden": 1,
+   "description": "Tally\u2192ERPNext unit mappings chosen on the pre-flight screen. Kept so a re-run reproduces the same UOM resolution instead of reverting to defaults."
+  },
+  {
+   "fieldname": "record_overrides",
+   "fieldtype": "Code",
+   "label": "Record Overrides (JSON)",
+   "options": "JSON",
+   "read_only": 1,
+   "hidden": 1,
+   "description": "Per-record field fixes (GSTIN/state/HSN/\u2026) made on the pre-flight screen. Kept so a re-run re-applies the same fixes instead of importing the unfixed data."
+  },
+  {
+   "fieldname": "col_break_1",
+   "fieldtype": "Column Break"
+  },
+  {
+   "fieldname": "migration_type",
+   "fieldtype": "Select",
+   "label": "Migration Type",
+   "options": "Masters\nTransactions",
+   "reqd": 1,
+   "default": "Masters",
+   "in_list_view": 1
+  },
+  {
+   "fieldname": "status",
+   "fieldtype": "Select",
+   "label": "Status",
+   "options": "\nRunning\nCompleted\nCompleted with Errors\nFailed",
+   "default": "Running",
+   "in_list_view": 1,
+   "in_standard_filter": 1
+  },
+  {
+   "fieldname": "migration_date",
+   "fieldtype": "Datetime",
+   "label": "Migration Date",
+   "default": "Now",
+   "read_only": 1,
+   "in_list_view": 1
+  },
+  {
+   "fieldname": "section_summary",
+   "fieldtype": "Section Break",
+   "label": "Summary"
+  },
+  {
+   "fieldname": "summary_view",
+   "fieldtype": "HTML",
+   "label": "Summary"
+  },
+  {
+   "fieldname": "section_reconciliation",
+   "fieldtype": "Section Break",
+   "label": "Reconciliation",
+   "collapsible": 1,
+   "depends_on": "eval:doc.reconciliation_report && doc.reconciliation_report != '{}'"
+  },
+  {
+   "fieldname": "reconciliation_view",
+   "fieldtype": "HTML",
+   "label": "Reconciliation"
+  },
+  {
+   "fieldname": "reconciliation_report",
+   "fieldtype": "Code",
+   "label": "Reconciliation (JSON)",
+   "options": "JSON",
+   "read_only": 1,
+   "hidden": 1,
+   "description": "Read-only side-by-side of Tally's opening figures vs what posted in ERPNext (receivables, payables, stock, Temporary Opening)."
+  },
+  {
+   "fieldname": "section_created",
+   "fieldtype": "Section Break",
+   "label": "Records Created",
+   "collapsible": 1,
+   "depends_on": "eval:doc.created_records && doc.created_records != '{}'"
+  },
+  {
+   "fieldname": "created_view",
+   "fieldtype": "HTML",
+   "label": "Records Created"
+  },
+  {
+   "fieldname": "created_records",
+   "fieldtype": "Code",
+   "label": "Created Records (JSON)",
+   "options": "JSON",
+   "read_only": 1,
+   "hidden": 1,
+   "description": "Per-entity list of the ERPNext documents this run inserted, including the opening Journal Entry and Stock Reconciliation \u2014 the authoritative record of what was touched."
+  },
+  {
+   "fieldname": "section_errors",
+   "fieldtype": "Section Break",
+   "label": "Records with Issues",
+   "depends_on": "eval:(doc.errors && doc.errors.length) || doc.status == 'Failed'"
+  },
+  {
+   "fieldname": "errors",
+   "fieldtype": "Table",
+   "label": "Failed Records & Non-fatal Drops",
+   "options": "Tally Migration Error",
+   "read_only": 1,
+   "description": "Hard failures, plus '(warning)' rows where a record imported but a dependent piece (e.g. its address or item group) was dropped."
+  },
+  {
+   "fieldname": "section_edits",
+   "fieldtype": "Section Break",
+   "label": "Edits Applied Before Import",
+   "collapsible": 1,
+   "depends_on": "eval:doc.applied_edits && doc.applied_edits != '[]'"
+  },
+  {
+   "fieldname": "edits_view",
+   "fieldtype": "HTML",
+   "label": "Applied Edits"
+  },
+  {
+   "fieldname": "applied_edits",
+   "fieldtype": "Code",
+   "label": "Applied Edits (JSON)",
+   "options": "JSON",
+   "read_only": 1,
+   "hidden": 1
+  },
+  {
+   "fieldname": "section_quality",
+   "fieldtype": "Section Break",
+   "label": "Pre-flight Data Quality",
+   "collapsible": 1,
+   "depends_on": "eval:doc.validation_report"
+  },
+  {
+   "fieldname": "quality_view",
+   "fieldtype": "HTML",
+   "label": "Data Quality"
+  },
+  {
+   "fieldname": "validation_report",
+   "fieldtype": "Code",
+   "label": "Validation Report",
+   "options": "JSON",
+   "read_only": 1,
+   "hidden": 1
+  },
+  {
+   "fieldname": "section_coverage",
+   "fieldtype": "Section Break",
+   "label": "Fields Not Migrated",
+   "collapsible": 1,
+   "depends_on": "eval:doc.coverage_report && doc.coverage_report != '{}'"
+  },
+  {
+   "fieldname": "coverage_view",
+   "fieldtype": "HTML",
+   "label": "Field Coverage"
+  },
+  {
+   "fieldname": "coverage_report",
+   "fieldtype": "Code",
+   "label": "Coverage Report (JSON)",
+   "options": "JSON",
+   "read_only": 1,
+   "hidden": 1
+  },
+  {
+   "fieldname": "section_mapping",
+   "fieldtype": "Section Break",
+   "label": "Accounts Mapping",
+   "collapsible": 1,
+   "depends_on": "eval:doc.mapping_report && doc.mapping_report != '{}'"
+  },
+  {
+   "fieldname": "mapping_view",
+   "fieldtype": "HTML",
+   "label": "Accounts Mapping"
+  },
+  {
+   "fieldname": "mapping_report",
+   "fieldtype": "Code",
+   "label": "Accounts Mapping (JSON)",
+   "options": "JSON",
+   "read_only": 1,
+   "hidden": 1
+  },
+  {
+   "fieldname": "section_raw",
+   "fieldtype": "Section Break",
+   "label": "Raw Data (JSON)",
+   "collapsible": 1
+  },
+  {
+   "fieldname": "extracted_counts",
+   "fieldtype": "Code",
+   "label": "Extracted Counts",
+   "options": "JSON",
+   "read_only": 1
+  },
+  {
+   "fieldname": "import_summary",
+   "fieldtype": "Code",
+   "label": "Import Summary",
+   "options": "JSON",
+   "read_only": 1
+  },
+  {
+   "fieldname": "error_log",
+   "fieldtype": "Long Text",
+   "label": "Error Log (plain text)",
+   "read_only": 1
+  }
+ ],
+ "permissions": [
+  {
+   "role": "System Manager",
+   "read": 1,
+   "write": 1,
+   "create": 0,
+   "delete": 1,
+   "export": 1
+  },
+  {
+   "role": "Tally Migration Manager",
+   "read": 1,
+   "write": 1,
+   "create": 0,
+   "export": 1
+  }
+ ]
 }

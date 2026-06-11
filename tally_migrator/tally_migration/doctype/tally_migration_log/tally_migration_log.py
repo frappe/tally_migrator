@@ -24,6 +24,7 @@ class TallyMigrationLog(Document):
     migration_date: DF.Datetime | None
     migration_type: DF.Literal["Masters", "Transactions"]
     posting_date: DF.Date | None
+    reconciliation_report: DF.Code | None
     source_file: DF.Attach | None
     status: DF.Literal["", "Running", "Completed", "Completed with Errors", "Failed"]
     tally_company: DF.Data

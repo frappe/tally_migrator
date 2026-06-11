@@ -1,6 +1,7 @@
 frappe.ui.form.on("Tally Migration Log", {
 	refresh(frm) {
 		render_summary(frm);
+		render_reconciliation(frm);
 		render_created(frm);
 		render_quality(frm);
 		render_edits(frm);
@@ -168,6 +169,115 @@ function render_mapping(frm) {
 			</div>
 			<div class="small" style="margin-bottom:4px;">${plugLine}</div>
 			${inferredBlock}
+		</div>
+	`);
+}
+
+// ── Reconciliation: opening Trial Balance, Tally vs ERPNext ──────────────────
+// Read-only. The opening trial balance built from Tally's figures beside what
+// ERPNext now holds (read back from the GL / stock), per account class plus the
+// Debtors/Creditors/stock control lines, with a balanced Dr = Cr total. The
+// Temporary Opening row is Tally's own "Difference in Opening Balances", so a
+// non-zero value there is a faithful migration, not a gap. Informational - no gate.
+
+function render_reconciliation(frm) {
+	const field = frm.get_field("reconciliation_view");
+	if (!field) return;
+	const wrapper = field.$wrapper;
+	wrapper.empty();
+
+	let r = null;
+	try {
+		r = JSON.parse(frm.doc.reconciliation_report || "null");
+	} catch (e) {
+		r = null;
+	}
+	if (!r || !r.rows || !r.rows.length) return;
+
+	const esc = frappe.utils.escape_html;
+	const fmt = (n) =>
+		Number(n || 0).toLocaleString("en-IN", { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+	// One amount cell: shows the figure only in the column (Dr/Cr) it belongs to.
+	const dr = (s) => (s && s.dr_cr === "Dr" && s.amount ? fmt(s.amount) : "");
+	const cr = (s) => (s && s.dr_cr === "Cr" && s.amount ? fmt(s.amount) : "");
+	const avail = r.available;
+
+	const VERDICT = {
+		reconciled: { color: "#28a745", text: "✓ Reconciled - the opening trial balance matches ERPNext." },
+		review: {
+			color: "#e24c4c",
+			text: "⚠ A figure differs between Tally and ERPNext - review the rows below.",
+		},
+		source_only: {
+			color: "#6c757d",
+			text: "ERPNext figures could not be read back; showing Tally's trial balance only.",
+		},
+	};
+	const v = VERDICT[r.verdict] || VERDICT.source_only;
+
+	const rows = r.rows
+		.map((row) => {
+			const stat = !row.has_erpnext
+				? ""
+				: row.match
+				? `<span class="text-success">✓</span>`
+				: `<span class="text-danger">⚠</span>`;
+			const note = row.is_opening_difference
+				? `<div class="text-muted small" style="font-weight:400;">Tally's own "Difference in Opening Balances" - a non-zero value here is faithful, not a gap.</div>`
+				: "";
+			const erpDr = avail && row.has_erpnext ? dr(row.erpnext) : "";
+			const erpCr = avail && row.has_erpnext ? cr(row.erpnext) : "";
+			return `
+				<tr>
+					<td style="font-weight:600; white-space:nowrap;">${esc(row.label)}${note}</td>
+					<td class="text-right" style="vertical-align:top;">${dr(row.source)}</td>
+					<td class="text-right" style="vertical-align:top;">${cr(row.source)}</td>
+					<td class="text-right text-muted" style="vertical-align:top;">${erpDr}</td>
+					<td class="text-right text-muted" style="vertical-align:top;">${erpCr}</td>
+					<td class="text-center" style="vertical-align:top;">${stat}</td>
+				</tr>`;
+		})
+		.join("");
+
+	const t = r.total || { source: {}, erpnext: {} };
+	const bal = (ok) =>
+		ok ? `<span class="text-success" title="Dr = Cr">✓</span>` : `<span class="text-danger">⚠</span>`;
+	const foot = `
+		<tr style="border-top:2px solid #e0e6ed; font-weight:600;">
+			<td>Total</td>
+			<td class="text-right">${fmt(t.source.dr)}</td>
+			<td class="text-right">${fmt(t.source.cr)}</td>
+			<td class="text-right text-muted">${avail ? fmt(t.erpnext.dr) : ""}</td>
+			<td class="text-right text-muted">${avail ? fmt(t.erpnext.cr) : ""}</td>
+			<td class="text-center">${bal(t.source_balanced)}</td>
+		</tr>`;
+
+	const stockNote = r.stock_items
+		? `<div class="text-muted small" style="margin-top:8px;">Stock value across ${r.stock_items} item(s) with opening quantity. Receivables/Payables are the Debtors/Creditors control totals (shown separately from Assets/Liabilities).</div>`
+		: "";
+
+	wrapper.html(`
+		<div style="border:1px solid #e0e6ed; border-radius:8px; padding:12px 16px; margin:8px 0;">
+			<div class="small" style="margin-bottom:8px; color:${v.color};">${v.text}</div>
+			<table class="table table-condensed" style="margin:0;">
+				<thead>
+					<tr>
+						<th style="border-top:0;" rowspan="2" class="text-muted small">Account class</th>
+						<th style="border-top:0;" colspan="2" class="text-center">Tally</th>
+						<th style="border-top:0;" colspan="2" class="text-center text-muted">ERPNext</th>
+						<th style="border-top:0;" rowspan="2"></th>
+					</tr>
+					<tr>
+						<th class="text-right small" style="border-top:0;">Dr</th>
+						<th class="text-right small" style="border-top:0;">Cr</th>
+						<th class="text-right small text-muted" style="border-top:0;">Dr</th>
+						<th class="text-right small text-muted" style="border-top:0;">Cr</th>
+					</tr>
+				</thead>
+				<tbody>${rows}</tbody>
+				<tfoot>${foot}</tfoot>
+			</table>
+			${stockNote}
 		</div>
 	`);
 }

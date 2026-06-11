@@ -379,6 +379,7 @@ class MasterMigrator:
             self.log.import_summary = frappe.as_json(summary.as_dict())
             self.log.applied_edits = frappe.as_json(self.applied_edits)
             self.log.created_records = frappe.as_json(summary.created_records())
+            self.log.reconciliation_report = frappe.as_json(self._reconciliation(masters, coa))
             self.log.set("errors", [])
             if summary.has_errors or summary.has_warnings:
                 self.log.error_log = summary.error_lines()
@@ -388,6 +389,19 @@ class MasterMigrator:
             frappe.db.commit()
         except Exception as exc:
             frappe.log_error(f"Migration log finalize failed: {exc}", "Tally Migrator")
+
+    def _reconciliation(self, masters: ExtractedMasters, coa) -> dict:
+        """Read-only post-import reconciliation summary (Tally figures vs ERPNext).
+
+        Best-effort: a failure here returns an empty dict so the rest of the log
+        still finalizes - the summary is informational, never a gate."""
+        try:
+            from tally_migrator.migration.reconciliation import build_reconciliation
+            return build_reconciliation(
+                self.config.erpnext_company, self.importer.abbr, coa, masters)
+        except Exception as exc:
+            frappe.log_error(f"Reconciliation summary failed: {exc}", "Tally Migrator")
+            return {}
 
     def _fail_log(self, exc: Exception) -> None:
         """Mark the log 'Failed' with a traceback. Best-effort; never re-raises."""
