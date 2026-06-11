@@ -186,9 +186,17 @@ class FileTallySource:
         The first candidate that yields a value wins.
         """
         cache_key = (obj_type, tuple(fields))
+        # Hand out a fresh shallow copy of each record on every call. The source is
+        # cached across requests (api._SOURCE_CACHE) and a consumer
+        # (migration.overrides.apply_record_overrides) patches record dicts IN PLACE;
+        # returning the cached dicts themselves would let one request's inline fixes
+        # poison the parse for the next, so a re-run's override looks "already
+        # applied" (old == new) and silently drops out of the migration log's edit
+        # audit. Values are flat strings, so a shallow copy fully isolates them while
+        # the expensive XML parse stays cached.
         cached = self._collection_cache.get(cache_key)
         if cached is not None:
-            return cached
+            return [dict(r) for r in cached]
         tag = obj_type.upper().replace(" ", "")
         tag_map = tag_map or {}
         records: list[dict] = []
@@ -202,7 +210,7 @@ class FileTallySource:
                 record[f] = self._resolve_field(elem, candidates)
             records.append(record)
         self._collection_cache[cache_key] = records
-        return records
+        return [dict(r) for r in records]
 
     def get_child_list(self, obj_type: str, child_tag: str,
                        fields: list[str]) -> list[dict]:
@@ -224,9 +232,11 @@ class FileTallySource:
         Records with no such children contribute nothing.
         """
         cache_key = ("child", obj_type, child_tag, tuple(fields))
+        # Copy per call, same reason as get_collection: the cross-request parse cache
+        # must never hand out dicts a consumer could mutate in place.
         cached = self._collection_cache.get(cache_key)
         if cached is not None:
-            return cached
+            return [dict(r) for r in cached]
         tag = obj_type.upper().replace(" ", "")
         want_child = child_tag.upper().replace(" ", "")
         rows: list[dict] = []
@@ -243,7 +253,7 @@ class FileTallySource:
                         row["_name"] = value
                 rows.append(row)
         self._collection_cache[cache_key] = rows
-        return rows
+        return [dict(r) for r in rows]
 
     # ── Field resolution (tag overrides + nested .LIST descent) ────────────────
     @classmethod

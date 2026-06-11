@@ -166,12 +166,6 @@ class TallyMigratorPage {
 					<div id="dq-section" style="display:none; margin-bottom:18px;">
 						<div id="dq-cards" style="display:flex; gap:10px; margin-bottom:12px;"></div>
 						<div id="dq-list"></div>
-						<div id="dq-consent" style="display:none; margin-top:12px;" class="alert alert-info">
-							<label style="margin:0; font-weight:400; cursor:pointer;">
-								<input type="checkbox" id="dq-consent-check" />
-								&nbsp;Some records have errors and won't import. Continue with the rest - I can fix and re-import them later from the Migration Log.
-							</label>
-						</div>
 					</div>
 
 					<!-- Company-readiness gate (blockers stop the run) -->
@@ -188,6 +182,15 @@ class TallyMigratorPage {
 						</div>
 						<div id="uom-issue-list"></div>
 					</div>
+
+					<!-- Error consent (final gate; shown only when records have errors) -->
+					<div id="dq-consent" style="display:none; margin-bottom:18px;" class="alert alert-info">
+						<label style="margin:0; font-weight:400; cursor:pointer; display:flex; align-items:flex-start; gap:8px;">
+							<input type="checkbox" id="dq-consent-check" style="margin:3px 0 0; flex:0 0 auto;" />
+							<span>Some records have errors and won't import. Continue with the rest - you can fix and re-import them later from the Migration Log.</span>
+						</label>
+					</div>
+
 
 					<div style="margin-top:24px;">
 						<button id="btn-back-check" class="btn btn-default btn-sm">← Back</button>
@@ -1457,6 +1460,9 @@ class TallyMigratorPage {
 					<tr>
 						<td style="padding:6px 10px;"><strong>${esc(m.name)}</strong></td>
 						<td style="padding:6px 10px;" class="text-muted">${esc(m.party_type)}</td>
+						<td style="padding:6px 10px; text-align:right;" class="text-muted">${
+							m.opening ? `${fmt(m.opening)} ${esc(m.opening_dr_cr || "")}`.trim() : "-"
+						}</td>
 						<td style="padding:6px 10px; text-align:right;">${fmt(m.amount)}</td>
 					</tr>`
 				)
@@ -1464,8 +1470,9 @@ class TallyMigratorPage {
 			warn = `
 				<div class="alert alert-warning" style="margin:12px 0 0;">
 					<strong>⚠ ${fmt(p.on_account)} part${p.on_account === 1 ? "y's" : "ies'"} bills didn't add up to the ledger opening.</strong>
-					The difference posts as an 'On Account' opening so the party still ties to
-					the trial balance - but review these in Tally; a bill may be missing or mis-dated.
+					The 'On Account' figure is the unreconciled gap between the party's bills and its
+					ledger opening (not the total opening) - it posts as an 'On Account' opening so the
+					party still ties to the trial balance. Review these in Tally; a bill may be missing or mis-dated.
 					<div style="margin-top:10px; border:1px solid rgba(0,0,0,0.08); border-radius:6px; overflow:hidden; background:#fff;">
 						<table class="table table-condensed" style="margin:0; font-size:13px; table-layout:fixed;">
 							${REVIEW_COLGROUP}
@@ -1473,7 +1480,8 @@ class TallyMigratorPage {
 								<tr>
 									<th style="border-top:0; padding:6px 10px;">Party</th>
 									<th style="border-top:0; padding:6px 10px;">Type</th>
-									<th style="border-top:0; padding:6px 10px; text-align:right;">On Account</th>
+									<th style="border-top:0; padding:6px 10px; text-align:right;">Ledger opening</th>
+									<th style="border-top:0; padding:6px 10px; text-align:right;">On Account (gap)</th>
 								</tr>
 							</thead>
 							<tbody>${rows}</tbody>

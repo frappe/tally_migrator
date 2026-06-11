@@ -246,6 +246,40 @@ REAL_EXPORT_XML = """<ENVELOPE>
 </ENVELOPE>"""
 
 
+class TestCacheIsolation(unittest.TestCase):
+    """The source caches its parse across requests (api._SOURCE_CACHE), so a consumer
+    that mutates a returned record dict must not poison the cache for later calls."""
+
+    def test_get_collection_returns_isolated_copies(self):
+        from tally_migrator.tally.extractors import LEDGER_TAGS
+        src = FileTallySource(REAL_EXPORT_XML)
+        first = src.get_collection("Ledger", ["LedgerState"], LEDGER_TAGS)
+        first[0]["LedgerState"] = "MUTATED"          # simulate apply_record_overrides
+        second = src.get_collection("Ledger", ["LedgerState"], LEDGER_TAGS)
+        self.assertNotEqual(second[0]["LedgerState"], "MUTATED")
+
+    def test_overrides_applied_twice_still_logged(self):
+        """The real bug: a Re-check applies overrides once (mutating the cached
+        parse), then the run applies them again on the SAME cached source. Without
+        isolated copies the second apply sees old == new and the edit vanishes from
+        the audit. With copies, every apply records the change."""
+        from tally_migrator.tally.extractors import TallyExtractor
+        from tally_migrator.migration.overrides import apply_record_overrides
+        src = FileTallySource(REAL_EXPORT_XML)
+        ext = TallyExtractor(src)
+        overrides = {"Customer": {"Garachh": {"LedgerState": "Gujarat"}}}
+
+        log1 = []
+        apply_record_overrides(ext.extract_all(), overrides, log1)
+        log2 = []
+        apply_record_overrides(ext.extract_all(), overrides, log2)
+
+        self.assertEqual(len(log1), 1)
+        self.assertEqual(len(log2), 1, "cached parse was poisoned - second apply lost the edit")
+        self.assertEqual(log2[0]["old"], "Maharashtra")
+        self.assertEqual(log2[0]["new"], "Gujarat")
+
+
 class TestDecode(unittest.TestCase):
     def test_utf16_bom_is_decoded(self):
         raw = REAL_EXPORT_XML.encode("utf-16")  # adds a UTF-16 LE BOM
@@ -288,11 +322,14 @@ class TestXmlSafety(unittest.TestCase):
 
     def test_collection_result_is_cached_per_signature(self):
         """extract_all + extract_coa both request Group/Ledger; the second call
-        must return the memoised result, not re-walk the DOM."""
+        returns the memoised parse - but as a fresh copy, never the same object, so a
+        consumer that mutates the first result can't poison the second (see
+        TestCacheIsolation)."""
         src = FileTallySource(SAMPLE_XML)
         first = src.get_collection("Ledger", ["Parent", "OpeningBalance"])
         second = src.get_collection("Ledger", ["Parent", "OpeningBalance"])
-        self.assertIs(first, second)
+        self.assertEqual(first, second)        # same data (parse memoised)
+        self.assertIsNot(first, second)        # but isolated copies
 
 
 class TestRealExportFormat(unittest.TestCase):
@@ -466,7 +503,8 @@ class TestGetChildList(unittest.TestCase):
     def test_cached_call_is_stable(self):
         a = self.source.get_child_list("Ledger", "BILLALLOCATIONS.LIST", ["Name"])
         b = self.source.get_child_list("Ledger", "BILLALLOCATIONS.LIST", ["Name"])
-        self.assertIs(a, b)
+        self.assertEqual(a, b)        # memoised parse, same data
+        self.assertIsNot(a, b)        # but isolated copies (no cross-call mutation)
 
 
 class TestExtractBillAllocations(unittest.TestCase):

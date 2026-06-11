@@ -171,6 +171,11 @@ def _party_openings(masters, bills) -> dict:
                         "name": name,
                         "party_type": party_type,
                         "amount": p_on_account,
+                        # The ledger opening, shown beside the gap so the two
+                        # figures don't look contradictory: 'On Account' is the
+                        # unreconciled residual, not the party's total opening.
+                        "opening": round(ledger_amt, 2),
+                        "opening_dr_cr": ledger_drcr,
                     })
                 else:
                     lump += 1

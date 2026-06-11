@@ -486,9 +486,9 @@ function render_quality(frm) {
 	wrapper.html(`
 		<div style="border:1px solid #e0e6ed; border-radius:8px; padding:12px 16px; margin:8px 0;">
 			<div style="margin-bottom:6px;">
-				<span class="text-danger"><strong>${report.error_count}</strong> error(s)</span>
+				<span class="text-danger"><strong>${report.error_group_count ?? report.error_count}</strong> error(s)</span>
 				&nbsp;·&nbsp;
-				<span style="color:#f0a500;"><strong>${report.warning_count}</strong> warning(s)</span>
+				<span style="color:#f0a500;"><strong>${report.warning_group_count ?? report.warning_count}</strong> warning(s)</span>
 				<span class="text-muted small">- flagged before this run</span>
 			</div>
 			${rows}
