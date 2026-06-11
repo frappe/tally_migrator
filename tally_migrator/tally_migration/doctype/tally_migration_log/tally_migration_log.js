@@ -11,6 +11,69 @@ frappe.ui.form.on("Tally Migration Log", {
 	},
 });
 
+// ── Shared UI vocabulary ─────────────────────────────────────────────────────
+// One design language across the whole log, identical to the Tally Migrator
+// wizard: tinted callouts (no raw orange/red sentences), filled-circle status
+// icons centred on the first text line, CSS-token colours (never bare hex that
+// drifts), 500-weight bold, and long record lists collapsed behind a count.
+
+const TEXT = "var(--text-color, #1f272e)";
+const MUTED = "var(--text-muted, #6c757d)";
+const BORDER = "var(--gray-300, #d1d8dd)";
+// Bar/legend fills - declared once so the stacked bar and its legend can never
+// drift apart (they did: bar grey was #d1d8dd, legend swatch was #aeb8c2).
+const BAR_CREATED = "var(--green-500, #30a66d)";
+const BAR_SKIPPED = "var(--gray-400, #c0c8d0)";
+const BAR_FAILED = "var(--red-500, #e24c4c)";
+
+// Every section card shares one box: same border, radius, padding.
+const CARD = `border:1px solid ${BORDER}; border-radius:8px; padding:14px 16px;`;
+
+// Single source of truth for vertical rhythm. EVERY render path - boxed card or
+// a bare clean-state callout - is wrapped in this, so the gap above and below is
+// always identical and nothing ever touches the next section heading.
+function section(html) {
+	return `<div style="margin:8px 0 18px;">${html}</div>`;
+}
+
+function statusIcon(kind) {
+	const name = { success: "solid-success", info: "solid-info", error: "solid-error" }[kind] || "solid-info";
+	// line-height:0 kills the baseline gap; the small negative vertical-align
+	// drops the 16px glyph onto the text baseline so inline icons sit level
+	// (in a flex iconRow vertical-align is ignored, so block usage is unaffected).
+	return `<span style="display:inline-flex; align-items:center; line-height:0; vertical-align:-0.18em;">${frappe.utils.icon(name, "sm")}</span>`;
+}
+
+// Icon + content, with the 16px icon optically centred on the first line of text
+// (a 1.5em flex box), so headings of any size sit level with their marker.
+function iconRow(kind, html) {
+	return `<div style="display:flex; align-items:flex-start; gap:8px;">
+		<span style="flex:0 0 auto; display:inline-flex; align-items:center; height:1.5em;">${statusIcon(kind)}</span>
+		<div style="flex:1; min-width:0;">${html}</div>
+	</div>`;
+}
+
+// Tinted notice box: blue=info (non-blocking), green=success, red=error.
+function callout(kind, inner, extraStyle = "") {
+	const t = {
+		info: ["var(--blue-100, #edf6fd)", "var(--blue-200, #e3f1fd)"],
+		success: ["var(--green-100, #e4f5e9)", "var(--green-200, #daf0e1)"],
+		error: ["var(--red-100, #fff0f0)", "var(--red-200, #fcd7d7)"],
+	}[kind] || ["var(--blue-100, #edf6fd)", "var(--blue-200, #e3f1fd)"];
+	return `<div style="background:${t[0]}; border:1px solid ${t[1]}; border-radius:8px; padding:11px 13px; color:${TEXT};${extraStyle}">${inner}</div>`;
+}
+
+// Long record lists fold behind a count once they pass the threshold, mirroring
+// the collapsible COA book in the wizard. Short lists render inline.
+const COLLAPSE_AT = 8;
+function collapsible(count, summaryText, innerHtml) {
+	if (count <= COLLAPSE_AT) return innerHtml;
+	return `<details style="margin-top:4px;">
+		<summary style="cursor:pointer; user-select:none; color:${MUTED}; font-size:12px;"><span style="margin-left:6px;">${summaryText}</span></summary>
+		<div style="margin-top:8px;">${innerHtml}</div>
+	</details>`;
+}
+
 // ── Field-coverage report ───────────────────────────────────────────────────
 // Lists fields present in the uploaded Tally file that the migrator does NOT
 // read (UDFs / unmapped attributes) - i.e. data that never entered the pipeline.
@@ -33,9 +96,12 @@ function render_coverage(frm) {
 	const esc = frappe.utils.escape_html;
 	if (report.clean || !report.types.length) {
 		wrapper.html(
-			`<div class="text-success" style="padding:6px 0;">
-				✓ Every field in your file maps to an ERPNext field - nothing was left behind.
-			</div>`
+			section(
+				callout(
+					"success",
+					iconRow("success", "Every field in your file maps to an ERPNext field - nothing was left behind.")
+				)
+			)
 		);
 		return;
 	}
@@ -70,11 +136,11 @@ function render_coverage(frm) {
 				? `<div class="text-muted small" style="margin:2px 0;">Not read from the file (custom fields / UDFs):</div>${fieldTable(t.unmapped, "Sample value")}`
 				: "";
 			const unwritten = (t.unwritten || []).length
-				? `<div class="small" style="margin:6px 0 2px; color:#f0a500;">⚠ Read but not written to ERPNext:</div>${fieldTable(t.unwritten, "Sample value")}`
+				? `<div class="small" style="margin:6px 0 2px; color:${TEXT}; display:flex; align-items:center; gap:6px;">${statusIcon("info")}<span>Read but not written to ERPNext:</span></div>${fieldTable(t.unwritten, "Sample value")}`
 				: "";
 			return `
 				<div style="margin-bottom:12px;">
-					<div style="font-weight:600; margin-bottom:4px;">${esc(t.entity_type)}</div>
+					<div style="font-weight:500; margin-bottom:4px;">${esc(t.entity_type)}</div>
 					${unmapped}${unwritten}
 				</div>`;
 		})
@@ -82,23 +148,28 @@ function render_coverage(frm) {
 
 	const unwrittenCount = report.unwritten_field_count || 0;
 	const unwrittenNote = unwrittenCount
-		? `<div class="small" style="margin-bottom:8px; color:#f0a500;">
-				<strong>${unwrittenCount}</strong> field(s) were read from the file but
-				<strong>not persisted</strong> to ERPNext - review these, they are a real gap.
-			</div>`
+		? callout(
+				"info",
+				iconRow(
+					"info",
+					`<strong>${unwrittenCount}</strong> field(s) were read from the file but
+					<strong>not persisted</strong> to ERPNext - worth reviewing, they are a real gap.`
+				),
+				"margin-bottom:8px;"
+		  )
 		: "";
 
-	wrapper.html(`
-		<div style="border:1px solid #e0e6ed; border-radius:8px; padding:12px 16px; margin:8px 0;">
+	wrapper.html(section(`
+		<div style="${CARD}">
 			<div class="text-muted small" style="margin-bottom:8px;">
 				<strong>${report.unmapped_field_count}</strong> field(s) in your file were
 				<strong>not migrated</strong> (Tally custom fields / attributes outside the
 				supported mapping). The records themselves still imported.
 			</div>
 			${unwrittenNote}
-			${blocks}
+			${collapsible(report.types.length, `Show field details (${report.types.length} record type(s))`, blocks)}
 		</div>
-	`);
+	`));
 }
 
 // ── Accounts-mapping audit ──────────────────────────────────────────────────
@@ -132,45 +203,59 @@ function render_mapping(frm) {
 	const classifiedAs = (r) => esc(r.root_type) + (r.account_type ? ` · ${esc(r.account_type)}` : "");
 
 	const plugLine = plug.clean
-		? `<span class="text-success">✓ opening balances balanced (Dr = Cr)</span>`
-		: `<span style="color:#f0a500;">⚠ <strong>${fmt(plug.temporary_opening_plug)} ${esc(
-				plug.plug_dr_cr
-		  )}</strong> posted to Temporary Opening</span>`;
+		? callout("success", iconRow("success", "Opening balances balanced (Dr = Cr)."), "margin:6px 0;")
+		: callout(
+				"info",
+				iconRow(
+					"info",
+					`<strong>${fmt(plug.temporary_opening_plug)} ${esc(plug.plug_dr_cr)}</strong> posted to Temporary Opening.`
+				),
+				"margin:6px 0;"
+		  );
+
+	const inferredTable = `
+		<table class="table table-condensed" style="margin:0;">
+			<thead><tr>
+				<th style="border-top:0;">Tally ledger</th>
+				<th style="border-top:0;">Classified as</th>
+				<th style="border-top:0;" class="text-right">Opening</th>
+			</tr></thead>
+			<tbody>${m.inferred
+				.map(
+					(r) => `<tr>
+						<td>${esc(r.name)}</td>
+						<td class="text-muted">${classifiedAs(r)}</td>
+						<td class="text-right">${ob(r)}</td>
+					</tr>`
+				)
+				.join("")}</tbody>
+		</table>`;
 
 	const inferredBlock = inferred
-		? `<div class="small" style="margin:8px 0 4px; color:#f0a500;">
-				⚠ <strong>${fmt(inferred)}</strong> account(s) had no standard Tally group - their type was inferred:
-			</div>
-			<table class="table table-condensed" style="margin:0;">
-				<thead><tr>
-					<th style="border-top:0;">Tally ledger</th>
-					<th style="border-top:0;">Classified as</th>
-					<th style="border-top:0;" class="text-right">Opening</th>
-				</tr></thead>
-				<tbody>${m.inferred
-					.map(
-						(r) => `<tr>
-							<td>${esc(r.name)}</td>
-							<td class="text-muted">${classifiedAs(r)}</td>
-							<td class="text-right">${ob(r)}</td>
-						</tr>`
-					)
-					.join("")}</tbody>
-			</table>`
-		: `<div class="text-success small" style="margin:8px 0;">
-				✓ All ${fmt(m.total_accounts)} accounts mapped using Tally's standard groups - none inferred.
-			</div>`;
+		? callout(
+				"info",
+				iconRow(
+					"info",
+					`<strong>${fmt(inferred)}</strong> account(s) had no standard Tally group - their type was inferred:`
+				) + `<div style="margin-top:8px;">${collapsible(inferred, `Show ${fmt(inferred)} inferred account(s)`, inferredTable)}</div>`,
+				"margin-top:8px;"
+		  )
+		: callout(
+				"success",
+				iconRow("success", `All ${fmt(m.total_accounts)} accounts mapped using Tally's standard groups - none inferred.`),
+				"margin-top:8px;"
+		  );
 
-	wrapper.html(`
-		<div style="border:1px solid #e0e6ed; border-radius:8px; padding:12px 16px; margin:8px 0;">
+	wrapper.html(section(`
+		<div style="${CARD}">
 			<div class="text-muted small" style="margin-bottom:4px;">
 				<strong>${fmt(m.total_accounts)}</strong> ledger account(s) classified -
 				<strong>${fmt(confident)}</strong> by Tally's standard groups, <strong>${fmt(inferred)}</strong> inferred.
 			</div>
-			<div class="small" style="margin-bottom:4px;">${plugLine}</div>
+			${plugLine}
 			${inferredBlock}
 		</div>
-	`);
+	`));
 }
 
 // ── Reconciliation: opening Trial Balance, Tally vs ERPNext ──────────────────
@@ -203,25 +288,15 @@ function render_reconciliation(frm) {
 	const avail = r.available;
 
 	const VERDICT = {
-		reconciled: { color: "#28a745", text: "✓ Reconciled - the opening trial balance matches ERPNext." },
-		review: {
-			color: "#e24c4c",
-			text: "⚠ A figure differs between Tally and ERPNext - review the rows below.",
-		},
-		source_only: {
-			color: "#6c757d",
-			text: "ERPNext figures could not be read back; showing Tally's trial balance only.",
-		},
+		reconciled: { kind: "success", text: "Reconciled - the opening trial balance matches ERPNext." },
+		review: { kind: "error", text: "A figure differs between Tally and ERPNext - review the rows below." },
+		source_only: { kind: "info", text: "ERPNext figures could not be read back; showing Tally's trial balance only." },
 	};
 	const v = VERDICT[r.verdict] || VERDICT.source_only;
 
 	const rows = r.rows
 		.map((row) => {
-			const stat = !row.has_erpnext
-				? ""
-				: row.match
-				? `<span class="text-success">✓</span>`
-				: `<span class="text-danger">⚠</span>`;
+			const stat = !row.has_erpnext ? "" : row.match ? statusIcon("success") : statusIcon("error");
 			const note = row.is_opening_difference
 				? `<div class="text-muted small" style="font-weight:400;">Tally's own "Difference in Opening Balances" - a non-zero value here is faithful, not a gap.</div>`
 				: "";
@@ -230,7 +305,7 @@ function render_reconciliation(frm) {
 			const nw = "vertical-align:top; white-space:nowrap;";
 			return `
 				<tr>
-					<td style="font-weight:600; word-break:break-word;">${esc(row.label)}${note}</td>
+					<td style="font-weight:500; word-break:break-word;">${esc(row.label)}${note}</td>
 					<td class="text-right" style="${nw}">${dr(row.source)}</td>
 					<td class="text-right" style="${nw}">${cr(row.source)}</td>
 					<td class="text-right text-muted" style="${nw}">${erpDr}</td>
@@ -241,10 +316,9 @@ function render_reconciliation(frm) {
 		.join("");
 
 	const t = r.total || { source: {}, erpnext: {} };
-	const bal = (ok) =>
-		ok ? `<span class="text-success" title="Dr = Cr">✓</span>` : `<span class="text-danger">⚠</span>`;
+	const bal = (ok) => (ok ? statusIcon("success") : statusIcon("error"));
 	const foot = `
-		<tr style="border-top:2px solid #e0e6ed; font-weight:600;">
+		<tr style="border-top:2px solid ${BORDER}; font-weight:500;">
 			<td>Total</td>
 			<td class="text-right">${fmt(t.source.dr)}</td>
 			<td class="text-right">${fmt(t.source.cr)}</td>
@@ -257,9 +331,9 @@ function render_reconciliation(frm) {
 		? `<div class="text-muted small" style="margin-top:8px;">Stock value across ${r.stock_items} item(s) with opening quantity. Receivables/Payables are the Debtors/Creditors control totals (shown separately from Assets/Liabilities).</div>`
 		: "";
 
-	wrapper.html(`
-		<div style="border:1px solid #e0e6ed; border-radius:8px; padding:12px 16px; margin:8px 0; max-width:100%; overflow:hidden;">
-			<div class="small" style="margin-bottom:8px; color:${v.color};">${v.text}</div>
+	wrapper.html(section(`
+		<div style="${CARD} max-width:100%; overflow:hidden;">
+			${callout(v.kind, iconRow(v.kind, v.text), "margin-bottom:8px;")}
 			<table class="table table-condensed" style="margin:0; width:100%; table-layout:fixed; font-size:12px;">
 				<colgroup>
 					<col style="width:24%;">
@@ -286,7 +360,7 @@ function render_reconciliation(frm) {
 			</table>
 			${stockNote}
 		</div>
-	`);
+	`));
 }
 
 // ── Records-created audit trail ─────────────────────────────────────────────
@@ -342,25 +416,27 @@ function render_created(frm) {
 						: safe;
 				})
 				.join(", ");
+			// One collapsible per category so each entity's documents fold
+			// independently, instead of one giant list of everything.
 			return `
-				<div style="margin-bottom:8px;">
-					<div style="font-weight:600; margin-bottom:2px;">
-						${esc(label)} <span class="text-muted" style="font-weight:400;">(${names.length})</span>
-					</div>
-					<div class="small" style="line-height:1.8;">${links}</div>
-				</div>`;
+				<details style="border-top:1px solid var(--gray-200, #f0f4f7); padding:8px 0;">
+					<summary style="cursor:pointer; user-select:none; font-weight:500;">
+						<span style="margin-left:6px;">${esc(label)} <span class="text-muted" style="font-weight:400;">(${names.length})</span></span>
+					</summary>
+					<div class="small" style="line-height:1.8; margin:6px 0 0 14px;">${links}</div>
+				</details>`;
 		})
 		.join("");
 
-	wrapper.html(`
-		<div style="border:1px solid #e0e6ed; border-radius:8px; padding:12px 16px; margin:8px 0;">
-			<div class="text-muted small" style="margin-bottom:8px;">
+	wrapper.html(section(`
+		<div style="${CARD}">
+			<div class="text-muted small" style="margin-bottom:4px;">
 				<strong>${total}</strong> ERPNext document(s) were created by this run.
 				Use these to review or reverse the migration.
 			</div>
 			${blocks}
 		</div>
-	`);
+	`));
 }
 
 // ── Applied-edits audit trail ───────────────────────────────────────────────
@@ -391,32 +467,35 @@ function render_edits(frm) {
 				<td><span class="text-muted">${esc(e.entity_type || "")}</span> · ${esc(e.record_name || "")}</td>
 				<td>${esc(e.field || "")}</td>
 				<td class="text-muted">${e.old ? esc(String(e.old)) : blank}</td>
-				<td>→</td>
-				<td class="text-success">${e.new ? esc(String(e.new)) : blank}</td>
+				<td class="text-muted">→</td>
+				<td>${e.new ? esc(String(e.new)) : blank}</td>
 			</tr>`
 		)
 		.join("");
 
-	wrapper.html(`
-		<div style="border:1px solid #e0e6ed; border-radius:8px; padding:12px 16px; margin:8px 0;">
+	const table = `
+		<table class="table table-condensed" style="margin:0;">
+			<thead>
+				<tr>
+					<th style="border-top:0;">Record</th>
+					<th style="border-top:0;">Field</th>
+					<th style="border-top:0;">From</th>
+					<th style="border-top:0;"></th>
+					<th style="border-top:0;">To</th>
+				</tr>
+			</thead>
+			<tbody>${rows}</tbody>
+		</table>`;
+
+	wrapper.html(section(`
+		<div style="${CARD}">
 			<div class="text-muted small" style="margin-bottom:6px;">
 				<strong>${edits.length}</strong> field edit(s) were applied on the pre-flight
 				screen before this run. The uploaded file was not modified.
 			</div>
-			<table class="table table-condensed" style="margin:0;">
-				<thead>
-					<tr>
-						<th style="border-top:0;">Record</th>
-						<th style="border-top:0;">Field</th>
-						<th style="border-top:0;">From</th>
-						<th style="border-top:0;"></th>
-						<th style="border-top:0;">To</th>
-					</tr>
-				</thead>
-				<tbody>${rows}</tbody>
-			</table>
+			${collapsible(edits.length, `Show all ${edits.length} edit(s)`, table)}
 		</div>
-	`);
+	`));
 }
 
 // ── Pre-flight data-quality report ──────────────────────────────────────────
@@ -440,60 +519,59 @@ function render_quality(frm) {
 	const esc = frappe.utils.escape_html;
 
 	if (report.clean || !report.groups.length) {
-		wrapper.html(
-			`<div class="text-success" style="padding:6px 0;">
-				✓ No data-quality issues were flagged before this run.
-			</div>`
-		);
+		wrapper.html(section(callout("success", iconRow("success", "No data-quality issues were flagged before this run."))));
 		return;
 	}
 
 	const LABELS = {
+		// Errors keep plain problem framing; warnings get the calm outcome-first
+		// wording (same map as the Step-3 pre-flight screen).
 		GSTIN_INVALID: "Invalid GSTIN",
-		GST_STATE_MISSING: "GST state missing",
-		GSTIN_STATE_MISMATCH: "GSTIN / state mismatch",
-		PIN_STATE_CONFLICT: "PIN / state conflict",
-		HSN_MISSING: "HSN code missing",
 		ITEM_CODE_COLLISION: "Item code collision",
-		DUPLICATE_PARTY: "Possible duplicate party",
+		GST_STATE_MISSING: "Imports without a GST state",
+		GSTIN_STATE_MISMATCH: "GSTIN and state to verify",
+		PIN_STATE_CONFLICT: "PIN and state to verify",
+		EMAIL_INVALID: "Imports without the email",
+		HSN_MISSING: "Imports without HSN",
+		DUPLICATE_PARTY: "Possible duplicate to review",
+		DUPLICATE_NAME: "Will merge into one",
+		CIRCULAR_PARENT: "Hierarchy loop simplified",
 	};
 
 	const rows = report.groups
 		.map((g) => {
 			const isErr = g.severity === "error";
-			const dot = isErr ? "#e24c4c" : "#f0a500";
+			// Same icon family as everywhere else: red ✕-in-circle for blocking
+			// errors, calm blue i-in-circle for non-blocking notices.
+			const kind = isErr ? "error" : "info";
 			const label = LABELS[g.code] || g.code;
 			const items = g.items
 				.map(
 					(it) =>
-						`<div style="padding:2px 0; color:#555;">
+						`<div style="padding:2px 0; color:${MUTED};">
 							<span class="text-muted">${esc(it.entity_type)}</span> · ${esc(it.entity_name)}
 						</div>`
 				)
 				.join("");
-			return `
-				<div style="border-top:1px solid #f0f4f7; padding:8px 0;">
-					<div style="font-weight:600;">
-						<span style="color:${dot};">■</span> ${esc(label)}
-						<span class="text-muted" style="font-weight:400;">(${g.items.length})</span>
-					</div>
-					${g.fix_hint ? `<div class="text-muted small" style="margin:2px 0 4px;">${esc(g.fix_hint)}</div>` : ""}
-					<div style="margin-left:14px;">${items}</div>
-				</div>`;
+			const head = `<div style="font-weight:500;">${esc(label)}
+				<span class="text-muted" style="font-weight:400;">(${g.items.length})</span></div>
+				${g.fix_hint ? `<div class="text-muted small" style="margin:2px 0 4px;">${esc(g.fix_hint)}</div>` : ""}
+				${collapsible(g.items.length, `Show ${g.items.length} record(s)`, items)}`;
+			return `<div style="border-top:1px solid var(--gray-200, #f0f4f7); padding:8px 0;">${iconRow(kind, head)}</div>`;
 		})
 		.join("");
 
-	wrapper.html(`
-		<div style="border:1px solid #e0e6ed; border-radius:8px; padding:12px 16px; margin:8px 0;">
-			<div style="margin-bottom:6px;">
+	wrapper.html(section(`
+		<div style="${CARD}">
+			<div class="small" style="margin-bottom:6px;">
 				<span class="text-danger"><strong>${report.error_group_count ?? report.error_count}</strong> error(s)</span>
 				&nbsp;·&nbsp;
-				<span style="color:#f0a500;"><strong>${report.warning_group_count ?? report.warning_count}</strong> warning(s)</span>
-				<span class="text-muted small">- flagged before this run</span>
+				<span style="color:var(--blue-600, #318ad8);"><strong>${report.warning_group_count ?? report.warning_count}</strong> warning(s)</span>
+				<span class="text-muted">- flagged before this run</span>
 			</div>
 			${rows}
 		</div>
-	`);
+	`));
 }
 
 // ── Visual summary dashboard ────────────────────────────────────────────────
@@ -514,11 +592,13 @@ function render_summary(frm) {
 	const entries = Object.entries(summary);
 	if (!entries.length) {
 		wrapper.html(
-			`<div class="text-muted" style="padding:6px 0;">
-				${frm.doc.status === "Running"
-					? "Migration is still running…"
-					: "No import summary recorded for this run."}
-			</div>`
+			section(
+				`<div class="text-muted" style="padding:6px 0;">
+					${frm.doc.status === "Running"
+						? "Migration is still running…"
+						: "No import summary recorded for this run."}
+				</div>`
+			)
 		);
 		return;
 	}
@@ -540,15 +620,15 @@ function render_summary(frm) {
 			const pct = (n) => (n / total) * 100;
 
 			const bar = `
-				<div style="display:flex; height:8px; border-radius:4px; overflow:hidden; background:#f0f4f7;">
-					<div style="width:${pct(created)}%; background:#28a745;"></div>
-					<div style="width:${pct(skipped)}%; background:#d1d8dd;"></div>
-					<div style="width:${pct(failed)}%; background:#e24c4c;"></div>
+				<div style="display:flex; height:8px; border-radius:4px; overflow:hidden; background:var(--gray-200, #f0f4f7);">
+					<div style="width:${pct(created)}%; background:${BAR_CREATED};"></div>
+					<div style="width:${pct(skipped)}%; background:${BAR_SKIPPED};"></div>
+					<div style="width:${pct(failed)}%; background:${BAR_FAILED};"></div>
 				</div>`;
 
 			return `
 				<tr>
-					<td style="font-weight:600; white-space:nowrap; vertical-align:middle;">${esc(label)}</td>
+					<td style="font-weight:500; white-space:nowrap; vertical-align:middle;">${esc(label)}</td>
 					<td style="width:45%; vertical-align:middle;">${bar}</td>
 					<td class="text-right text-success" style="vertical-align:middle;">${created}</td>
 					<td class="text-right text-muted" style="vertical-align:middle;">${skipped}</td>
@@ -559,8 +639,14 @@ function render_summary(frm) {
 		})
 		.join("");
 
-	wrapper.html(`
-		<div style="border:1px solid #e0e6ed; border-radius:8px; padding:14px 16px; margin:8px 0;">
+	// Legend swatches reuse the exact bar fills - they can never drift apart.
+	// Each item is its own flex pair so the chip is optically centred on the text.
+	const legendItem = (color, text) =>
+		`<span style="display:inline-flex; align-items:center; gap:6px;">
+			<span style="width:10px; height:10px; border-radius:2px; background:${color};"></span>${text}</span>`;
+
+	wrapper.html(section(`
+		<div style="${CARD}">
 			<table class="table table-condensed" style="margin:0;">
 				<thead>
 					<tr>
@@ -573,8 +659,8 @@ function render_summary(frm) {
 				</thead>
 				<tbody>${rows}</tbody>
 				<tfoot>
-					<tr style="border-top:2px solid #e0e6ed;">
-						<td style="font-weight:600;">Total</td>
+					<tr style="border-top:2px solid ${BORDER};">
+						<td style="font-weight:500;">Total</td>
 						<td></td>
 						<td class="text-right text-success"><strong>${totalCreated}</strong></td>
 						<td class="text-right text-muted">${totalSkipped}</td>
@@ -584,13 +670,13 @@ function render_summary(frm) {
 					</tr>
 				</tfoot>
 			</table>
-			<div class="text-muted small" style="margin-top:10px; line-height:1.6;">
-				<span style="color:#28a745;">■</span> Imported (new) &nbsp;·&nbsp;
-				<span style="color:#aeb8c2;">■</span> Already there (skipped, safe) &nbsp;·&nbsp;
-				<span style="color:#e24c4c;">■</span> Failed
+			<div class="text-muted small" style="margin-top:10px; display:flex; flex-wrap:wrap; align-items:center; gap:6px 16px;">
+				${legendItem(BAR_CREATED, "Imported (new)")}
+				${legendItem(BAR_SKIPPED, "Already there (skipped, safe)")}
+				${legendItem(BAR_FAILED, "Failed")}
 			</div>
 		</div>
-	`);
+	`));
 }
 
 // ── Action buttons ──────────────────────────────────────────────────────────

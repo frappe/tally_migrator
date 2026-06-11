@@ -62,7 +62,7 @@ class TallyMigratorPage {
 						from Tally into ERPNext. It takes a few short steps.
 					</p>
 
-					<div class="alert alert-info" style="display:flex; gap:10px; align-items:flex-start;">
+					<div style="display:flex; gap:10px; align-items:flex-start; background:var(--blue-100, #edf6fd); border:1px solid var(--blue-200, #e3f1fd); border-radius:8px; padding:12px 14px;">
 						<span style="font-size:16px;">🛡️</span>
 						<div style="font-size:13px;">
 							<strong>Your existing ERPNext data is safe.</strong>
@@ -158,8 +158,8 @@ class TallyMigratorPage {
 						<i class="fa fa-spinner fa-spin"></i> &nbsp;Checking your file against ERPNext…
 					</div>
 
-					<div id="check-clean" style="display:none;" class="alert alert-success">
-						<strong>✓ Nothing to resolve.</strong> Everything in your file matches what ERPNext expects.
+					<div id="check-clean" style="display:none; background:var(--green-100, #e4f5e9); border:1px solid var(--green-200, #daf0e1); border-radius:8px; padding:12px 14px;">
+						${TallyMigratorPage.iconRow("success", `<strong>Nothing to resolve.</strong> Everything in your file matches what ERPNext expects.`)}
 					</div>
 
 					<!-- Data-quality report (read-only; informational + consent) -->
@@ -174,17 +174,15 @@ class TallyMigratorPage {
 					<!-- Field-coverage notice (read-only; informational) -->
 					<div id="coverage-section" style="display:none; margin-bottom:18px;"></div>
 
-					<div id="check-issues" style="display:none;">
-						<div class="alert alert-warning" style="margin-bottom:14px;">
-							<strong>⚠ Some Units of Measure in your file don't exist in ERPNext yet.</strong>
-							By default we'll create each one as a new unit. Change any row below if you'd
-							rather map it to a unit you already use - then click Continue.
+					<div id="check-issues" style="display:none; margin-bottom:18px;">
+						<div style="margin-bottom:14px; background:var(--blue-100, #edf6fd); border:1px solid var(--blue-200, #e3f1fd); border-radius:8px; padding:12px 14px;">
+							${TallyMigratorPage.iconRow("info", `<strong>Some Units of Measure in your file don't exist in ERPNext yet.</strong> By default we'll create each one as a new unit. Change any row below if you'd rather map it to a unit you already use - then click Continue.`)}
 						</div>
 						<div id="uom-issue-list"></div>
 					</div>
 
 					<!-- Error consent (final gate; shown only when records have errors) -->
-					<div id="dq-consent" style="display:none; margin-bottom:18px;" class="alert alert-info">
+					<div id="dq-consent" style="display:none; margin-bottom:18px; background:var(--blue-100, #edf6fd); border:1px solid var(--blue-200, #e3f1fd); border-radius:8px; padding:12px 14px;">
 						<label style="margin:0; font-weight:400; cursor:pointer; display:flex; align-items:flex-start; gap:8px;">
 							<input type="checkbox" id="dq-consent-check" style="margin:3px 0 0; flex:0 0 auto;" />
 							<span>Some records have errors and won't import. Continue with the rest - you can fix and re-import them later from the Migration Log.</span>
@@ -197,7 +195,7 @@ class TallyMigratorPage {
 						&nbsp;
 						<button id="btn-next-check" class="btn btn-primary btn-sm">Continue →</button>
 						<button id="btn-startover-check" class="btn btn-default btn-sm pull-right"
-							style="color:var(--red-600, #c0392b);">Start over</button>
+							style="color:var(--text-muted, #8d99a6);">Start over</button>
 					</div>
 				</div>
 
@@ -235,7 +233,7 @@ class TallyMigratorPage {
 
 					<div id="results-section" style="display:none;"></div>
 
-					<div id="error-section" style="display:none;" class="alert alert-danger"></div>
+					<div id="error-section" style="display:none; background:var(--red-100, #fff0f0); border:1px solid var(--red-200, #fcd7d7); border-radius:8px; padding:12px 14px;"></div>
 
 					<div id="run-actions">
 						<button id="btn-back-3" class="btn btn-default btn-sm">← Back</button>
@@ -279,7 +277,7 @@ class TallyMigratorPage {
 		// Use Frappe design tokens (with hex fallbacks) so the stepper matches the
 		// active desk theme - including dark mode - instead of hardcoded colours.
 		const ACTIVE = "var(--text-color, #1f272e)";    // desk ink / near-black
-		const DONE = "var(--green-500, #28a745)";       // Frappe success green
+		const DONE = "var(--green-600, #30a66d)";       // standard success green
 		const PENDING = "var(--gray-300, #d1d8dd)";     // muted fill
 
 		const parts = steps.map((s, i) => {
@@ -396,28 +394,19 @@ class TallyMigratorPage {
 					(p.customers || 0) + (p.suppliers || 0) + (p.items || 0) + (p.warehouses || 0);
 				if (total === 0) {
 					$("#preview-box").html(
-						`<div class="alert alert-warning" style="margin:0;">
-							We read the file, but found no Customers, Suppliers, Items or Warehouses in it.
-							Make sure you exported <strong>Masters</strong> (with <strong>Show All Masters = Yes</strong>) from Tally.
-						</div>`
+						TallyMigratorPage.callout("error", TallyMigratorPage.iconRow("error", `We read the file, but found no Customers, Suppliers, Items or Warehouses in it. Make sure you exported <strong>Masters</strong> (with <strong>Show All Masters = Yes</strong>) from Tally.`))
 					);
 					$("#btn-next-upload").prop("disabled", true);
 					return;
 				}
 				$("#preview-box").html(
-					`<div class="alert alert-success" style="margin:0;">
-						<strong>✓ File read successfully.</strong> Here's what we found:
-						${this.countsHtml(p)}
-					</div>`
+					TallyMigratorPage.callout("success", TallyMigratorPage.iconRow("success", `<strong>File read successfully.</strong> Here's what we found:${this.countsHtml(p)}`))
 				);
 				$("#btn-next-upload").prop("disabled", false);
 			},
 			error: () => {
 				$("#preview-box").html(
-					`<div class="alert alert-danger" style="margin:0;">
-						We couldn't read this file. Please make sure it's a valid Tally <strong>Masters XML</strong>
-						export and upload it again.
-					</div>`
+					TallyMigratorPage.callout("error", TallyMigratorPage.iconRow("error", `We couldn't read this file. Please make sure it's a valid Tally <strong>Masters XML</strong> export and upload it again.`))
 				);
 				$("#btn-next-upload").prop("disabled", true);
 			},
@@ -440,7 +429,7 @@ class TallyMigratorPage {
 			.map(
 				([label, n]) =>
 					`<span style="display:inline-block; margin:6px 8px 0 0; padding:3px 10px;
-						background:#fff; border:1px solid #d1d8dd; border-radius:12px; font-size:12px;">
+						background:var(--gray-100, #f4f5f6); border-radius:12px; font-size:12px;">
 						<strong>${n}</strong> ${label}</span>`
 			)
 			.join("");
@@ -521,12 +510,8 @@ class TallyMigratorPage {
 				const when = d.modified ? frappe.datetime.comment_when(d.modified) : "";
 				$("#resume-banner")
 					.html(`
-						<div class="alert alert-warning" style="display:flex; gap:10px; align-items:center; justify-content:space-between;">
-							<div style="font-size:13px;">
-								<strong>You have an unfinished migration.</strong>
-								File <strong>${frappe.utils.escape_html(d.file_name || d.file_url)}</strong>${when ? ` - last saved ${when}` : ""}.
-								Your fixes are saved.
-							</div>
+						<div style="display:flex; gap:10px; align-items:center; justify-content:space-between; margin-bottom:18px; background:var(--blue-100, #edf6fd); border:1px solid var(--blue-200, #e3f1fd); border-radius:8px; padding:12px 14px;">
+							${TallyMigratorPage.iconRow("info", `<div style="font-size:13px;"><strong>You have an unfinished migration.</strong> File <strong>${frappe.utils.escape_html(d.file_name || d.file_url)}</strong>${when ? ` - last saved ${when}` : ""}. Your fixes are saved.</div>`)}
 							<div style="white-space:nowrap;">
 								<button class="btn btn-primary btn-xs" id="btn-resume">Resume</button>
 								<button class="btn btn-default btn-xs" id="btn-discard">Start over</button>
@@ -667,6 +652,10 @@ class TallyMigratorPage {
 				const step = this._resumeStep;
 				this._resumeStep = null;
 				if (step === "section-review" && this.hasAccounts()) {
+					// Render the preview from the now-loaded account mapping before
+					// showing it - mirrors gotoReviewOrRun(); without this the Review
+					// section shows blank on resume.
+					this.renderAccountMapping();
 					this.show("section-review");
 				} else if (step === "section-run") {
 					this.gotoRun();
@@ -729,30 +718,29 @@ class TallyMigratorPage {
 			return;
 		}
 		const esc = frappe.utils.escape_html;
-		const row = (it, color) => `
+		const icon = TallyMigratorPage.statusIcon;
+		const row = (it, kind) => `
 			<div style="padding:4px 0; border-top:1px solid rgba(0,0,0,0.06);">
-				<div style="font-weight:600; color:${color};">${esc(it.message)}</div>
-				<div class="text-muted small">Fix: ${esc(it.fix)}</div>
+				<div style="font-weight:600; display:flex; align-items:center; gap:6px;">${icon(kind)} <span>${esc(it.message)}</span></div>
+				<div class="text-muted small" style="margin-left:22px;">Fix: ${esc(it.fix)}</div>
 			</div>`;
-		const blockers = (report.blockers || []).map((b) => row(b, "var(--red-600, #c0392b)")).join("");
-		const warnings = (report.warnings || []).map((w) => row(w, "var(--yellow-600, #b8860b)")).join("");
+		const blockers = (report.blockers || []).map((b) => row(b, "error")).join("");
+		const warnings = (report.warnings || []).map((w) => row(w, "info")).join("");
 
 		const hasBlockers = (report.blockers || []).length > 0;
-		const cls = hasBlockers ? "alert-danger" : "alert-warning";
+		const kind = hasBlockers ? "error" : "info";
 		const head = hasBlockers
-			? `<strong>✋ This company isn't ready - fix the items below before migrating.</strong>`
-			: `<strong>⚠ This company can receive masters, but some steps are degraded.</strong>`;
+			? TallyMigratorPage.iconRow("error", `<strong>This company isn't ready - fix the items below before migrating.</strong>`)
+			: TallyMigratorPage.iconRow("info", `<strong>This company can receive masters, but some steps are degraded.</strong>`);
 
-		$sec.html(`
-			<div class="alert ${cls}" style="margin:0;">
+		$sec.html(TallyMigratorPage.callout(kind, `
 				${head}
 				${blockers ? `<div style="margin-top:10px;">${blockers}</div>` : ""}
 				${warnings ? `<div style="margin-top:10px;">${warnings}</div>` : ""}
 				<div style="margin-top:10px;">
 					<button class="btn btn-xs btn-default" id="btn-recheck-readiness">Re-check</button>
 				</div>
-			</div>
-		`).show();
+		`)).show();
 
 		$("#btn-recheck-readiness").on("click", () => this.recheckReadiness());
 		$btn.prop("disabled", hasBlockers);
@@ -862,15 +850,8 @@ class TallyMigratorPage {
 		// ask the user to review, since only they know if a custom field matters.
 		if (lossCount === 0) {
 			$sec.html(`
-				<div class="alert alert-info" style="margin:0;">
-					<div style="display:flex; align-items:flex-start; gap:8px;">
-						<span>ℹ</span>
-						<div style="flex:1;">
-							<strong>All your records will import fully.</strong>
-							No fields with a place in ERPNext were left behind.
-							${redundantNote}${noiseNote}
-						</div>
-					</div>
+				<div style="margin:0; background:var(--green-100, #e4f5e9); border:1px solid var(--green-200, #daf0e1); border-radius:8px; padding:12px 14px;">
+					${TallyMigratorPage.iconRow("success", `<strong>All your records will import fully.</strong> No fields with a place in ERPNext were left behind.${redundantNote}${noiseNote}`)}
 				</div>
 			`).show();
 			return;
@@ -878,9 +859,9 @@ class TallyMigratorPage {
 
 		// Real loss: amber, expanded by default, fields named in plain language.
 		$sec.html(`
-			<div class="alert alert-warning" style="margin:0;">
+			<div style="margin:0; background:var(--blue-100, #edf6fd); border:1px solid var(--blue-200, #e3f1fd); border-radius:8px; padding:12px 14px;">
 				<div style="display:flex; align-items:flex-start; gap:8px;">
-					<span>⚠</span>
+					<span style="flex:0 0 auto; display:inline-flex; align-items:center; height:1.5em;">${TallyMigratorPage.statusIcon("info")}</span>
 					<div style="flex:1;">
 						<strong>Most of your data imports fully - but ${plur(
 							lossCount,
@@ -901,17 +882,58 @@ class TallyMigratorPage {
 		`).show();
 	}
 
+	// ── Shared status vocabulary ────────────────────────────────────────────────
+	// One icon family (filled circles) and one callout style across every step, so
+	// "good / heads-up / blocked" always look the same. Text stays black; only the
+	// background carries colour. Non-blocking notices are blue (info), never amber.
+	static statusIcon(kind) {
+		const name =
+			{ success: "solid-success", info: "solid-info", error: "solid-error" }[kind] ||
+			"solid-info";
+		return `<span style="display:inline-flex; align-items:center; vertical-align:middle;">${frappe.utils.icon(
+			name,
+			"sm"
+		)}</span>`;
+	}
+
+	// Icon + content as a row, with the 16px icon vertically centred on the FIRST
+	// line of text (not the top of a multi-line block). This is the single source
+	// of icon/text alignment for every notice, so they all line up identically.
+	static iconRow(kind, html) {
+		return `<div style="display:flex; align-items:flex-start; gap:8px;">
+			<span style="flex:0 0 auto; display:inline-flex; align-items:center; height:1.5em;">${TallyMigratorPage.statusIcon(
+				kind
+			)}</span>
+			<div style="flex:1; min-width:0;">${html}</div>
+		</div>`;
+	}
+
+	static callout(kind, inner, extraStyle = "") {
+		const t =
+			{
+				info: ["var(--blue-100, #edf6fd)", "var(--blue-200, #e3f1fd)"],
+				success: ["var(--green-100, #e4f5e9)", "var(--green-200, #daf0e1)"],
+				error: ["var(--red-100, #fff0f0)", "var(--red-200, #fcd7d7)"],
+			}[kind] || ["var(--blue-100, #edf6fd)", "var(--blue-200, #e3f1fd)"];
+		return `<div style="background:${t[0]}; border:1px solid ${t[1]}; border-radius:8px;
+			padding:12px 14px; color:var(--text-color, #1f272e);${extraStyle}">${inner}</div>`;
+	}
+
 	static get DQ_LABELS() {
 		return {
+			// Errors are real blockers - keep the plain problem framing.
 			GSTIN_INVALID: "Invalid GSTIN",
-			GST_STATE_MISSING: "GST state missing",
-			GSTIN_STATE_MISMATCH: "GSTIN / state mismatch",
-			PIN_STATE_CONFLICT: "PIN / state conflict",
-			HSN_MISSING: "HSN code missing",
 			ITEM_CODE_COLLISION: "Item code collision",
-			DUPLICATE_PARTY: "Possible duplicate party",
-			DUPLICATE_NAME: "Duplicate name (will merge)",
-			CIRCULAR_PARENT: "Circular parent hierarchy",
+			// Warnings are non-blocking - calm, outcome-first phrasing so they
+			// read as "handled, review optional" not "something is wrong".
+			GST_STATE_MISSING: "Imports without a GST state",
+			GSTIN_STATE_MISMATCH: "GSTIN and state to verify",
+			PIN_STATE_CONFLICT: "PIN and state to verify",
+			EMAIL_INVALID: "Imports without the email",
+			HSN_MISSING: "Imports without HSN",
+			DUPLICATE_PARTY: "Possible duplicate to review",
+			DUPLICATE_NAME: "Will merge into one",
+			CIRCULAR_PARENT: "Hierarchy loop simplified",
 		};
 	}
 
@@ -931,7 +953,7 @@ class TallyMigratorPage {
 			if (Object.keys(this.recordOverrides).length) {
 				$("#dq-cards").empty();
 				$("#dq-list").html(
-					`<div class="alert alert-success" style="margin:0;">✓ All flagged data issues are resolved.</div>`
+					TallyMigratorPage.callout("success", TallyMigratorPage.iconRow("success", `All flagged data issues are resolved.`))
 				);
 				$("#dq-consent").hide();
 				$("#btn-next-check").prop("disabled", false);
@@ -943,18 +965,25 @@ class TallyMigratorPage {
 		}
 
 		const esc = frappe.utils.escape_html;
-		const card = (n, label, color) => `
-			<div style="flex:1; border:1px solid #e0e6ed; border-radius:6px; padding:10px 12px; text-align:center;">
-				<div style="font-size:20px; font-weight:700; color:${color};">${n}</div>
-				<div class="text-muted small">${label}</div>
+		// Number stays in the regular text colour; the label below carries a soft
+		// colour as a background pill (green = mapped, red = errors, blue = warnings).
+		const card = (n, label, bg) => `
+			<div style="flex:1; border:1px solid #e0e6ed; border-radius:6px; padding:10px 12px;">
+				<div style="font-size:20px; font-weight:700; color:var(--text-color, #1f272e);">${n}</div>
+				<div style="margin-top:5px;">
+					<span style="display:inline-block; padding:1px 12px; border-radius:10px; font-size:12px; background:${bg};">${label}</span>
+				</div>
 			</div>`;
 		// Headline shows the number of distinct issue *types* (matching the rows
 		// below); the affected-record count is shown inside each group's row.
 		const errGroups = report.error_group_count ?? report.error_count;
 		const warnGroups = report.warning_group_count ?? report.warning_count;
+		// "Mapped" = total records read from the file (customers + suppliers + items).
+		const mapped = Object.values(report.totals || {}).reduce((a, b) => a + (b || 0), 0);
 		$("#dq-cards").html(
-			card(errGroups, "Errors", errGroups ? "var(--red-500, #e24c4c)" : "#8d99a6") +
-			card(warnGroups, "Warnings", warnGroups ? "var(--yellow-500, #f0a500)" : "#8d99a6")
+			card(mapped, "Mapped", "var(--green-200, #daf0e1)") +
+			card(errGroups, "Errors", "var(--red-200, #fcd7d7)") +
+			card(warnGroups, "Warnings", "var(--blue-200, #e3f1fd)")
 		);
 
 		const rows = report.groups.map((g, idx) => this.dqGroupHtml(g, idx)).join("");
@@ -1001,7 +1030,10 @@ class TallyMigratorPage {
 	// when the rule is fixable).
 	dqGroupHtml(g, idx) {
 		const esc = frappe.utils.escape_html;
-		const dot = g.severity === "error" ? "var(--red-500, #e24c4c)" : "var(--yellow-500, #f0a500)";
+		const isErr = g.severity === "error";
+		const glyph = isErr
+			? frappe.utils.icon("solid-error", "sm")
+			: frappe.utils.icon("solid-info", "sm");
 		const label = TallyMigratorPage.DQ_LABELS[g.code] || g.code;
 		const editable = g.editable_fields || [];
 		const items = g.items.map((it) => this.dqItemHtml(it, editable)).join("");
@@ -1011,7 +1043,7 @@ class TallyMigratorPage {
 		return `
 			<div style="${divider}">
 				<div class="dq-head" data-idx="${idx}" style="cursor:pointer; padding:8px 0; display:flex; align-items:center; gap:6px;">
-					<span style="color:${dot};" title="${g.severity === "error" ? "Error" : "Warning"}" aria-label="${g.severity === "error" ? "Error" : "Warning"}">${g.severity === "error" ? "✗" : "⚠"}</span>
+					<span style="display:inline-flex; align-items:center;">${glyph}</span>
 					<strong>${esc(label)}</strong>
 					<span class="text-muted">(${g.items.length})</span>
 					<span class="text-muted" style="margin-left:auto;" id="dq-caret-${idx}">▸</span>
@@ -1279,32 +1311,36 @@ class TallyMigratorPage {
 			esc(r.root_type) + (r.account_type ? ` · ${esc(r.account_type)}` : "");
 
 		// ── Summary cards ──────────────────────────────────────────────────────
-		const AMBER = "var(--yellow-600, #b8860b)";
-		const GREEN = "var(--green-600, #1e7e34)";
-		const card = (big, label, sub, color) => `
+		// Same card language as Step 3: regular-black number, status carried by a
+		// soft background pill (green = good, amber = worth a look, grey = none).
+		const GREEN_BG = "var(--green-200, #daf0e1)";
+		const BLUE_BG = "var(--blue-200, #e3f1fd)";
+		const GRAY_BG = "var(--gray-200, #ededed)";
+		const pill = (text, bg) => `<span style="display:inline-block; padding:1px 12px; border-radius:10px; font-size:12px; background:${bg};">${text}</span>`;
+		const card = (big, label, sub, bg) => `
 			<div style="flex:1; border:1px solid #e0e6ed; border-radius:6px; padding:10px 12px;">
 				<div class="text-muted small">${label}</div>
-				<div style="font-size:20px; font-weight:700;${color ? `color:${color};` : ""}">${big}</div>
-				<div class="small" style="color:${color || "var(--text-muted, #8d99a6)"};">${sub}</div>
+				<div style="font-size:20px; font-weight:700; color:var(--text-color, #1f272e); margin:2px 0 5px;">${big}</div>
+				<div>${pill(sub, bg)}</div>
 			</div>`;
 
 		const plugCard = plug.clean
-			? card("Balanced", "Opening balances", "✓ Dr = Cr", GREEN)
+			? card("Balanced", "Opening balances", "Dr = Cr", GREEN_BG)
 			: card(
 					`${fmt(plug.temporary_opening_plug)} ${esc(plug.plug_dr_cr)}`,
 					"Opening balances",
-					"⚠ posts to Temporary Opening",
-					AMBER
+					"posts to Temporary Opening",
+					BLUE_BG
 			  );
 
 		$("#review-summary").html(`
 			<div style="display:flex; gap:10px;">
-				${card(fmt(confident), "Mapped by standard groups", "✓ high confidence", GREEN)}
+				${card(fmt(confident), "Mapped by standard groups", "high confidence", GREEN_BG)}
 				${card(
 					fmt(inferred),
 					"We had to infer",
-					inferred ? "⚠ please check" : "none",
-					inferred ? AMBER : "var(--text-muted, #8d99a6)"
+					inferred ? "please check" : "none",
+					inferred ? BLUE_BG : GRAY_BG
 				)}
 				${plugCard}
 			</div>
@@ -1324,10 +1360,8 @@ class TallyMigratorPage {
 				)
 				.join("");
 			$("#review-exceptions").html(`
-				<div class="alert alert-warning" style="margin:0;">
-					<strong>⚠ ${fmt(inferred)} account${inferred === 1 ? "" : "s"} we inferred - please confirm.</strong>
-					These ledgers sit under a custom Tally group with no standard ancestor, so we
-					defaulted their type. Only you know if that's right - it's easy to fix the group in Tally and re-upload.
+				<div style="margin:0; background:var(--blue-100, #edf6fd); border:1px solid var(--blue-200, #e3f1fd); border-radius:8px; padding:12px 14px;">
+					${TallyMigratorPage.iconRow("info", `<strong>${fmt(inferred)} account${inferred === 1 ? "" : "s"} we inferred - please confirm.</strong> These ledgers sit under a custom Tally group with no standard ancestor, so we defaulted their type. Only you know if that's right - it's easy to fix the group in Tally and re-upload.`)}
 					<div style="margin-top:10px; border:1px solid rgba(0,0,0,0.08); border-radius:6px; overflow:hidden; background:#fff;">
 						<table class="table table-condensed" style="margin:0; font-size:13px; table-layout:fixed;">
 							${REVIEW_COLGROUP}
@@ -1346,9 +1380,8 @@ class TallyMigratorPage {
 			`);
 		} else {
 			$("#review-exceptions").html(`
-				<div class="alert alert-success" style="margin:0;">
-					<strong>✓ All ${fmt(m.total_accounts)} accounts mapped using Tally's standard groups.</strong>
-					Nothing needed guessing. Open the full list below if you'd like to review it.
+				<div style="margin:0; background:var(--green-100, #e4f5e9); border:1px solid var(--green-200, #daf0e1); border-radius:8px; padding:12px 14px;">
+					${TallyMigratorPage.iconRow("success", `<strong>All ${fmt(m.total_accounts)} accounts mapped using Tally's standard groups.</strong> Nothing needed guessing. Open the full list below if you'd like to review it.`)}
 				</div>
 			`);
 		}
@@ -1365,7 +1398,7 @@ class TallyMigratorPage {
 						<tr>
 							<td style="padding:6px 10px;">${esc(r.name)}${
 							r.inferred
-								? ` <span title="inferred" style="color:${AMBER};">⚠</span>`
+								? ` ${TallyMigratorPage.statusIcon("info")}`
 								: ""
 						}</td>
 							<td style="padding:6px 10px;" class="text-muted">${esc(r.account_type || "-")}</td>
@@ -1425,29 +1458,32 @@ class TallyMigratorPage {
 		}
 		const esc = frappe.utils.escape_html;
 		const fmt = (n) => Number(n || 0).toLocaleString("en-IN");
-		const AMBER = "var(--yellow-600, #b8860b)";
-		const GREEN = "var(--green-600, #1e7e34)";
-		const card = (big, label, sub, color) => `
+		// Same card language as Step 3: regular-black number, status carried by a
+		// soft background pill (green = good, amber = worth a look, grey = none).
+		const GREEN_BG = "var(--green-200, #daf0e1)";
+		const BLUE_BG = "var(--blue-200, #e3f1fd)";
+		const GRAY_BG = "var(--gray-200, #ededed)";
+		const pill = (text, bg) => `<span style="display:inline-block; padding:1px 12px; border-radius:10px; font-size:12px; background:${bg};">${text}</span>`;
+		const card = (big, label, sub, bg) => `
 			<div style="flex:1; border:1px solid #e0e6ed; border-radius:6px; padding:10px 12px;">
 				<div class="text-muted small">${label}</div>
-				<div style="font-size:20px; font-weight:700;${color ? `color:${color};` : ""}">${big}</div>
-				<div class="small" style="color:${color || "var(--text-muted, #8d99a6)"};">${sub}</div>
+				<div style="font-size:20px; font-weight:700; color:var(--text-color, #1f272e); margin:2px 0 5px;">${big}</div>
+				<div>${pill(sub, bg)}</div>
 			</div>`;
 
 		// Three cards: outstanding invoices, advances, and a mismatch/lump card that
 		// turns amber only when a party's bills did not tie to its ledger opening.
 		const cards = [
-			card(fmt(p.invoices), "Outstanding invoices", "one opening invoice each", GREEN),
+			card(fmt(p.invoices), "Outstanding invoices", "one opening invoice each", GREEN_BG),
 			card(
 				fmt(p.advances),
 				"Advance receipts/payments",
 				p.advances ? "one payment entry each" : "none",
-				p.advances ? null : "var(--text-muted, #8d99a6)"
+				p.advances ? GREEN_BG : GRAY_BG
 			),
 			p.on_account
-				? card(fmt(p.on_account), "Bills didn't reconcile", "⚠ posts 'On Account'", AMBER)
-				: card(fmt(p.lump), "No bill detail", p.lump ? "single opening invoice" : "none",
-						p.lump ? null : "var(--text-muted, #8d99a6)"),
+				? card(fmt(p.on_account), "Bills didn't reconcile", "posts 'On Account'", BLUE_BG)
+				: card(fmt(p.lump), "No bill detail", p.lump ? "single opening invoice" : "none", GRAY_BG),
 		].join("");
 
 		// Per-party mismatch detail: only the parties whose bills did not add up to
@@ -1468,20 +1504,17 @@ class TallyMigratorPage {
 				)
 				.join("");
 			warn = `
-				<div class="alert alert-warning" style="margin:12px 0 0;">
-					<strong>⚠ ${fmt(p.on_account)} part${p.on_account === 1 ? "y's" : "ies'"} bills didn't add up to the ledger opening.</strong>
-					The 'On Account' figure is the unreconciled gap between the party's bills and its
-					ledger opening (not the total opening) - it posts as an 'On Account' opening so the
-					party still ties to the trial balance. Review these in Tally; a bill may be missing or mis-dated.
+				<div style="margin:12px 0 0; background:var(--blue-100, #edf6fd); border:1px solid var(--blue-200, #e3f1fd); border-radius:8px; padding:12px 14px;">
+					${TallyMigratorPage.iconRow("info", `<strong>${fmt(p.on_account)} part${p.on_account === 1 ? "y's" : "ies'"} bills didn't add up to the ledger opening.</strong> The 'On Account' figure is the unreconciled gap between the party's bills and its ledger opening (not the total opening) - it posts as an 'On Account' opening so the party still ties to the trial balance. Review these in Tally; a bill may be missing or mis-dated.`)}
 					<div style="margin-top:10px; border:1px solid rgba(0,0,0,0.08); border-radius:6px; overflow:hidden; background:#fff;">
 						<table class="table table-condensed" style="margin:0; font-size:13px; table-layout:fixed;">
-							${REVIEW_COLGROUP}
+							<colgroup><col style="width:32%;"><col style="width:16%;"><col style="width:24%;"><col style="width:28%;"></colgroup>
 							<thead>
 								<tr>
 									<th style="border-top:0; padding:6px 10px;">Party</th>
 									<th style="border-top:0; padding:6px 10px;">Type</th>
-									<th style="border-top:0; padding:6px 10px; text-align:right;">Ledger opening</th>
-									<th style="border-top:0; padding:6px 10px; text-align:right;">On Account (gap)</th>
+									<th style="border-top:0; padding:6px 10px; text-align:right; white-space:nowrap;">Ledger opening</th>
+									<th style="border-top:0; padding:6px 10px; text-align:right; white-space:nowrap;">On Account (gap)</th>
 								</tr>
 							</thead>
 							<tbody>${rows}</tbody>
@@ -1499,7 +1532,7 @@ class TallyMigratorPage {
 					? `${fmt(r.amount)} ${esc(r.dr_cr || "")}`.trim()
 					: "-";
 				const flag = r.on_account
-					? ` <span title="posts On Account" style="color:${AMBER};">⚠</span>`
+					? ` ${TallyMigratorPage.statusIcon("info")}`
 					: "";
 				return `
 					<tr>
@@ -1758,27 +1791,27 @@ class TallyMigratorPage {
 
 		// Headline - three states so non-fatal drops (addresses, contacts, opening
 		// balances, excluded ledgers) are never hidden behind a green "All done".
-		let headlineClass = "alert-success";
-		let headlineMsg = `✓ All done! <strong>${totalCreated}</strong> new record${
+		let headlineKind = "success";
+		let headlineMsg = `All done! <strong>${totalCreated}</strong> new record${
 			totalCreated === 1 ? "" : "s"
 		} imported into ERPNext.`;
 		if (hasErrors) {
-			headlineClass = "alert-warning";
+			headlineKind = "error";
 			headlineMsg =
-				"⚠ Migration finished - most records imported, but some need your attention (see Failed below).";
+				"Migration finished - most records imported, but some need your attention (see Failed below).";
 		} else if (totalWarnings) {
-			headlineClass = "alert-warning";
-			headlineMsg = `✓ <strong>${totalCreated}</strong> record${
+			headlineKind = "info";
+			headlineMsg = `<strong>${totalCreated}</strong> record${
 				totalCreated === 1 ? "" : "s"
 			} imported, but <strong>${totalWarnings}</strong> warning${
 				totalWarnings === 1 ? "" : "s"
 			} need a look - some dependent data (e.g. an address, contact, or opening balance) was dropped. See Warnings below and the migration log.`;
 		}
-		let html = `<div class="alert ${headlineClass}">${headlineMsg}</div>`;
+		let html = TallyMigratorPage.callout(headlineKind, TallyMigratorPage.iconRow(headlineKind, `${headlineMsg}`));
 
 		// Results table
 		html += `
-			<table class="table table-bordered table-condensed" style="margin-top:12px;">
+			<table class="table table-condensed" style="margin-top:12px;">
 				<thead>
 					<tr>
 						<th>Record type</th>
@@ -1794,15 +1827,15 @@ class TallyMigratorPage {
 			html += `
 				<tr>
 					<td>${label}</td>
-					<td class="text-right text-success"><strong>${result.created}</strong></td>
+					<td class="text-right"><strong>${result.created}</strong></td>
 					<td class="text-right text-muted">${result.skipped}</td>
-					<td class="text-right ${warned > 0 ? "text-warning" : "text-muted"}"
+					<td class="text-right ${warned > 0 ? "" : "text-muted"}"
 						${warned > 0 ? `title="${warned} warning${warned === 1 ? "" : "s"}" aria-label="${warned} warnings"` : ""}>
-						${warned > 0 ? `<strong>⚠ ${warned}</strong>` : warned}
+						${warned > 0 ? `<span style="display:inline-flex; align-items:center; gap:4px; justify-content:flex-end;">${TallyMigratorPage.statusIcon("info")}<strong>${warned}</strong></span>` : warned}
 					</td>
-					<td class="text-right ${result.failed > 0 ? "text-danger" : "text-muted"}"
+					<td class="text-right ${result.failed > 0 ? "" : "text-muted"}"
 						${result.failed > 0 ? `title="${result.failed} failed" aria-label="${result.failed} failed"` : ""}>
-						${result.failed > 0 ? `<strong>✗ ${result.failed}</strong>` : result.failed}
+						${result.failed > 0 ? `<span style="display:inline-flex; align-items:center; gap:4px; justify-content:flex-end;">${TallyMigratorPage.statusIcon("error")}<strong>${result.failed}</strong></span>` : result.failed}
 					</td>
 				</tr>`;
 		}

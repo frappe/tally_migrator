@@ -292,7 +292,7 @@ def _validate_party(rec: dict, entity_type: str, report: ValidationReport) -> No
                 report.add(ValidationIssue(
                     entity_type, name, WARNING, "GSTIN_STATE_MISMATCH",
                     f"GSTIN state code maps to {code_state} but ledger state is {state}.",
-                    "Verify the party's state - wrong state flips CGST/SGST vs IGST."))
+                    "Worth a quick check; the wrong state flips CGST/SGST vs IGST."))
 
     # GST state: it lives on the party's *address* and is used at invoicing time to
     # decide CGST/SGST vs IGST - it is NOT required to create the Customer/Supplier,
@@ -306,15 +306,15 @@ def _validate_party(rec: dict, entity_type: str, report: ValidationReport) -> No
                 entity_type, name, WARNING, "GST_STATE_MISSING",
                 "No GST state - the party imports fine, but set one so its GST "
                 "invoices compute CGST/SGST vs IGST correctly.",
-                "Fill the state here, or set it in Tally. (Auto-filled when the "
-                "party has a valid GSTIN.)"))
+                "Add a state for accurate CGST/SGST vs IGST, or leave it - the "
+                "party still imports."))
 
     expected = pin_state_conflict(pin, state)
     if expected:
         report.add(ValidationIssue(
             entity_type, name, WARNING, "PIN_STATE_CONFLICT",
             f"PIN {pin} looks like {expected}, but state is {state}.",
-            "Check whether the PIN or the state is the typo."))
+            "Worth a check - the PIN or the state may be a typo."))
 
     # A malformed email migrates fine on the party itself, but ERPNext rejects it
     # when the party's Contact is built (where the address/phone/email land), so the
@@ -325,8 +325,8 @@ def _validate_party(rec: dict, entity_type: str, report: ValidationReport) -> No
         report.add(ValidationIssue(
             entity_type, name, WARNING, "EMAIL_INVALID",
             f"Email '{email}' is not a valid address.",
-            "Correct the email in Tally, or clear it so the party still imports "
-            "with its other contact details."))
+            "Fix or clear the email; the party imports with its other "
+            "contact details either way."))
 
 
 def _validate_items(items: list[dict], report: ValidationReport) -> None:
@@ -339,7 +339,7 @@ def _validate_items(items: list[dict], report: ValidationReport) -> None:
                 "Item", name, WARNING, "HSN_MISSING",
                 "No HSN/SAC code - the item will still be imported without an HSN, "
                 "but GST invoices for it won't be compliant until you add one.",
-                "Add the HSN code here now, or set it in Tally / ERPNext later."))
+                "Add an HSN when you're ready - needed only for GST-compliant invoices."))
         code = safe_item_code(name)
         if code in seen_codes:
             report.add(ValidationIssue(
@@ -360,7 +360,7 @@ def _validate_duplicates(parties: list[dict], report: ValidationReport,
             report.add(ValidationIssue(
                 entity_of.get(dupe, "Customer"), dupe, WARNING, "DUPLICATE_PARTY",
                 f"Looks like a duplicate of '{primary}'.",
-                "Merge in Tally, or pick one survivor before migrating."))
+                "Merge if it's the same party, or leave it as is."))
 
 
 def _validate_name_collisions(masters, report: ValidationReport) -> None:
@@ -389,7 +389,7 @@ def _validate_name_collisions(masters, report: ValidationReport) -> None:
                     entity_type, original, WARNING, "DUPLICATE_NAME",
                     f"Another {entity_type} named '{seen[key]}' is already in this file - "
                     "they will merge into one record on import.",
-                    "Rename one in Tally before migrating, or accept the merge."))
+                    "They merge into one record - rename in Tally first if that's not intended."))
             else:
                 seen[key] = original
 
@@ -435,7 +435,7 @@ def _validate_hierarchy(masters, coa, report: ValidationReport) -> None:
                 entity_type, name, WARNING, "CIRCULAR_PARENT",
                 "This record's parent chain forms a loop - its hierarchy can't be "
                 "built faithfully.",
-                "Fix the parent in Tally so the tree has no cycles."))
+                "Fix the parent loop in Tally if the hierarchy matters to you."))
 
 
 def validate_masters(masters, report: ValidationReport | None = None, coa=None) -> ValidationReport:
