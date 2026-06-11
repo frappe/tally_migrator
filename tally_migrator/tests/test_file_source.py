@@ -167,6 +167,51 @@ class TestRealTallyTags(unittest.TestCase):
         self.assertEqual(item["StandardCost"], "72.00")
 
 
+# A real Tally Prime export nests the ledger's bank account under PAYMENTDETAILS.LIST
+# (ACCOUNTNUMBER / IFSCODE / BANKNAME), not the older flat <BANKDETAILS> tag. Before
+# the nested path was mapped, every such party's bank account silently dropped.
+BANK_NESTED_XML = """<ENVELOPE>
+  <BODY><IMPORTDATA><REQUESTDATA>
+    <TALLYMESSAGE>
+      <LEDGER NAME="Cleavland Wears"><PARENT>Sundry Debtors</PARENT>
+        <PAYMENTDETAILS.LIST>
+          <IFSCODE>KOTK006777</IFSCODE>
+          <BANKNAME>Kotak Bank</BANKNAME>
+          <ACCOUNTNUMBER>723801504492</ACCOUNTNUMBER>
+        </PAYMENTDETAILS.LIST></LEDGER>
+    </TALLYMESSAGE>
+    <TALLYMESSAGE>
+      <LEDGER NAME="Flat Shape Co"><PARENT>Sundry Debtors</PARENT>
+        <BANKDETAILS>999888777</BANKDETAILS>
+        <IFSCODE>HDFC0000001</IFSCODE></LEDGER>
+    </TALLYMESSAGE>
+  </REQUESTDATA></IMPORTDATA></BODY>
+</ENVELOPE>"""
+
+
+class TestBankDetails(unittest.TestCase):
+    """Bank account is read from the nested PAYMENTDETAILS.LIST shape AND the older
+    flat tags, so either export populates the ERPNext Bank Account."""
+
+    def setUp(self):
+        from tally_migrator.tally.extractors import LEDGER_TAGS
+        self.source = FileTallySource(BANK_NESTED_XML)
+        self.rows = {
+            r["_name"]: r for r in self.source.get_collection(
+                "Ledger", ["BankAccountNo", "BankIFSC", "BankName"], LEDGER_TAGS)}
+
+    def test_nested_payment_details_bank_account_is_read(self):
+        row = self.rows["Cleavland Wears"]
+        self.assertEqual(row["BankAccountNo"], "723801504492")
+        self.assertEqual(row["BankIFSC"], "KOTK006777")
+        self.assertEqual(row["BankName"], "Kotak Bank")
+
+    def test_flat_bank_shape_still_read(self):
+        row = self.rows["Flat Shape Co"]
+        self.assertEqual(row["BankAccountNo"], "999888777")
+        self.assertEqual(row["BankIFSC"], "HDFC0000001")
+
+
 # A faithful slice of a genuine Tally Prime *export*: party mailing + GST details
 # nested in LEDMAILINGDETAILS.LIST / LEDGSTREGDETAILS.LIST, and a Tally ``&#4;``
 # illegal control-char reference (it prefixes "Not Applicable" values). Modelled on

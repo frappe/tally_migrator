@@ -62,12 +62,19 @@ LEDGER_TAGS = {
     "GSTRegistrationNumber": [f"{_GSTREG}/GSTIN", "GSTREGISTRATIONNUMBER", "PARTYGSTIN"],
     "GSTRegistrationType":   [f"{_GSTREG}/GSTREGISTRATIONTYPE", "GSTREGISTRATIONTYPE"],
     "LedgerContact": ["LEDGERCONTACT", "CONTACTPERSON"],
-    # Bank details - flat tags on the party ledger in a real export.
-    "BankAccountNo":     ["BANKDETAILS"],
-    "BankIFSC":          ["IFSCODE"],
+    # Bank details. A real Tally Prime export nests the account under
+    # PAYMENTDETAILS.LIST (ACCOUNTNUMBER / IFSCODE / BANKNAME); the flat tags are an
+    # older/alternative shape some ledgers still use. Try the nested path first, then
+    # the flat fallback, so either export shape populates the ERPNext Bank Account.
+    # (Confirmed against real exports: the nested shape carried 0 bank fields through
+    # before this - every party's bank account silently dropped.) A ledger with more
+    # than one PAYMENTDETAILS.LIST entry yields the last; multi-bank parties are rare
+    # and ERPNext stores one account here.
+    "BankAccountNo":     ["PAYMENTDETAILS.LIST/ACCOUNTNUMBER", "BANKDETAILS"],
+    "BankIFSC":          ["PAYMENTDETAILS.LIST/IFSCODE", "IFSCODE"],
     "BankAccountHolder": ["BANKACCHOLDERNAME"],
     "BankBranch":        ["BRANCHNAME"],
-    "BankName":          ["BANKINGCONFIGBANK"],
+    "BankName":          ["PAYMENTDETAILS.LIST/BANKNAME", "BANKINGCONFIGBANK"],
 }
 
 ITEM_TAGS = {
