@@ -9,7 +9,9 @@ def _result(doctype, created=0, skipped=0, errors=(), created_names=(), warnings
     r = ImportResult(doctype)
     r.created = created
     r.skipped = skipped
-    r.created_names = list(created_names)
+    for nm in created_names:
+        r.created_names.append(nm)
+        r.created_docs.append({"name": nm, "doctype": doctype})
     for name, reason in errors:
         r.add_error(name, reason)
     for name, reason in warnings:
@@ -98,7 +100,9 @@ class TestMigrationSummary(unittest.TestCase):
         )
         cr = s.created_records()
         self.assertEqual(set(cr), {"Warehouses", "Customers", "Items"})
-        self.assertEqual(cr["Customers"], ["Acme", "Bolt"])
+        # Each entry is {name, doctype} so the log can deep-link it.
+        self.assertEqual([d["name"] for d in cr["Customers"]], ["Acme", "Bolt"])
+        self.assertTrue(all(d["doctype"] == "Customer" for d in cr["Customers"]))
         self.assertNotIn("Suppliers", cr)
 
     def test_add_created_increments_and_records_name(self):
@@ -106,6 +110,14 @@ class TestMigrationSummary(unittest.TestCase):
         r.add_created("ACC-JV-0001")
         self.assertEqual(r.created, 1)
         self.assertEqual(r.created_names, ["ACC-JV-0001"])
+        self.assertEqual(r.created_docs, [{"name": "ACC-JV-0001", "doctype": "Journal Entry"}])
+
+    def test_add_created_uses_explicit_doctype_when_given(self):
+        # A heterogeneous importer (party openings, bank accounts) tags the real
+        # doctype, not the result's label.
+        r = ImportResult("Opening Invoice")
+        r.add_created("ABC/1", "Sales Invoice")
+        self.assertEqual(r.created_docs, [{"name": "ABC/1", "doctype": "Sales Invoice"}])
 
     def test_error_records_empty_when_clean(self):
         s = _summary(_result("Warehouse", created=1), _result("Customer", created=2), _result("Supplier"), _result("Item"))

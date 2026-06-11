@@ -61,11 +61,17 @@ class ImportResult:
     # "what did this run touch" record (incl. the opening JE / Stock Reconciliation),
     # so a migration can be reviewed or reversed by inspection.
     created_names: list[str] = field(default_factory=list)
+    # Same docs, each tagged with its real ERPNext doctype, so the migration log can
+    # deep-link them. A single importer can create more than one doctype (party
+    # openings -> Sales/Purchase Invoice + Payment Entry; an account -> its Bank
+    # Account), so the doctype can't be inferred from the importer's label alone.
+    created_docs: list[dict] = field(default_factory=list)
 
-    def add_created(self, name: str) -> None:
+    def add_created(self, name: str, doctype: str = "") -> None:
         self.created += 1
         if name:
             self.created_names.append(name)
+            self.created_docs.append({"name": name, "doctype": doctype or self.doctype})
 
     def add_error(self, name: str, reason) -> None:
         self.errors.append({"name": name, "reason": str(reason)})
@@ -275,7 +281,7 @@ def _insert_bank_account(*, account_name: str, bank: str, account_no: str,
         ba.insert(ignore_permissions=True)
         frappe.db.commit()
         if count_created:
-            result.add_created(ba.name)
+            result.add_created(ba.name, "Bank Account")
         return ba.name
     except Exception as exc:
         frappe.log_error(f"Bank account save failed for {warn_name}: {exc}", "Tally Migrator")
@@ -1600,11 +1606,18 @@ class PartyOpeningImporter:
     posted and skips exactly those, so "fix and re-run" fills gaps without
     double-posting.
 
+    The Tally bill id (BILLALLOCATIONS.LIST/NAME) names the ERPNext opening invoice
+    (``insert(set_name=...)``), exactly like ERPNext's Opening Invoice Creation Tool's
+    "invoice number from the previous system", so the document id reconciles directly
+    against the Tally invoice. For Purchase it is also kept in ``bill_no`` (Supplier
+    Invoice No). A bill id that collides with an existing document falls back to
+    auto-naming with a warning, so an opening is never lost to an id clash.
+
     Posting date is the migration opening date (not the original bill date): an
     opening invoice backdated into a year with no Fiscal Year record would be
-    rejected, so the original bill date is preserved in ``bill_no``/``bill_date``
-    (Purchase) or ``remarks`` (Sales) instead. Single-currency only (v1); a
-    foreign-currency party is handled by the ledger-level fallback upstream.
+    rejected, so the original bill date is preserved in ``bill_date`` (Purchase) and
+    the remarks marker. Single-currency only (v1); a foreign-currency party is
+    handled by the ledger-level fallback upstream.
     """
 
     _MARKER = "Tally opening"          # remarks prefix → idempotency key
@@ -1669,8 +1682,12 @@ class PartyOpeningImporter:
             bills_signed = 0.0
             for b in party_bills:
                 bills_signed += self._signed(b.amount, b.dr_cr)
+                # real_bill: this carries a genuine Tally bill reference (not the lump
+                # 'Opening'/'On Account' plug below), so the opening invoice is named
+                # after it for direct reconciliation against the Tally invoice id.
                 self._emit(party_type, party, tally_name, self._signed(b.amount, b.dr_cr),
-                           b.bill_no, b.bill_date, b.is_advance, seen, result)
+                           b.bill_no, b.bill_date, b.is_advance, seen, result,
+                           real_bill=True)
 
             residual = round(ledger_signed - bills_signed, 2)
             if abs(residual) >= self._PLUG_THRESHOLD:
@@ -1690,7 +1707,7 @@ class PartyOpeningImporter:
     # ── Per-bill emission ─────────────────────────────────────────────────────
     def _emit(self, party_type: str, party: str, tally_name: str, signed: float,
               bill_no: str, bill_date: str, is_advance: bool,
-              seen: set, result: ImportResult) -> None:
+              seen: set, result: ImportResult, real_bill: bool = False) -> None:
         amount = abs(signed)
         if amount < self._PLUG_THRESHOLD:
             return
@@ -1702,19 +1719,56 @@ class PartyOpeningImporter:
         try:
             if kind == "advance":
                 data = self._advance_dict(party_type, party, amount, bill_no, marker)
+                set_name = None
             else:
                 data = self._invoice_dict(
                     party_type, party, amount, bill_no, bill_date, marker)
-            doc = frappe.get_doc(data)
-            doc.flags.ignore_mandatory = True
-            doc.insert(ignore_permissions=True)
+                # Name the opening invoice after the Tally bill id, exactly like
+                # ERPNext's own Opening Invoice Creation Tool (invoice_number ->
+                # set_name): the ERPNext document id then IS the previous-system
+                # invoice id, so a future payment / report reconciles against the
+                # Tally invoice directly. Only for a genuine bill reference, never the
+                # 'Opening'/'On Account' lump plug.
+                set_name = bill_no if real_bill else None
+            doc = self._insert_invoice(data, set_name, tally_name, bill_no, result)
             doc.submit()
             frappe.db.commit()
             seen.add(marker)
-            result.add_created(doc.name)
+            # Real doctype (Sales/Purchase Invoice or Payment Entry), not the
+            # "Opening Invoice" label, so the log can deep-link each document.
+            result.add_created(doc.name, doc.doctype)
         except Exception as exc:
             frappe.db.rollback()
             result.add_error(f"{tally_name} | {bill_no}", exc)
+
+    def _insert_invoice(self, data: dict, set_name, tally_name: str, bill_no: str,
+                        result: ImportResult):
+        """Insert the opening document, naming it after the Tally bill id when given.
+
+        A bill id can collide across parties (two ledgers each carrying a 'Bill 1'),
+        and ERPNext document ids are global, so a clash would otherwise fail the whole
+        opening. On a duplicate we fall back to auto-naming so the opening still posts
+        - the Tally id stays recoverable (Purchase 'Supplier Invoice No' + the remarks
+        marker) - and flag that it could not be used as the document id."""
+        doc = frappe.get_doc(data)
+        doc.flags.ignore_mandatory = True
+        if not set_name:
+            doc.insert(ignore_permissions=True)
+            return doc
+        try:
+            doc.insert(ignore_permissions=True, set_name=set_name)
+            return doc
+        except frappe.DuplicateEntryError:
+            frappe.db.rollback()
+            result.add_warning(
+                tally_name,
+                f"opening invoice could not use the Tally bill id '{bill_no}' as its "
+                "ERPNext id (already in use); it was auto-named instead. Reconcile via "
+                "the Supplier Invoice No / remarks.")
+            doc = frappe.get_doc(data)
+            doc.flags.ignore_mandatory = True
+            doc.insert(ignore_permissions=True)
+            return doc
 
     @staticmethod
     def _classify(party_type: str, signed: float, is_advance: bool) -> str:

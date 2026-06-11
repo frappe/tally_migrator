@@ -227,13 +227,14 @@ function render_reconciliation(frm) {
 				: "";
 			const erpDr = avail && row.has_erpnext ? dr(row.erpnext) : "";
 			const erpCr = avail && row.has_erpnext ? cr(row.erpnext) : "";
+			const nw = "vertical-align:top; white-space:nowrap;";
 			return `
 				<tr>
-					<td style="font-weight:600; white-space:nowrap;">${esc(row.label)}${note}</td>
-					<td class="text-right" style="vertical-align:top;">${dr(row.source)}</td>
-					<td class="text-right" style="vertical-align:top;">${cr(row.source)}</td>
-					<td class="text-right text-muted" style="vertical-align:top;">${erpDr}</td>
-					<td class="text-right text-muted" style="vertical-align:top;">${erpCr}</td>
+					<td style="font-weight:600; word-break:break-word;">${esc(row.label)}${note}</td>
+					<td class="text-right" style="${nw}">${dr(row.source)}</td>
+					<td class="text-right" style="${nw}">${cr(row.source)}</td>
+					<td class="text-right text-muted" style="${nw}">${erpDr}</td>
+					<td class="text-right text-muted" style="${nw}">${erpCr}</td>
 					<td class="text-center" style="vertical-align:top;">${stat}</td>
 				</tr>`;
 		})
@@ -257,21 +258,27 @@ function render_reconciliation(frm) {
 		: "";
 
 	wrapper.html(`
-		<div style="border:1px solid #e0e6ed; border-radius:8px; padding:12px 16px; margin:8px 0;">
+		<div style="border:1px solid #e0e6ed; border-radius:8px; padding:12px 16px; margin:8px 0; max-width:100%; overflow:hidden;">
 			<div class="small" style="margin-bottom:8px; color:${v.color};">${v.text}</div>
-			<table class="table table-condensed" style="margin:0;">
+			<table class="table table-condensed" style="margin:0; width:100%; table-layout:fixed; font-size:12px;">
+				<colgroup>
+					<col style="width:24%;">
+					<col style="width:16%;"><col style="width:16%;">
+					<col style="width:16%;"><col style="width:16%;">
+					<col style="width:6%;">
+				</colgroup>
 				<thead>
 					<tr>
-						<th style="border-top:0;" rowspan="2" class="text-muted small">Account class</th>
+						<th style="border-top:0; word-break:break-word;" rowspan="2" class="text-muted">Account class</th>
 						<th style="border-top:0;" colspan="2" class="text-center">Tally</th>
 						<th style="border-top:0;" colspan="2" class="text-center text-muted">ERPNext</th>
 						<th style="border-top:0;" rowspan="2"></th>
 					</tr>
 					<tr>
-						<th class="text-right small" style="border-top:0;">Dr</th>
-						<th class="text-right small" style="border-top:0;">Cr</th>
-						<th class="text-right small text-muted" style="border-top:0;">Dr</th>
-						<th class="text-right small text-muted" style="border-top:0;">Cr</th>
+						<th class="text-right" style="border-top:0;">Dr</th>
+						<th class="text-right" style="border-top:0;">Cr</th>
+						<th class="text-right text-muted" style="border-top:0;">Dr</th>
+						<th class="text-right text-muted" style="border-top:0;">Cr</th>
 					</tr>
 				</thead>
 				<tbody>${rows}</tbody>
@@ -320,9 +327,13 @@ function render_created(frm) {
 
 	const blocks = entries
 		.map(([label, names]) => {
-			const dt = CREATED_DOCTYPE[label];
 			const links = names
-				.map((nm) => {
+				.map((item) => {
+					// New logs store {name, doctype}; old logs store a bare name string
+					// (linked via the label map). A doctype on the item wins, because
+					// one label can hold several doctypes (party openings, bank accounts).
+					const nm = typeof item === "string" ? item : item.name;
+					const dt = (typeof item === "object" && item.doctype) || CREATED_DOCTYPE[label];
 					const safe = esc(nm);
 					return dt
 						? `<a href="/app/${encodeURIComponent(

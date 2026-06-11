@@ -378,9 +378,9 @@ class TestPartyOpeningOrchestration(unittest.TestCase):
         captured = []
 
         def fake_emit(pt, party, tally_name, signed, bill_no, bill_date,
-                      is_advance, seen, result):
+                      is_advance, seen, result, real_bill=False):
             captured.append({"signed": round(signed, 2), "bill_no": bill_no,
-                             "is_advance": is_advance})
+                             "is_advance": is_advance, "real_bill": real_bill})
 
         with mock.patch.object(imp, "_emit", side_effect=fake_emit), \
                 mock.patch.object(imp, "_is_foreign_currency_party", return_value=False), \
@@ -398,6 +398,7 @@ class TestPartyOpeningOrchestration(unittest.TestCase):
             {"ABC": bills})
         self.assertEqual(len(captured), 3)
         self.assertEqual({c["bill_no"] for c in captured}, {"ABC/1", "ABC/2", "ABC/3"})
+        self.assertTrue(all(c["real_bill"] for c in captured))   # named after Tally id
         self.assertEqual(result.warned, 0)
 
     def test_no_bill_party_emits_single_lump_no_warning(self):
@@ -405,6 +406,7 @@ class TestPartyOpeningOrchestration(unittest.TestCase):
             [{"_name": "Solo", "OpeningBalance": "-8000"}], "Customer", {})
         self.assertEqual(len(captured), 1)
         self.assertEqual(captured[0]["bill_no"], "Opening")     # lump label
+        self.assertFalse(captured[0]["real_bill"])              # not a Tally bill id
         self.assertEqual(captured[0]["signed"], 8000.0)         # Dr receivable
         self.assertEqual(result.warned, 0)                      # normal, not a gap
 
@@ -510,6 +512,49 @@ class TestPartyOpeningEmit(unittest.TestCase):
                       set(), result)
         get_doc.assert_not_called()
         self.assertEqual(result.created, 0)
+
+    def test_real_bill_names_invoice_after_tally_id(self):
+        # The opening invoice is named after the Tally bill id (set_name), so the
+        # ERPNext document id reconciles directly against the Tally invoice.
+        imp, result = self._imp(), ImportResult("Opening Invoice")
+        doc = mock.Mock()
+        doc.name = "ABC/1"
+        with mock.patch.object(imp, "_invoice_dict", return_value={"doctype": "Sales Invoice"}), \
+                mock.patch("frappe.get_doc", return_value=doc), \
+                mock.patch("frappe.db.commit"):
+            imp._emit("Customer", "CUST", "ABC", 3000.0, "ABC/1", "2020-03-10",
+                      False, set(), result, real_bill=True)
+        doc.insert.assert_called_once_with(ignore_permissions=True, set_name="ABC/1")
+        self.assertEqual(result.created, 1)
+
+    def test_lump_opening_is_not_named_after_a_bill(self):
+        # The lump 'Opening' plug is not a real bill id, so it auto-names.
+        imp, result = self._imp(), ImportResult("Opening Invoice")
+        doc = mock.Mock()
+        doc.name = "ACC-SINV-0001"
+        with mock.patch.object(imp, "_invoice_dict", return_value={"doctype": "Sales Invoice"}), \
+                mock.patch("frappe.get_doc", return_value=doc), \
+                mock.patch("frappe.db.commit"):
+            imp._emit("Customer", "CUST", "Solo", 8000.0, "Opening", "2026-04-01",
+                      False, set(), result, real_bill=False)
+        doc.insert.assert_called_once_with(ignore_permissions=True)
+
+    def test_duplicate_bill_id_falls_back_to_autoname_with_warning(self):
+        # Two parties sharing a bill id: the second can't reuse it as the document id,
+        # so it auto-names and warns rather than losing the opening.
+        imp, result = self._imp(), ImportResult("Opening Invoice")
+        clash = mock.Mock()
+        clash.insert.side_effect = frappe.DuplicateEntryError("dup")
+        fallback = mock.Mock()
+        fallback.name = "ACC-SINV-0002"
+        with mock.patch.object(imp, "_invoice_dict", return_value={"doctype": "Sales Invoice"}), \
+                mock.patch("frappe.get_doc", side_effect=[clash, fallback]), \
+                mock.patch("frappe.db.commit"), mock.patch("frappe.db.rollback"):
+            imp._emit("Customer", "CUST", "ABC", 3000.0, "Bill 1", "2020-03-10",
+                      False, set(), result, real_bill=True)
+        fallback.insert.assert_called_once_with(ignore_permissions=True)
+        self.assertEqual(result.created, 1)
+        self.assertEqual(result.warned, 1)
 
 
 class TestPartyOpeningDocBuilders(unittest.TestCase):

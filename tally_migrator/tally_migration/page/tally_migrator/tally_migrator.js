@@ -166,10 +166,10 @@ class TallyMigratorPage {
 					<div id="dq-section" style="display:none; margin-bottom:18px;">
 						<div id="dq-cards" style="display:flex; gap:10px; margin-bottom:12px;"></div>
 						<div id="dq-list"></div>
-						<div id="dq-consent" style="display:none; margin-top:12px;" class="alert alert-danger">
+						<div id="dq-consent" style="display:none; margin-top:12px;" class="alert alert-info">
 							<label style="margin:0; font-weight:400; cursor:pointer;">
 								<input type="checkbox" id="dq-consent-check" />
-								&nbsp;I understand some records have errors and will fail to import. Continue and migrate the rest &mdash; you can always fix the remaining records and re-import them from the Tally Migration Log later.
+								&nbsp;Some records have errors and won't import. Continue with the rest - I can fix and re-import them later from the Migration Log.
 							</label>
 						</div>
 					</div>

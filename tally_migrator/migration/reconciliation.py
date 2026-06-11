@@ -36,10 +36,19 @@ from tally_migrator.tally.extractors import TallyExtractor
 # A difference below this (currency units) is rounding noise, not a real variance.
 _TOLERANCE = 1.0
 
-# ERPNext root types in trial-balance reading order, with display labels.
-_ROOT_ORDER = ["Asset", "Liability", "Equity", "Income", "Expense"]
-_ROOT_LABEL = {"Asset": "Assets", "Liability": "Liabilities", "Equity": "Equity",
-               "Income": "Income", "Expense": "Expense"}
+# Trial-balance classes in reading order, with display labels. Liability and Equity
+# are merged into one "Liabilities & Equity" row on purpose: Tally and ERPNext
+# disagree on where owner's capital sits (Tally treats it as Equity, several ERPNext
+# charts root it under Liabilities), so comparing them as separate rows produces a
+# false mismatch. The balance-sheet identity (Assets = Liabilities + Equity) holds
+# either way, so the merged row reconciles regardless of that taxonomy difference.
+_CLASS_ORDER = ["Asset", "LiabEquity", "Income", "Expense"]
+_CLASS_LABEL = {"Asset": "Assets", "LiabEquity": "Liabilities & Equity",
+                "Income": "Income", "Expense": "Expense"}
+
+
+def _class_of(root_type: str) -> str:
+    return "LiabEquity" if root_type in ("Liability", "Equity") else root_type
 
 
 def _to_float(v) -> float:
@@ -71,11 +80,12 @@ def _signed_of(side) -> float:
 
 def source_totals(coa, masters) -> dict:
     """The opening trial balance as Tally states it (extracted masters + COA)."""
-    by_root: dict[str, float] = {r: 0.0 for r in _ROOT_ORDER}
+    by_class: dict[str, float] = {c: 0.0 for c in _CLASS_ORDER}
     for a in coa.accounts:
         if a.is_group or not a.opening_balance:
             continue
-        by_root[a.root_type] = by_root.get(a.root_type, 0.0) + _signed(
+        cls = _class_of(a.root_type)
+        by_class[cls] = by_class.get(cls, 0.0) + _signed(
             a.opening_balance, a.opening_dr_cr)
 
     cust_net = 0.0
@@ -106,11 +116,11 @@ def source_totals(coa, masters) -> dict:
     # Temporary Opening is the contra for every opening posting, so it ends holding
     # the negative of (ledger accounts + parties + stock) - exactly Tally's own
     # opening difference. With it included, the whole trial balance nets to zero.
-    temp_net = -(sum(by_root.values()) + cust_net + supp_net + stock_value)
+    temp_net = -(sum(by_class.values()) + cust_net + supp_net + stock_value)
     return {
         "classes": [
-            {"root": r, "label": _ROOT_LABEL[r], "side": _side(by_root[r])}
-            for r in _ROOT_ORDER if abs(by_root[r]) >= 0.005
+            {"root": c, "label": _CLASS_LABEL[c], "side": _side(by_class[c])}
+            for c in _CLASS_ORDER if abs(by_class[c]) >= 0.005
         ],
         "receivables": _side(cust_net),   # customers net Dr (Debtors control)
         "payables": _side(supp_net),      # suppliers net Cr (Creditors control)
@@ -137,23 +147,29 @@ def erpnext_totals(company: str, abbr: str) -> dict:
         temp_acc = f"Temporary Opening - {abbr}"
         return {
             "available": True,
-            "classes": _gl_by_root(company, {rec_acc, pay_acc, temp_acc}),
-            "receivables": _gl_net(company, rec_acc) if rec_acc else None,
-            "payables": _gl_net(company, pay_acc) if pay_acc else None,
+            "classes": _gl_by_class(company, {rec_acc, pay_acc, temp_acc}),
+            # Read the FULL control-account balance, not just is_opening rows: a party
+            # advance / on-account opening posts as a Payment Entry, whose GL is NOT
+            # flagged is_opening, so an is_opening-only read would overstate
+            # receivables/payables (gross invoices, missing the advance offset). The
+            # account's net balance right after migration is the true opening figure.
+            "receivables": _account_balance(company, rec_acc) if rec_acc else None,
+            "payables": _account_balance(company, pay_acc) if pay_acc else None,
             "stock": {"amount": _stock_value(company), "dr_cr": "Dr"},
-            "temporary_opening": _gl_net(company, temp_acc),
+            "temporary_opening": _account_balance(company, temp_acc),
         }
     except Exception:
         return {"available": False}
 
 
-def _gl_by_root(company: str, exclude: set) -> dict:
-    """Ledger account classes from the opening Journal Entry's GL, by root_type.
+def _gl_by_class(company: str, exclude: set) -> dict:
+    """Ledger account classes from the opening Journal Entry's GL, by merged class.
 
     Restricted to ``voucher_type='Journal Entry'`` opening entries (the opening JE),
     so party invoices and the stock reconciliation are excluded - those are reported
     on their own lines. The receivable / payable / Temporary Opening control accounts
-    are excluded too (also shown separately)."""
+    are excluded too. Liability and Equity are merged (see _class_of) so the capital
+    taxonomy difference between Tally and ERPNext does not read as a mismatch."""
     import frappe
 
     rows = frappe.get_all(
@@ -166,18 +182,22 @@ def _gl_by_root(company: str, exclude: set) -> dict:
         if r.account in exclude:
             continue
         root = frappe.get_cached_value("Account", r.account, "root_type") or "Asset"
-        nets[root] = nets.get(root, 0.0) + (r.debit or 0) - (r.credit or 0)
-    return {root: _side(net) for root, net in nets.items()}
+        cls = _class_of(root)
+        nets[cls] = nets.get(cls, 0.0) + (r.debit or 0) - (r.credit or 0)
+    return {cls: _side(net) for cls, net in nets.items()}
 
 
-def _gl_net(company: str, account: str) -> dict:
-    """{amount, dr_cr} net (Dr-positive) of an account's opening GL entries."""
+def _account_balance(company: str, account: str) -> dict:
+    """{amount, dr_cr} net (Dr-positive) of an account's whole non-cancelled balance.
+
+    Used for the receivable / payable / Temporary Opening control accounts, which
+    must include the advance Payment Entries (not flagged is_opening). Computed right
+    after migration, when these accounts hold only the opening postings."""
     import frappe
 
     rows = frappe.get_all(
         "GL Entry",
-        filters={"company": company, "account": account,
-                 "is_opening": "Yes", "is_cancelled": 0},
+        filters={"company": company, "account": account, "is_cancelled": 0},
         fields=["debit", "credit"])
     net = sum((r.debit or 0) - (r.credit or 0) for r in rows)
     return _side(net)

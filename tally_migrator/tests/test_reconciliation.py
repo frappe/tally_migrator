@@ -46,8 +46,20 @@ class TestSourceTotals(unittest.TestCase):
         ])
         cls = _classes(source_totals(coa, _masters()))
         self.assertEqual(cls["Asset"], {"amount": 15200.0, "dr_cr": "Dr"})
-        self.assertEqual(cls["Equity"], {"amount": 100000.0, "dr_cr": "Cr"})
+        self.assertEqual(cls["LiabEquity"], {"amount": 100000.0, "dr_cr": "Cr"})
         self.assertEqual(cls["Expense"], {"amount": 2000.0, "dr_cr": "Dr"})
+
+    def test_liability_and_equity_merge_into_one_class(self):
+        # Tally calls capital Equity, ERPNext often roots it under Liability; merging
+        # them avoids a false mismatch. A loan (Liability) + capital (Equity) net into
+        # the single "Liabilities & Equity" row.
+        coa = _coa([
+            _acct("Bank Loan", "Liability", 40000, "Cr"),
+            _acct("Capital", "Equity", 100000, "Cr"),
+        ])
+        rows = source_totals(coa, _masters())["classes"]
+        labels = {r["label"]: r["side"] for r in rows}
+        self.assertEqual(labels["Liabilities & Equity"], {"amount": 140000.0, "dr_cr": "Cr"})
 
     def test_zero_and_group_classes_omitted(self):
         coa = _coa([
@@ -148,7 +160,7 @@ class TestCompare(unittest.TestCase):
         # ledger classes first (Asset before Equity), then the control/stock/diff rows.
         self.assertEqual(
             keys,
-            ["class_Asset", "class_Equity", "receivables", "payables",
+            ["class_Asset", "class_LiabEquity", "receivables", "payables",
              "stock", "temporary_opening"])
 
 

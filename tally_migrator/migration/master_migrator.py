@@ -115,11 +115,15 @@ class MigrationSummary:
 
         This is the authoritative 'what did this migration touch' record - it
         includes the opening Journal Entry and Stock Reconciliation names, so the
-        run can be reviewed or reversed by inspection. Empty entities are omitted."""
+        run can be reviewed or reversed by inspection. Empty entities are omitted.
+
+        Each entry is ``{name, doctype}`` so the log can deep-link it, since one
+        importer can create several doctypes (party openings -> Sales/Purchase
+        Invoice + Payment Entry; an account -> its Bank Account)."""
         return {
-            label: result.created_names
+            label: result.created_docs
             for label, result in self.results.items()
-            if result.created_names
+            if result.created_docs
         }
 
     def error_records(self) -> list[dict]:
