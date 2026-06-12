@@ -377,6 +377,67 @@ class TestERPNextImporter(unittest.TestCase):
         self.assertEqual(OBI._batch_label_from_remark("Manual opening entry"), "")
         self.assertEqual(OBI._batch_label_from_remark(None), "")
 
+    def test_advance_payment_entry_is_idempotent_on_rerun(self):
+        """A second run must NOT create a second advance Payment Entry.
+
+        Regression for the doubling bug: Payment Entry.set_remarks() overwrites
+        ``remarks`` with auto-text on save, which silently wiped the idempotency
+        marker - so the re-run guard (``_existing_markers``) could not see the
+        advance and re-posted it, doubling the Debtors/Creditors advance offset.
+        ``custom_remarks=1`` makes ERPNext keep our marker, restoring idempotency.
+        """
+        require_company()
+        from tally_migrator.erpnext.importers import PartyOpeningImporter
+        from tally_migrator.tally.extractors import BillAllocation
+
+        company = self.company
+        abbr = frappe.get_cached_value("Company", company, "abbr")
+        cust = "_TMTest Adv Cust"
+        if not frappe.db.exists("Customer", {"customer_name": cust}):
+            frappe.get_doc({
+                "doctype": "Customer", "customer_name": cust,
+                "customer_group": frappe.db.get_value(
+                    "Customer Group", {"is_group": 0}, "name") or "All Customer Groups",
+                "territory": frappe.db.get_value(
+                    "Territory", {"is_group": 0}, "name") or "All Territories",
+            }).insert(ignore_permissions=True)
+            frappe.db.commit()
+
+        # A customer credit (advance) opening posts an unallocated Payment Entry.
+        bills = [BillAllocation(party=cust, bill_no="ADV-1", bill_date="2026-04-01",
+                                amount=5000.0, dr_cr="Cr", is_advance=True)]
+        customers = [{"_name": cust, "OpeningBalance": "5000 Cr", "CurrencyName": "INR"}]
+        marker_like = f"Tally opening: {cust}%"
+
+        def _run():
+            return PartyOpeningImporter(company, abbr, "2026-04-01").run(bills, customers, [])
+
+        try:
+            r1 = _run()
+            r2 = _run()   # re-run: must skip, not duplicate
+            pes = frappe.get_all(
+                "Payment Entry",
+                filters={"company": company, "remarks": ["like", marker_like], "docstatus": 1},
+                fields=["name", "custom_remarks", "remarks"])
+            self.assertEqual(r1.created, 1, r1.errors)
+            self.assertEqual(r2.created, 0)
+            self.assertGreaterEqual(r2.skipped, 1)
+            self.assertEqual(len(pes), 1,
+                             f"advance Payment Entry doubled on re-run: {[p.name for p in pes]}")
+            # The marker must survive on the saved doc - the actual fix.
+            self.assertEqual(pes[0].custom_remarks, 1)
+            self.assertTrue((pes[0].remarks or "").startswith("Tally opening:"))
+        finally:
+            for pe in frappe.get_all(
+                    "Payment Entry",
+                    filters={"company": company, "remarks": ["like", marker_like]},
+                    pluck="name"):
+                doc = frappe.get_doc("Payment Entry", pe)
+                if doc.docstatus == 1:
+                    doc.cancel()
+                frappe.delete_doc("Payment Entry", pe, force=True, ignore_permissions=True)
+            frappe.db.commit()
+
     def test_opening_stock_skipped_when_reconciliation_exists(self):
         """A second run must NOT post a second Opening Stock reconciliation."""
         from tally_migrator.erpnext.importers import StockOpeningImporter

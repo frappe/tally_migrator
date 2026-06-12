@@ -1853,6 +1853,13 @@ class PartyOpeningImporter:
             "paid_to": temp if is_customer else party_account,
             "paid_from_account_currency": currency,
             "paid_to_account_currency": currency,
+            # Payment Entry.set_remarks() OVERWRITES remarks with an auto-generated
+            # string on save - which silently wiped our idempotency marker, so a re-run
+            # could not detect the advance and re-created it (doubling Debtors/Creditors
+            # advances). custom_remarks=1 tells ERPNext to keep our remarks verbatim, so
+            # the marker survives for both the re-run guard (_existing_markers) and the
+            # reconciliation (_opening_account_balance), exactly like the invoice path.
+            "custom_remarks": 1,
             "remarks": marker,
             "reference_no": bill_no,
             "reference_date": self.posting_date,
