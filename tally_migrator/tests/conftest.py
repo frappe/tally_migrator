@@ -12,16 +12,18 @@ Run a specific DocType:
 
 Two tiers of tests
 ------------------
-Most modules are pure (no Frappe) and run under a plain interpreter:
-    python3 -m unittest discover -s tally_migrator/tests -p 'test_*.py'
+Most modules are pure (no Frappe). Run them under a plain interpreter with:
+    make test-pure            (= python3 -m tally_migrator.tests.run_pure)
 
-Four modules import ``frappe`` and therefore only run under ``bench``:
-``test_importer``, ``test_file_source``, ``test_critical_fixes``, ``test_summary``.
-Under a bare ``python3`` they error with ``ModuleNotFoundError: No module named
-'frappe'`` - that is expected, not a regression. CI MUST run the full suite via
-``bench run-tests`` so those paths (importers, streaming parser, IDOR guard,
-opening-balance idempotency) are actually exercised; the pure run alone leaves
-them untested.
+That runner skips the frappe-tier modules cleanly. A naive
+``python3 -m unittest discover`` instead ERRORS on them, because four modules
+import ``frappe`` and cannot load outside ``bench``: ``test_importer``,
+``test_file_source``, ``test_critical_fixes``, ``test_summary``. Run the FULL
+suite (including those four - the importers, streaming parser, IDOR guard and
+opening-balance idempotency) with:
+    make test-bench           (= bench --site <site> run-tests --app tally_migrator)
+
+CI MUST run test-bench; the pure run alone leaves those paths untested.
 """
 import frappe
 import pytest
