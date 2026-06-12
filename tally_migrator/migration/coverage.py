@@ -113,6 +113,16 @@ _LEGACY_TAX_PREFIXES = (
     "EXCISE", "VAT", "SERVICETAX", "STX", "TDS", "TCS", "SCHVI", "XBRL",
     "LBT", "FBT", "SALESTAX", "CVD",
 )
+# Of those, the *current* (not pre-GST) frameworks that ERPNext can model but this
+# masters-and-openings migration deliberately does not bring over. They stay hidden
+# from the per-field noise tables (above), but when present we name them in the
+# report as "recognized, not migrated" so a deliberate scope decision never reads as
+# silent data loss. The party/ledger balances are still imported in full; only the
+# tax-deduction configuration is out of scope. Prefix -> plain-language label.
+_RECOGNIZED_NOT_MIGRATED = {
+    "TDS": "TDS (tax deducted at source)",
+    "TCS": "TCS (tax collected at source)",
+}
 # Tags that DO carry a value but have no ERPNext destination - Tally-internal
 # pointers, data redundant with a field we already import, pre-GST excise
 # scaffolding, or attributes that only exist at a level ERPNext doesn't model.
@@ -370,6 +380,7 @@ def coverage_report(source) -> dict:
     imported_total = 0
     ignored_total = 0
     total_tags = 0
+    recognized_prefixes: set = set()   # current taxes we saw but deliberately skip
     for obj_type, fields in MAPPED_FIELDS.items():
         mapped = _read_tags(obj_type, fields) | {"NAME"}
         written = _read_tags(obj_type, WRITTEN_FIELDS.get(obj_type, fields)) | {"NAME"}
@@ -390,6 +401,12 @@ def coverage_report(source) -> dict:
         #   unmapped  - a tag we never fetch (a UDF/custom field). Loss.
         ignored, imported, unmapped, unwritten, redundant, noise = [], [], [], [], [], []
         for tag, info in sorted(tags.items()):
+            # Note any current-tax framework present (TDS/TCS) so the report can name
+            # it as a deliberate skip. Detection only; the tag still flows through the
+            # buckets below (hidden as noise) so the no-loss accounting is unchanged.
+            for prefix in _RECOGNIZED_NOT_MIGRATED:
+                if tag.startswith(prefix):
+                    recognized_prefixes.add(prefix)
             # The field is shown by its raw Tally name; a derived value-shape phrase
             # ("Looks like GST numbers") gives the plain-language hint - no
             # hand-maintained tag dictionary.
@@ -475,5 +492,10 @@ def coverage_report(source) -> dict:
         "total_tag_count": total_tags,
         # The machine-checked no-loss promise: True iff every tag landed in a bucket.
         "accounted_for": accounted == total_tags,
+        # Current tax frameworks present in the file that we recognise but do not
+        # migrate (TDS/TCS). Named so the scope decision is explicit, not silent;
+        # the underlying ledger balances are still imported in full.
+        "recognized_not_migrated": [
+            _RECOGNIZED_NOT_MIGRATED[p] for p in sorted(recognized_prefixes)],
         "types": types,
     }

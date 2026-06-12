@@ -235,10 +235,17 @@ def _opening_plug(ledger_accounts, masters) -> dict:
     is plugged to 'Temporary Opening', so the absolute net is exactly what that
     plug will be.
     """
-    net = sum(_signed(a.opening_balance, a.opening_dr_cr) for a in ledger_accounts)
+    net = 0.0
+    gross = 0.0
+    for a in ledger_accounts:
+        signed = _signed(a.opening_balance, a.opening_dr_cr)
+        net += signed
+        gross += abs(signed)
     for party in list(masters.customers) + list(masters.suppliers):
         amt, drcr = TallyExtractor._parse_opening(party.get("OpeningBalance", ""))
-        net += _signed(amt, drcr)
+        signed = _signed(amt, drcr)
+        net += signed
+        gross += abs(signed)
 
     plug = round(abs(net), 2)
     return {
@@ -246,4 +253,8 @@ def _opening_plug(ledger_accounts, masters) -> dict:
         # The plug line carries the opposite sign of the residual to balance it.
         "plug_dr_cr": "" if plug < _PLUG_EPSILON else ("Cr" if net > 0 else "Dr"),
         "clean": plug < _PLUG_EPSILON,
+        # Total opening value posted (sum of absolute openings), so the UI can show
+        # the plug as a share of the whole - the honest gauge of whether the
+        # Temporary Opening balance is a small gap or a structural one.
+        "gross_opening": round(gross, 2),
     }

@@ -272,12 +272,30 @@ function render_coverage(frm) {
 		);
 	}
 
+	// Current tax frameworks (TDS/TCS) present but deliberately not migrated - named
+	// so the scope decision reads as intentional, not a silent drop.
+	const recognized = report.recognized_not_migrated || [];
+	const recognizedNote = recognized.length
+		? callout(
+				"info",
+				iconRow(
+					"info",
+					`We detected <strong>${recognized.map((t) => esc(t)).join(" and ")}</strong>
+					in this file. This migration brings over master records and opening balances
+					only - it does not migrate tax-deduction configuration. Your ledger balances
+					are preserved in full.`
+				),
+				"margin-bottom:8px;"
+		  )
+		: "";
+
 	if (!lossTypes.length) {
 		// No real loss: lead with reassurance, but still offer the full audit beneath.
 		wrapper.html(section(`
 			<div style="${CARD}">
 				${callout("success", iconRow("success", "Every field that carries data reached ERPNext - nothing was left behind."))}
 				${recon ? `<div style="margin-top:8px;">${recon}</div>` : ""}
+				${recognizedNote}
 				${noiseAudit}
 			</div>
 		`));
@@ -324,6 +342,7 @@ function render_coverage(frm) {
 			<div class="text-muted small" style="margin-bottom:8px;">${lead}</div>
 			${unwrittenNote}
 			${recon}
+			${recognizedNote}
 			${collapsible(lossTypes.length, `Show field details (${lossTypes.length} record type(s))`, blocks)}
 			${noiseAudit}
 		</div>
@@ -360,13 +379,22 @@ function render_mapping(frm) {
 		r.amount ? `${fmt(r.amount)} <span class="text-muted">${esc(r.dr_cr)}</span>` : `<span class="text-muted">0</span>`;
 	const classifiedAs = (r) => esc(r.root_type) + (r.account_type ? ` · ${esc(r.account_type)}` : "");
 
+	// A non-zero plug - sometimes large - is expected: it is the amount by which the
+	// Tally opening balances do not net to zero, parked in Temporary Opening until the
+	// opening entries are finished. Explain it so the figure does not read as an error.
+	const plugGross = Number(plug.gross_opening || 0);
+	const plugAmt = Number(plug.temporary_opening_plug || 0);
+	const plugShare =
+		plugGross > 0 ? ` (about ${Math.round((plugAmt / plugGross) * 100)}% of total opening value)` : "";
 	const plugLine = plug.clean
 		? callout("success", iconRow("success", "Opening balances balanced (Dr = Cr)."), "margin:6px 0;")
 		: callout(
 				"info",
 				iconRow(
 					"info",
-					`<strong>${fmt(plug.temporary_opening_plug)} ${esc(plug.plug_dr_cr)}</strong> posted to Temporary Opening.`
+					`<strong>${fmt(plug.temporary_opening_plug)} ${esc(plug.plug_dr_cr)} posted to Temporary Opening - this is expected, not an error.</strong>${plugShare}
+					It is the difference by which the Tally opening balances do not net to zero on their own; ERPNext parks it
+					in Temporary Opening to keep the trial balance balanced. Clear it later by completing the opening entries.`
 				),
 				"margin:6px 0;"
 		  );

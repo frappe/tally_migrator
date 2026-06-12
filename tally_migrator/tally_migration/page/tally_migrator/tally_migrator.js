@@ -400,13 +400,25 @@ class TallyMigratorPage {
 				// Now that we know whether the file carries accounts, refresh the
 				// stepper so its step count is stable from here on (no 4 -> 5 jump).
 				this.renderStepper("section-upload");
-				const total =
+				const masters =
 					(p.customers || 0) + (p.suppliers || 0) + (p.items || 0) + (p.warehouses || 0);
-				if (total === 0) {
+				const accounts = (p.account_groups || 0) + (p.ledger_accounts || 0);
+				if (masters === 0 && accounts === 0) {
+					// Nothing at all - the export is empty or not a masters export.
 					$("#preview-box").html(
-						TallyMigratorPage.callout("error", TallyMigratorPage.iconRow("error", `We read the file, but found no Customers, Suppliers, Items or Warehouses in it. Make sure you exported <strong>Masters</strong> (with <strong>Show All Masters = Yes</strong>) from Tally.`))
+						TallyMigratorPage.callout("error", TallyMigratorPage.iconRow("error", `We read the file, but found no Accounts, Customers, Suppliers, Items or Warehouses in it. Make sure you exported <strong>Masters</strong> (with <strong>Show All Masters = Yes</strong>) from Tally.`))
 					);
 					$("#btn-next-upload").prop("disabled", true);
+					return;
+				}
+				if (masters === 0) {
+					// Accounts but no business masters - a valid chart-of-accounts-only
+					// export, but a common sign the user exported a narrower scope than
+					// intended. Allow it, but ask them to confirm before spending a run.
+					$("#preview-box").html(
+						TallyMigratorPage.callout("info", TallyMigratorPage.iconRow("info", `<strong>This looks like a chart-of-accounts-only export.</strong> We found accounts and opening balances, but no Customers, Suppliers, Items or Warehouses. If that is what you intended, continue. If you expected those too, re-export from Tally with <strong>Show All Masters = Yes</strong> and upload again.${this.countsHtml(p)}`))
+					);
+					$("#btn-next-upload").prop("disabled", false);
 					return;
 				}
 				$("#preview-box").html(
@@ -802,11 +814,14 @@ class TallyMigratorPage {
 		const lossCount = meaningfulUnmapped + unwritten;    // the REAL loss
 		const redundant = report ? report.redundant_field_count || 0 : 0;
 		const noise = report ? report.noise_field_count || 0 : 0;
+		const recognized = report && report.recognized_not_migrated ? report.recognized_not_migrated : [];
 		const isMeaningful = (u) => !haveScores || u.score == null || u.score >= 0.2;
 		// Stay silent on a clean file whose only skips are internal noise / constants
 		// (every real export has hundreds) - those still live on the migration log.
-		// Speak up only for a real loss, or to explain a redundant duplicate.
-		if (!report || (lossCount === 0 && redundant === 0 && constants === 0)) {
+		// Speak up only for a real loss, a redundant duplicate, or a recognised tax
+		// framework we deliberately skip (TDS/TCS) - that last one must be named so the
+		// scope decision is explicit rather than silent.
+		if (!report || (lossCount === 0 && redundant === 0 && constants === 0 && recognized.length === 0)) {
 			$sec.hide().empty();
 			return;
 		}
@@ -867,6 +882,14 @@ class TallyMigratorPage {
 					(no business data) - skipped, and recorded in full on the migration log.
 				</div>`
 			: "";
+		const recognizedNote = recognized.length
+			? `<div style="margin-top:6px; font-size:12px; color:var(--text-muted, #777);">
+					We detected ${recognized.map((t) => esc(t)).join(" and ")} in this file.
+					This migration brings over master records and opening balances only - it
+					does not migrate tax-deduction configuration. Your ledger balances are
+					preserved in full.
+				</div>`
+			: "";
 
 		// Tone follows content. With NO real loss, the calm reassurance is honest.
 		// With real loss, we must NOT say "nothing to act on" - name the fields and
@@ -874,7 +897,7 @@ class TallyMigratorPage {
 		if (lossCount === 0) {
 			$sec.html(`
 				<div style="margin:0; background:var(--green-100, #e4f5e9); border:1px solid var(--green-200, #daf0e1); border-radius:8px; padding:12px 14px;">
-					${TallyMigratorPage.iconRow("success", `<strong>All your records will import fully.</strong> No fields with a place in ERPNext were left behind.${redundantNote}${noiseNote}${constantsNote}`)}
+					${TallyMigratorPage.iconRow("success", `<strong>All your records will import fully.</strong> No fields with a place in ERPNext were left behind.${redundantNote}${noiseNote}${constantsNote}${recognizedNote}`)}
 				</div>
 			`).show();
 			return;
@@ -898,7 +921,7 @@ class TallyMigratorPage {
 						business. Nothing is changed automatically, and the full list is
 						saved on the migration log.
 						<div style="margin-top:10px;">${lossBlocks}</div>
-						${redundantNote}${noiseNote}${constantsNote}
+						${redundantNote}${noiseNote}${constantsNote}${recognizedNote}
 					</div>
 				</div>
 			</div>
@@ -965,6 +988,33 @@ class TallyMigratorPage {
 			}[kind] || ["var(--blue-100, #edf6fd)", "var(--blue-200, #e3f1fd)"];
 		return `<div style="background:${t[0]}; border:1px solid ${t[1]}; border-radius:8px;
 			padding:12px 14px; color:var(--text-color, #1f272e);${extraStyle}">${inner}</div>`;
+	}
+
+	// A calm explainer for the Temporary Opening plug. A non-zero plug - sometimes a
+	// large one - looks alarming next to the opening figures, but it is expected: it
+	// is simply the amount by which the Tally opening balances do not net to zero,
+	// parked in the Temporary Opening account until the opening entries are finished.
+	// Reused on the Review step and the Log so the same reassurance appears wherever
+	// the plug is shown. Returns "" when the books balance (no plug).
+	static temporaryOpeningNote(plug) {
+		if (!plug || plug.clean || !plug.temporary_opening_plug) return "";
+		const fmt = (n) => Number(n || 0).toLocaleString("en-IN");
+		const gross = Number(plug.gross_opening || 0);
+		const amt = Number(plug.temporary_opening_plug || 0);
+		const share =
+			gross > 0 ? ` (about ${Math.round((amt / gross) * 100)}% of your total opening value)` : "";
+		return `<div style="margin-top:10px;">${TallyMigratorPage.callout(
+			"info",
+			TallyMigratorPage.iconRow(
+				"info",
+				`<strong>${fmt(amt)} ${frappe.utils.escape_html(
+					plug.plug_dr_cr
+				)} will sit in "Temporary Opening" - this is expected, not an error.</strong>${share}
+				It is the difference by which your Tally opening balances do not net to zero on their own.
+				ERPNext parks it in the Temporary Opening account so the trial balance stays balanced; you
+				clear it later by completing your opening entries. Nothing is missing or double-counted.`
+			)
+		)}</div>`;
 	}
 
 	// Soft status pill (tinted background, no border/icon) and the summary "stat
@@ -1438,6 +1488,7 @@ class TallyMigratorPage {
 				)}
 				${plugCard}
 			</div>
+			${TallyMigratorPage.temporaryOpeningNote(plug)}
 		`);
 
 		// ── Exceptions: only the inferred rows, named and explained ────────────
