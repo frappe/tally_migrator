@@ -23,14 +23,22 @@ jobs:
     timeout-minutes: 60
 
     # Pin the Frappe/ERPNext line the app targets. Bump both together when you
-    # move the production site to a new major version.
+    # move the production site to a new major version. Matches the development /
+    # deployment environment (frappe 16.x, erpnext 16.x) - verified with
+    # `bench version`, not assumed.
     env:
-      FRAPPE_BRANCH: version-15
-      ERPNEXT_BRANCH: version-15
+      FRAPPE_BRANCH: version-16
+      ERPNEXT_BRANCH: version-16
+      # India Compliance ships by default on the India Frappe Cloud sites where
+      # these migrations run, so CI installs it too - otherwise the GST path (a
+      # core production behaviour) would go untested. Keep this on the same line
+      # as Frappe/ERPNext when bumping the major version.
+      INDIA_COMPLIANCE_BRANCH: version-16
 
     services:
       mariadb:
-        image: mariadb:10.6
+        # Frappe v16 dropped support for MariaDB 10.6; use the 11.x LTS line.
+        image: mariadb:11.4
         env:
           MARIADB_ROOT_PASSWORD: root
         ports:
@@ -60,7 +68,8 @@ jobs:
       - name: Set up Node
         uses: actions/setup-node@v4
         with:
-          node-version: "18"
+          # Frappe v16 requires Node 20+.
+          node-version: "20"
 
       - name: System dependencies
         run: |
@@ -102,6 +111,10 @@ jobs:
         working-directory: frappe-bench
         run: bench get-app erpnext --branch "$ERPNEXT_BRANCH"
 
+      - name: Fetch India Compliance
+        working-directory: frappe-bench
+        run: bench get-app india_compliance --branch "$INDIA_COMPLIANCE_BRANCH"
+
       - name: Create the test site
         working-directory: frappe-bench
         run: |
@@ -110,12 +123,20 @@ jobs:
             --admin-password admin \
             --no-mariadb-socket
           bench --site test_site install-app erpnext
+          # Install India Compliance before the app under test so the GST custom
+          # fields (gst_category, GSTIN, …) exist when tally_migrator's importers
+          # and GST tests run - mirroring the India Frappe Cloud production config.
+          bench --site test_site install-app india_compliance
 
       - name: Install the app under test
         working-directory: frappe-bench
         run: |
           bench get-app tally_migrator "${GITHUB_WORKSPACE}/tally_migrator"
           bench --site test_site install-app tally_migrator
+
+      - name: Report the versions under test
+        working-directory: frappe-bench
+        run: bench version
 
       - name: Run the full test suite
         working-directory: frappe-bench
