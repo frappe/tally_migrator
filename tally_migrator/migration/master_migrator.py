@@ -400,11 +400,51 @@ class MasterMigrator:
         still finalizes - the summary is informational, never a gate."""
         try:
             from tally_migrator.migration.reconciliation import build_reconciliation
-            return build_reconciliation(
+            rec = build_reconciliation(
                 self.config.erpnext_company, self.importer.abbr, coa, masters)
+            self._flag_cumulative_openings(rec)
+            return rec
         except Exception as exc:
             frappe.log_error(f"Reconciliation summary failed: {exc}", "Tally Migrator")
             return {}
+
+    def _flag_cumulative_openings(self, rec: dict) -> None:
+        """Distinguish 'cumulative across exports' from a genuine per-file mismatch.
+
+        The reconciliation compares THIS file's openings (Tally column) against the
+        whole company's openings read back from the GL (ERPNext column). When more
+        than one *different* Tally export has been imported into the same company,
+        the ERPNext column is the running total of all of them, so Receivables /
+        Payables can never line up with a single file - and that is expected, not a
+        data error. We only want the heads-up in exactly that case, never when a real
+        figure diverges within a single-export company. So gate it on BOTH signals:
+        (a) a Receivables/Payables row actually diverges, AND (b) a prior Completed
+        log for this company imported a different source file. Either alone is not
+        enough - (a) without (b) is a true mismatch (keep the red alert); (b) without
+        (a) reconciled fine, so there is nothing to explain.
+        """
+        if not rec or not rec.get("available") or not self.log:
+            return
+        diverged = any(
+            row.get("has_erpnext") and not row.get("match")
+            and row.get("key") in ("receivables", "payables")
+            for row in rec.get("rows", []))
+        if not diverged:
+            return
+        current_file = self.config.source_file or ""
+        others = frappe.get_all(
+            "Tally Migration Log",
+            filters={
+                "company": self.config.erpnext_company,
+                "status": ["in", ["Completed", "Completed with Errors"]],
+                "name": ["!=", self.log.name],
+                "source_file": ["not in", ["", current_file]],
+            },
+            pluck="source_file")
+        files = sorted({f for f in others if f})
+        if files:
+            rec["cumulative_openings"] = True
+            rec["other_exports"] = files
 
     def _fail_log(self, exc: Exception) -> None:
         """Mark the log 'Failed' with a traceback. Best-effort; never re-raises."""

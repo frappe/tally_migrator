@@ -371,7 +371,26 @@ function render_reconciliation(frm) {
 		review: { kind: "error", text: "A figure differs between Tally and ERPNext - review the rows below." },
 		source_only: { kind: "info", text: "ERPNext figures could not be read back; showing Tally's trial balance only." },
 	};
-	const v = VERDICT[r.verdict] || VERDICT.source_only;
+	let v = VERDICT[r.verdict] || VERDICT.source_only;
+	// Cumulative-openings heads-up: when this company already holds openings from a
+	// *different* export, the ERPNext column is the combined total across all of them,
+	// so it cannot line up with this single file. Replace the red "a figure differs"
+	// alarm with an informational note - this is expected, not a data error. The
+	// backend only sets this flag alongside a real Receivables/Payables divergence,
+	// so a genuine single-export mismatch still shows the red alert above.
+	if (r.cumulative_openings) {
+		const others = (r.other_exports || []).map(esc).join(", ");
+		v = {
+			kind: "info",
+			text:
+				"This company already holds opening balances from other imports" +
+				(others ? ` (${others})` : "") +
+				". The ERPNext column is the company's combined openings across all of " +
+				"them, so it will not match this single file - that is expected, not a " +
+				"data error. For a clean per-file reconciliation, import each Tally " +
+				"export into its own company.",
+		};
+	}
 
 	const rows = r.rows
 		.map((row) => {
