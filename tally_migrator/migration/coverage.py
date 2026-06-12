@@ -342,6 +342,70 @@ def _read_leaf_tags(obj_type: str, fields: list) -> set[str]:
     return out
 
 
+_BUCKET_KEYS = ("ignored", "imported", "unmapped", "unwritten", "redundant", "noise")
+
+
+def _bucket_type_tags(tags: dict, mapped: set, read_not_written: set,
+                      read_leaves: set) -> tuple:
+    """Classify one object type's tags into the six no-loss buckets.
+
+    Every tag lands in EXACTLY ONE bucket - the if/elif chain is exhaustive (the
+    final ``else`` catches everything), so no field can silently vanish. That
+    structural completeness IS the no-loss guarantee; the invariant test re-checks
+    ``total == sum(buckets)`` to keep it honest. Buckets:
+        ignored   - Tally system identity tags (NAME/GUID/MASTERID…); not data.
+        imported  - read AND written to ERPNext (the data that made it through).
+        unwritten - read by the extractor but no importer persists it. Loss.
+        redundant - flat duplicate of a nested value we already import. Not a loss.
+        noise     - Tally-internal (flags/empty containers/audit/legacy tax).
+        unmapped  - a tag we never fetch (a UDF/custom field). Loss.
+    Returns ``(buckets, recognized_prefixes)`` - the latter naming any current-tax
+    framework (TDS/TCS) seen, so the report can flag it as a deliberate skip.
+    """
+    buckets: dict[str, list] = {k: [] for k in _BUCKET_KEYS}
+    recognized: set = set()
+    for tag, info in sorted(tags.items()):
+        # Detection only - the tag still flows through the buckets (hidden as noise),
+        # so the no-loss accounting is unchanged.
+        for prefix in _RECOGNIZED_NOT_MIGRATED:
+            if tag.startswith(prefix):
+                recognized.add(prefix)
+        # The field is shown by its raw Tally name; a derived value-shape phrase
+        # ("Looks like GST numbers") gives the plain-language hint - no
+        # hand-maintained tag dictionary.
+        row = {
+            "field": tag,
+            "kind": value_kind(info.get("sample", "")),
+            "count": info.get("count", 0),
+            "sample": info.get("sample", ""),
+            "examples": info.get("records", []),
+        }
+        if tag in IGNORED_TAGS:
+            buckets["ignored"].append(row)
+        elif tag in mapped:
+            # A mapped tag the extractor fetches but no importer persists is still a
+            # loss; otherwise it reached ERPNext.
+            buckets["unwritten" if tag in read_not_written else "imported"].append(row)
+        elif tag in read_leaves:
+            # A flat tag whose name matches a NESTED path we already read is a
+            # duplicate of imported data, not a loss - reassure, don't alarm.
+            buckets["redundant"].append(row)
+        elif _is_noise(tag, info):
+            # Tally-internal: suppressed from the loss tables but RETAINED here in
+            # full, so the migration log can show every dropped field on demand.
+            buckets["noise"].append(row)
+        else:
+            # Step 2: characterise the field (shape + importance) so the report can
+            # rank it. Only unmapped fields - the actionable losses - are classified.
+            row.update(classify_field(info))
+            buckets["unmapped"].append(row)
+
+    # Most-likely-to-matter first (high fill-rate / structured shape / UDF), then
+    # alphabetical for a stable order within equal scores.
+    buckets["unmapped"].sort(key=lambda r: (-r.get("score", 0.0), r["field"]))
+    return buckets, recognized
+
+
 def coverage_report(source) -> dict:
     """Compare file tags against the mapped allow-list, per object type.
 
@@ -389,59 +453,12 @@ def coverage_report(source) -> dict:
         tags = source.raw_tags(obj_type)
         total_tags += len(tags)
 
-        # Every tag the file carries lands in EXACTLY ONE bucket below - the if/elif
-        # chain is exhaustive (the final ``else`` catches everything), so no field can
-        # silently vanish. That structural completeness is the no-loss guarantee; the
-        # invariant test re-checks ``total == sum(buckets)`` to keep it honest.
-        #   ignored   - Tally system identity tags (NAME/GUID/MASTERID…); not data.
-        #   imported  - read AND written to ERPNext (the data that made it through).
-        #   unwritten - read by the extractor but no importer persists it. Loss.
-        #   redundant - flat duplicate of a nested value we already import. Not a loss.
-        #   noise     - Tally-internal (flags/empty containers/audit/legacy tax).
-        #   unmapped  - a tag we never fetch (a UDF/custom field). Loss.
-        ignored, imported, unmapped, unwritten, redundant, noise = [], [], [], [], [], []
-        for tag, info in sorted(tags.items()):
-            # Note any current-tax framework present (TDS/TCS) so the report can name
-            # it as a deliberate skip. Detection only; the tag still flows through the
-            # buckets below (hidden as noise) so the no-loss accounting is unchanged.
-            for prefix in _RECOGNIZED_NOT_MIGRATED:
-                if tag.startswith(prefix):
-                    recognized_prefixes.add(prefix)
-            # The field is shown by its raw Tally name; a derived value-shape phrase
-            # ("Looks like GST numbers") gives the plain-language hint - no
-            # hand-maintained tag dictionary.
-            row = {
-                "field": tag,
-                "kind": value_kind(info.get("sample", "")),
-                "count": info.get("count", 0),
-                "sample": info.get("sample", ""),
-                "examples": info.get("records", []),
-            }
-            if tag in IGNORED_TAGS:
-                ignored.append(row)
-            elif tag in mapped:
-                # A mapped tag the extractor fetches but no importer persists is still
-                # a loss; otherwise it reached ERPNext.
-                (unwritten if tag in read_not_written else imported).append(row)
-            elif tag in read_leaves:
-                # A flat tag whose name matches a NESTED path we already read is a
-                # duplicate of imported data, not a loss - reassure, don't alarm.
-                redundant.append(row)
-            elif _is_noise(tag, info):
-                # Tally-internal: suppressed from the loss tables but RETAINED here in
-                # full, so the migration log can show every dropped field on demand
-                # (the no-loss audit) rather than only counting them.
-                noise.append(row)
-            else:
-                # Step 2: characterise the field (shape + importance) so the report
-                # can rank it, not just list it. Only unmapped fields - the actionable
-                # losses - are classified; the other buckets need no triage.
-                row.update(classify_field(info))
-                unmapped.append(row)
-
-        # Most-likely-to-matter first (high fill-rate / structured shape / UDF), then
-        # alphabetical for a stable order within equal scores.
-        unmapped.sort(key=lambda r: (-r.get("score", 0.0), r["field"]))
+        buckets, recognized = _bucket_type_tags(
+            tags, mapped, read_not_written, read_leaves)
+        recognized_prefixes |= recognized
+        ignored, imported, unmapped, unwritten, redundant, noise = (
+            buckets["ignored"], buckets["imported"], buckets["unmapped"],
+            buckets["unwritten"], buckets["redundant"], buckets["noise"])
 
         imported_total += len(imported)
         ignored_total += len(ignored)
