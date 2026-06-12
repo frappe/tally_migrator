@@ -48,7 +48,8 @@ class TallyMigratorPage {
 
 	render() {
 		$(this.wrapper).find(".page-content").html(`
-			<div class="container" style="max-width:680px; padding-top: 24px; padding-bottom: 48px;">
+			${TallyMigratorPage.themeStyle()}
+			<div class="container tally-migrator" style="max-width:680px; padding-top: 24px; padding-bottom: 48px;">
 
 				<!-- Persistent stepper -->
 				<div id="stepper" style="display:flex; align-items:center; margin-bottom:28px;"></div>
@@ -184,7 +185,9 @@ class TallyMigratorPage {
 					<!-- Error consent (final gate; shown only when records have errors) -->
 					<div id="dq-consent" style="display:none; margin-bottom:18px; background:var(--blue-100, #edf6fd); border:1px solid var(--blue-200, #e3f1fd); border-radius:8px; padding:12px 14px;">
 						<label style="margin:0; font-weight:400; cursor:pointer; display:flex; align-items:flex-start; gap:8px;">
-							<input type="checkbox" id="dq-consent-check" style="margin:3px 0 0; flex:0 0 auto;" />
+							<span style="flex:0 0 auto; display:inline-flex; align-items:center; height:1.5em;">
+								<input type="checkbox" id="dq-consent-check" style="margin:0;" />
+							</span>
 							<span>Some records have errors and won't import. Continue with the rest - you can fix and re-import them later from the Migration Log.</span>
 						</label>
 					</div>
@@ -285,11 +288,16 @@ class TallyMigratorPage {
 			const active = i === activeIdx;
 			const circleColor = done ? DONE : active ? ACTIVE : PENDING;
 			const textColor = active ? ACTIVE : done ? DONE : "var(--text-muted, #8d99a6)";
+			// The active circle is filled with --text-color (near-black in light,
+			// near-white in dark), so its number must use the opposite ink (--bg-color)
+			// to stay legible. Done/pending circles are mid/dark fills - white reads on
+			// both themes (the dark-mode --gray-300 fill is #343434).
+			const circleText = active ? "var(--bg-color, #fff)" : "#fff";
 			const circle = `
 				<div style="display:flex; align-items:center; gap:8px;">
 					<span style="display:inline-flex; align-items:center; justify-content:center;
 						width:24px; height:24px; border-radius:50%; background:${circleColor};
-						color:#fff; font-size:12px; font-weight:600;">
+						color:${circleText}; font-size:12px; font-weight:600;">
 						${done
 							? '<svg width="12" height="12" viewBox="0 0 16 16" fill="none" aria-hidden="true" style="display:block;"><path d="M3.5 8.5l3 3 6-7" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg>'
 							: i + 1}
@@ -722,7 +730,7 @@ class TallyMigratorPage {
 		const esc = frappe.utils.escape_html;
 		const icon = TallyMigratorPage.statusIcon;
 		const row = (it, kind) => `
-			<div style="padding:4px 0; border-top:1px solid rgba(0,0,0,0.06);">
+			<div style="padding:4px 0; border-top:1px solid var(--border-color, #e0e6ed);">
 				<div style="font-weight:600; display:flex; align-items:center; gap:6px;">${icon(kind)} <span>${esc(it.message)}</span></div>
 				<div class="text-muted small" style="margin-left:22px;">Fix: ${esc(it.fix)}</div>
 			</div>`;
@@ -834,14 +842,14 @@ class TallyMigratorPage {
 			.join("");
 
 		const redundantNote = redundant
-			? `<div style="margin-top:8px; font-size:12px; color:#777;">
+			? `<div style="margin-top:8px; font-size:12px; color:var(--text-muted, #777);">
 					${plur(redundant, "field")} in your file duplicate data we already
 					import from elsewhere (e.g. a flat GST number alongside the full GST
 					details) - safely skipped, nothing lost.
 				</div>`
 			: "";
 		const noiseNote = noise
-			? `<div style="margin-top:6px; font-size:12px; color:#888;">
+			? `<div style="margin-top:6px; font-size:12px; color:var(--text-muted, #888);">
 					${plur(noise, "Tally internal field")} (config flags, empty containers,
 					audit / legacy-tax data) were hidden as they carry no business value.
 				</div>`
@@ -882,6 +890,31 @@ class TallyMigratorPage {
 				</div>
 			</div>
 		`).show();
+	}
+
+	// ── Dark-mode theming ───────────────────────────────────────────────────────
+	// Frappe flips its *semantic* tokens in dark mode (--text-color, --bg-color,
+	// --border-color, --card-bg…) but never its *palette* tints (--blue-100,
+	// --green-100, --red-100, --gray-100…). Our callouts, pills and stat cards paint
+	// those tints as backgrounds while their text rides on --text-color, so in dark
+	// mode they'd be near-white text on a pastel box - unreadable. Rather than touch
+	// every inline style, we re-point just those tints (and Bootstrap's hardcoded
+	// .well) to Frappe's dark surface colours, scoped to this page. Every existing
+	// var(--blue-100, …) then resolves correctly in both themes, untouched.
+	static themeStyle() {
+		return `<style>
+			[data-theme="dark"] .tally-migrator {
+				--blue-100: #0e2037;   --blue-200: #052b53;
+				--green-100: #0b2e1c;  --green-200: #0a3f27;
+				--red-100: #361515;    --red-200: #521515;
+				--gray-100: #232323;   --gray-200: #2b2b2b;   --gray-300: #343434;
+			}
+			[data-theme="dark"] .tally-migrator .well {
+				background-color: transparent;
+				border: none;
+				box-shadow: none;
+			}
+		</style>`;
 	}
 
 	// ── Shared status vocabulary ────────────────────────────────────────────────
@@ -1111,7 +1144,7 @@ class TallyMigratorPage {
 
 	dqItemHtml(it, editableFields) {
 		const esc = frappe.utils.escape_html;
-		const name = `<div style="padding:2px 0; color:#555;">
+		const name = `<div style="padding:2px 0; color:var(--text-color, #555);">
 			<span class="text-muted">${esc(it.entity_type)}</span> · ${esc(it.entity_name)}
 		</div>`;
 		if (!editableFields.length) return name;
@@ -1410,7 +1443,7 @@ class TallyMigratorPage {
 			$("#review-exceptions").html(`
 				<div style="margin:0; background:var(--blue-100, #edf6fd); border:1px solid var(--blue-200, #e3f1fd); border-radius:8px; padding:12px 14px;">
 					${TallyMigratorPage.iconRow("info", `<strong>${fmt(inferred)} account${inferred === 1 ? "" : "s"} we inferred - please confirm.</strong> These ledgers sit under a custom Tally group with no standard ancestor, so we defaulted their type. Only you know if that's right - it's easy to fix the group in Tally and re-upload.`)}
-					<div style="margin-top:10px; border:1px solid rgba(0,0,0,0.08); border-radius:6px; overflow:hidden; background:#fff;">
+					<div style="margin-top:10px; border:1px solid var(--border-color, #e0e6ed); border-radius:6px; overflow:hidden; background:var(--card-bg, #fff);">
 						<table class="table table-condensed" style="margin:0; font-size:13px; table-layout:fixed;">
 							${REVIEW_COLGROUP}
 							<thead>
@@ -1542,7 +1575,7 @@ class TallyMigratorPage {
 			warn = `
 				<div style="margin:12px 0 0; background:var(--blue-100, #edf6fd); border:1px solid var(--blue-200, #e3f1fd); border-radius:8px; padding:12px 14px;">
 					${TallyMigratorPage.iconRow("info", `<strong>${fmt(p.on_account)} part${p.on_account === 1 ? "y's" : "ies'"} bills didn't add up to the ledger opening.</strong> The 'On Account' figure is the unreconciled gap between the party's bills and its ledger opening (not the total opening) - it posts as an 'On Account' opening so the party still ties to the trial balance. Review these in Tally; a bill may be missing or mis-dated.`)}
-					<div style="margin-top:10px; border:1px solid rgba(0,0,0,0.08); border-radius:6px; overflow:hidden; background:#fff;">
+					<div style="margin-top:10px; border:1px solid var(--border-color, #e0e6ed); border-radius:6px; overflow:hidden; background:var(--card-bg, #fff);">
 						<table class="table table-condensed" style="margin:0; font-size:13px; table-layout:fixed;">
 							<colgroup><col style="width:32%;"><col style="width:16%;"><col style="width:24%;"><col style="width:28%;"></colgroup>
 							<thead>

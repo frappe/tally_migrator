@@ -19,14 +19,16 @@
    "options": "Company",
    "reqd": 1,
    "in_list_view": 1,
-   "in_standard_filter": 1
+   "in_standard_filter": 1,
+   "read_only": 1
   },
   {
    "fieldname": "tally_company",
    "fieldtype": "Data",
    "label": "Tally Company",
    "reqd": 1,
-   "in_list_view": 1
+   "in_list_view": 1,
+   "read_only": 1
   },
   {
    "fieldname": "source_file",
@@ -80,7 +82,8 @@
    "options": "Masters\nTransactions",
    "reqd": 1,
    "default": "Masters",
-   "in_list_view": 1
+   "in_list_view": 1,
+   "read_only": 1
   },
   {
    "fieldname": "status",
@@ -89,7 +92,8 @@
    "options": "\nRunning\nCompleted\nCompleted with Errors\nFailed",
    "default": "Running",
    "in_list_view": 1,
-   "in_standard_filter": 1
+   "in_standard_filter": 1,
+   "read_only": 1
   },
   {
    "fieldname": "migration_date",

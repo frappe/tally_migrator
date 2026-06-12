@@ -1,5 +1,6 @@
 frappe.ui.form.on("Tally Migration Log", {
 	refresh(frm) {
+		apply_dark_mode_theme(frm);
 		render_summary(frm);
 		render_reconciliation(frm);
 		render_created(frm);
@@ -10,6 +11,26 @@ frappe.ui.form.on("Tally Migration Log", {
 		add_buttons(frm);
 	},
 });
+
+// ── Dark-mode theming ────────────────────────────────────────────────────────
+// Frappe flips its semantic tokens in dark mode (--text-color, --border-color…)
+// but never its palette tints (--blue-100, --green-100, --red-100, --gray-100…),
+// which our callouts/cards paint as backgrounds under --text-color text. Re-point
+// just those tints to Frappe's dark surfaces, scoped to this form, so every
+// existing var(--blue-100, …) resolves correctly in both themes. Mirrors the
+// wizard's TallyMigratorPage.themeStyle(); injected once per form load.
+function apply_dark_mode_theme(frm) {
+	frm.$wrapper.addClass("tally-migration-log");
+	if (frm.$wrapper.find("style.tally-dark-theme").length) return;
+	frm.$wrapper.prepend(`<style class="tally-dark-theme">
+		[data-theme="dark"] .tally-migration-log {
+			--blue-100: #0e2037;   --blue-200: #052b53;
+			--green-100: #0b2e1c;  --green-200: #0a3f27;
+			--red-100: #361515;    --red-200: #521515;
+			--gray-100: #232323;   --gray-200: #2b2b2b;   --gray-300: #343434;
+		}
+	</style>`);
+}
 
 // ── Shared UI vocabulary ─────────────────────────────────────────────────────
 // One design language across the whole log, identical to the Tally Migrator
