@@ -76,6 +76,35 @@ class TestAccountMapping(unittest.TestCase):
         self.assertEqual(plug["plug_dr_cr"], "Cr")   # balancing line opposes the net
         self.assertFalse(plug["clean"])
 
+    def test_opening_plug_matches_reconciliation_including_stock(self):
+        """The Review-step plug and the Log's reconciliation Temporary Opening are
+        the same quantity and must agree: both are the contra of every opening
+        posting, INCLUDING opening stock (which posts to Temporary Opening too).
+        Regression - an earlier _opening_plug omitted stock and disagreed with the
+        Log, so the two screens showed different numbers for the same file."""
+        from tally_migrator.tally.extractors import TallyExtractor
+        from tally_migrator.migration.reconciliation import source_totals
+
+        class _StockSrc(_Src):
+            def __init__(self, groups, ledgers, items):
+                super().__init__(groups, ledgers)
+                self._data["Stock Item"] = items
+
+        items = [{"_name": "Widget", "OpeningBalance": "10 Nos",
+                  "OpeningRate": "100.00/Nos"}]            # 10 x 100 = 1000 Dr
+        src = _StockSrc(GROUPS, LEDGERS, items)
+        plug = account_mapping(src)["opening"]
+
+        ex = TallyExtractor(src)
+        recon = source_totals(ex.extract_coa(), ex.extract_all())["temporary_opening"]
+        # Same number on both screens - the whole point of the fix.
+        self.assertEqual(plug["temporary_opening_plug"], recon["amount"])
+        self.assertEqual(plug["plug_dr_cr"], recon["dr_cr"])
+        # And stock is actually in it: 52000 + 15000 (accounts + party) + 1000 stock
+        # = 68000 net Dr, so the balancing Temporary Opening line is 68000 Cr.
+        self.assertEqual(plug["temporary_opening_plug"], 68000.0)
+        self.assertEqual(plug["plug_dr_cr"], "Cr")
+
     def test_party_openings_list_per_party(self):
         # The collapsed "all parties" list carries one row per party with an
         # opening, with the ledger amount/side - Acme Corp is the lone customer.

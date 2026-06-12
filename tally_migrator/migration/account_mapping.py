@@ -91,7 +91,7 @@ def account_mapping(source) -> dict:
         "inferred_count": len(inferred),
         "inferred": inferred,
         "groups": groups_out,
-        "opening": _opening_plug(ledger_accounts, masters),
+        "opening": _opening_plug(coa, masters),
         "party_openings": _party_openings(masters, bills),
     }
 
@@ -227,34 +227,35 @@ def _party_openings(masters, bills) -> dict:
     }
 
 
-def _opening_plug(ledger_accounts, masters) -> dict:
+def _opening_plug(coa, masters) -> dict:
     """Net residual across the whole opening trial balance → Temporary Opening.
 
-    Mirrors ``OpeningBalanceImporter``: accounts post against themselves,
-    customers against Receivable, suppliers against Payable. Any net difference
-    is plugged to 'Temporary Opening', so the absolute net is exactly what that
-    plug will be.
+    Delegates to ``reconciliation.source_totals`` so the plug shown on the Review
+    step is computed by the SAME function that builds the Log's trial balance - one
+    source of truth, so the two screens can never disagree. That residual is the
+    contra of every opening posting the migration makes: ledger-account openings
+    (the opening JE), party openings (opening invoices) AND opening stock (the stock
+    reconciliation) - all of which post against 'Temporary Opening' (see
+    ``OpeningBalanceImporter`` and ``StockOpeningImporter``). An earlier version
+    here omitted opening stock and so understated the plug on any file with opening
+    inventory; ``source_totals`` includes it, which is what actually posts.
     """
-    net = 0.0
-    gross = 0.0
-    for a in ledger_accounts:
-        signed = _signed(a.opening_balance, a.opening_dr_cr)
-        net += signed
-        gross += abs(signed)
-    for party in list(masters.customers) + list(masters.suppliers):
-        amt, drcr = TallyExtractor._parse_opening(party.get("OpeningBalance", ""))
-        signed = _signed(amt, drcr)
-        net += signed
-        gross += abs(signed)
+    from tally_migrator.migration.reconciliation import source_totals
 
-    plug = round(abs(net), 2)
+    totals = source_totals(coa, masters)
+    temp = totals["temporary_opening"]
+    plug = round(temp["amount"], 2)
+    # Total opening value = the magnitude of every row in the trial balance, so the
+    # UI can show the plug as a share of the whole (a small gap vs a structural one).
+    gross = (
+        sum(abs(c["side"]["amount"]) for c in totals["classes"])
+        + abs(totals["receivables"]["amount"])
+        + abs(totals["payables"]["amount"])
+        + abs(totals["stock"]["amount"])
+    )
     return {
         "temporary_opening_plug": plug,
-        # The plug line carries the opposite sign of the residual to balance it.
-        "plug_dr_cr": "" if plug < _PLUG_EPSILON else ("Cr" if net > 0 else "Dr"),
+        "plug_dr_cr": temp["dr_cr"],          # already "" when the plug is clean
         "clean": plug < _PLUG_EPSILON,
-        # Total opening value posted (sum of absolute openings), so the UI can show
-        # the plug as a share of the whole - the honest gauge of whether the
-        # Temporary Opening balance is a small gap or a structural one.
         "gross_opening": round(gross, 2),
     }
