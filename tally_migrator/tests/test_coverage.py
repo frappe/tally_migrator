@@ -172,7 +172,9 @@ class TestCoverage(unittest.TestCase):
         # the per-field tables but still counted, so the report stays honest+short.
         report = coverage_report(_Src({
             "Group": {"GRPCREDITPARENT": _tag(40, ""), "GRPDEBITPARENT": _tag(40, "")},
-            "Ledger": {"CURRENCYNAME": _tag(3, "₹"), "TAXTYPE": _tag(52, "Others"),
+            # LEDGERCOUNTRYISDCODE is a no-target tag (CURRENCYNAME is now a mapped
+            # field - it drives the multi-currency party-opening guard).
+            "Ledger": {"LEDGERCOUNTRYISDCODE": _tag(3, "91"), "TAXTYPE": _tag(52, "Others"),
                        "PRIORSTATENAME": _tag(3, "Maharashtra")},
             "Godown": {"ARE1SERIALMASTER": _tag(6, ""), "JOBNAME": _tag(6, ""),
                        "TAXUNITNAME": _tag(6, "")},

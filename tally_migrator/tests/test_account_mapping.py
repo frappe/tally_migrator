@@ -96,6 +96,24 @@ class TestAccountMapping(unittest.TestCase):
         self.assertTrue(m["opening"]["clean"])
         self.assertEqual(m["opening"]["plug_dr_cr"], "")
 
+    def test_foreign_currency_party_is_skipped_from_preview(self):
+        # The base currency is the modal ledger CurrencyName (INR here); a party in a
+        # different currency is skipped at import, so the preview skips it too and
+        # reports it as foreign_skipped rather than counting its documents.
+        def _c(name, ob, ccy):
+            return {"_name": name, "Parent": "Sundry Debtors",
+                    "OpeningBalance": ob, "CurrencyName": ccy}
+        ledgers = [
+            _c("Acme India", "15000.00 Dr", "INR"),
+            _c("Bharat Traders", "8000.00 Dr", "INR"),
+            _c("Foreign Buyer LLC", "9000.00 Dr", "USD"),
+        ]
+        p = account_mapping(_Src(GROUPS, ledgers))["party_openings"]
+        self.assertEqual(p["foreign_skipped"], 1)
+        self.assertEqual(p["parties"], 2)        # the two INR parties only
+        names = [r["name"] for r in p["parties_list"]]
+        self.assertNotIn("Foreign Buyer LLC", names)
+
 
 if __name__ == "__main__":
     unittest.main()

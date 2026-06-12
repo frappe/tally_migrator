@@ -42,13 +42,12 @@ def _collapse_identical(rows: list[dict], sample: int = 5) -> list[dict]:
             continue
         shown = ", ".join(names[:sample])
         more = f" (+{n - sample} more)" if n > sample else ""
-        # Reason keeps its warning prefix (the ⚠ already leads it); prepend the
-        # count so the table headline reads e.g. "13 records · opening stock …".
-        prefix, body = ("⚠ ", g["reason"][2:]) if g["reason"].startswith("⚠ ") else ("", g["reason"])
+        # Prepend the count so the table headline reads e.g. "13 records · opening
+        # stock …". Warnings are marked by their "(warning)" record_type, not a glyph.
         out.append({
             "record_type": g["record_type"],
             "record_name": f"{shown}{more}",
-            "reason": f"{prefix}{n} records · {body}",
+            "reason": f"{n} records · {g['reason']}",
         })
     return out
 
@@ -102,7 +101,7 @@ class MigrationSummary:
             for e in result.errors
         ]
         warns = [
-            f"[{label}] ⚠ {w['name']}: {w['reason']}"
+            f"[{label}] {w['name']}: {w['reason']}"
             for label, result in self.results.items()
             for w in result.warnings
         ]
@@ -144,7 +143,7 @@ class MigrationSummary:
         ]
         rows += [
             {"record_type": f"{label} (warning)", "record_name": w["name"],
-             "reason": f"⚠ {w['reason']}"}
+             "reason": w["reason"]}
             for label, result in self.results.items()
             for w in result.warnings
         ]

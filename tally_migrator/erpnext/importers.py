@@ -24,6 +24,7 @@ Insert rules (shared by every importer)
   successfully imported ones.
 """
 import contextlib
+from collections import Counter
 from dataclasses import dataclass, field
 
 import frappe
@@ -1633,6 +1634,12 @@ class PartyOpeningImporter:
     def run(self, bills: list, customers: list[dict],
             suppliers: list[dict]) -> ImportResult:
         result = ImportResult("Opening Invoice")
+        # The Tally base currency, derived as the most common ledger CurrencyName
+        # across all parties (a forex party carries a different one). Used to skip a
+        # party whose ledger currency differs from the base - the in-file signal the
+        # ERPNext default_currency guard can't give us, since freshly imported parties
+        # carry no currency yet. Equality only, never an ISO-code mapping.
+        self._tally_base_ccy = self._base_currency(customers, suppliers)
         by_party: dict[str, list] = {}
         for b in bills or []:
             by_party.setdefault(b.party, []).append(b)
@@ -1661,14 +1668,17 @@ class PartyOpeningImporter:
                     "created (its import failed earlier). Fix it and re-run.")
                 continue
 
-            # Multi-currency guard (v1): the Tally masters export carries no
-            # per-party currency, and an opening document posted in the company
+            # Multi-currency guard (v1): an opening document posted in the company
             # currency for a party that bills in another currency would silently
-            # misstate the balance (the exchange rate is unknown). Skip it with a
-            # clear warning rather than post a wrong figure - the user enters that
-            # party's opening manually. Single-currency parties (the norm) post
-            # invoice-wise as usual.
-            if self._is_foreign_currency_party(party_type, party):
+            # misstate the balance (the exchange rate is unknown). Two independent
+            # signals, either of which marks a party foreign: the ledger's own
+            # CurrencyName differs from the Tally base currency (read from the file),
+            # or the already-created ERPNext party carries a non-company currency. The
+            # file signal is what actually fires here, since a freshly imported party
+            # has no currency set yet. Skip with a clear warning rather than post a
+            # wrong figure - the user enters that party's opening manually.
+            if (self._tally_currency_foreign(record)
+                    or self._is_foreign_currency_party(party_type, party)):
                 result.add_warning(
                     tally_name,
                     f"opening balance skipped - {party_type} '{tally_name}' uses a "
@@ -1876,6 +1886,27 @@ class PartyOpeningImporter:
         field = ("default_receivable_account" if party_type == "Customer"
                  else "default_payable_account")
         return frappe.get_cached_value("Company", self.company, field)
+
+    @staticmethod
+    def _base_currency(customers: list[dict], suppliers: list[dict]) -> str:
+        """The Tally base currency: the most common non-empty ledger CurrencyName
+        across every party. A book is overwhelmingly single-currency, so the modal
+        value is the base; a party whose CurrencyName differs is forex. Returns ""
+        when the file carries no currency name (older exports) - the ERPNext-side
+        guard then remains the only check."""
+        counts = Counter(
+            (r.get("CurrencyName") or "").strip()
+            for r in (*customers, *suppliers)
+            if (r.get("CurrencyName") or "").strip()
+        )
+        return counts.most_common(1)[0][0] if counts else ""
+
+    def _tally_currency_foreign(self, record: dict) -> bool:
+        """True when this party ledger's own CurrencyName differs from the Tally base
+        currency. Blank base or blank ledger currency means 'unknown' -> not foreign,
+        so a single-currency book (or an export without the field) is never skipped."""
+        ccy = (record.get("CurrencyName") or "").strip()
+        return bool(self._tally_base_ccy and ccy and ccy != self._tally_base_ccy)
 
     def _is_foreign_currency_party(self, party_type: str, party: str) -> bool:
         """True when the party's own default currency is set and differs from the

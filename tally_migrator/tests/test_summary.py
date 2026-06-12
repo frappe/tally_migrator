@@ -75,7 +75,9 @@ class TestMigrationSummary(unittest.TestCase):
         collapsed = next(r for r in records if "no HSN" in r["reason"])
         self.assertIn("3 records", collapsed["reason"])
         self.assertEqual(collapsed["record_name"], "Pen, Pencil, Eraser")
-        self.assertTrue(collapsed["reason"].startswith("⚠ "))  # warning prefix kept
+        # No status glyph in stored reasons - the "(warning)" record_type marks them.
+        self.assertEqual(collapsed["record_type"], "Item (warning)")
+        self.assertNotIn("⚠", collapsed["reason"])
         # The odd-one-out is untouched and not merged.
         self.assertTrue(any("bad UOM" in r["reason"] for r in records))
         self.assertEqual(len(records), 2)

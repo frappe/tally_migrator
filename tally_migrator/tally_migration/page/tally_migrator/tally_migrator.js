@@ -63,7 +63,7 @@ class TallyMigratorPage {
 					</p>
 
 					<div style="display:flex; gap:10px; align-items:flex-start; background:var(--blue-100, #edf6fd); border:1px solid var(--blue-200, #e3f1fd); border-radius:8px; padding:12px 14px;">
-						<span style="font-size:16px;">🛡️</span>
+						<span style="flex:0 0 auto; display:inline-flex; align-items:center; height:1.5em;">${TallyMigratorPage.statusIcon("success")}</span>
 						<div style="font-size:13px;">
 							<strong>Your existing ERPNext data is safe.</strong>
 							Nothing is ever overwritten or deleted. If a record already exists, the migrator
@@ -290,7 +290,9 @@ class TallyMigratorPage {
 					<span style="display:inline-flex; align-items:center; justify-content:center;
 						width:24px; height:24px; border-radius:50%; background:${circleColor};
 						color:#fff; font-size:12px; font-weight:600;">
-						${done ? "✓" : i + 1}
+						${done
+							? '<svg width="12" height="12" viewBox="0 0 16 16" fill="none" aria-hidden="true" style="display:block;"><path d="M3.5 8.5l3 3 6-7" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg>'
+							: i + 1}
 					</span>
 					<span style="color:${textColor}; font-weight:${active ? 600 : 400}; font-size:13px;">${s.label}</span>
 				</div>`;
@@ -308,7 +310,7 @@ class TallyMigratorPage {
 		$("#btn-pick-file").on("click", () => this.pickFile());
 		$("#btn-next-upload").on("click", () => {
 			if (!this.fileUrl) {
-				frappe.msgprint("Please upload a Tally XML file first.");
+				frappe.msgprint(__("Please upload a Tally XML file first."));
 				return;
 			}
 			this.proceedToConfigure();
@@ -326,7 +328,7 @@ class TallyMigratorPage {
 		$("#btn-next-2").on("click", () => {
 			const erpnext = $("#erpnext-company").val();
 			if (!erpnext) {
-				frappe.msgprint("Please select an ERPNext company.");
+				frappe.msgprint(__("Please select an ERPNext company."));
 				return;
 			}
 			this.proceedToCheck();
@@ -919,6 +921,50 @@ class TallyMigratorPage {
 			padding:12px 14px; color:var(--text-color, #1f272e);${extraStyle}">${inner}</div>`;
 	}
 
+	// Soft status pill (tinted background, no border/icon) and the summary "stat
+	// card" used on the Review step. One definition shared by the accounts and
+	// party-openings panels so they stay pixel-identical. Background tints:
+	// green = good, blue = worth a look, grey = none.
+	static get STAT_BG() {
+		return {
+			green: "var(--green-200, #daf0e1)",
+			blue: "var(--blue-200, #e3f1fd)",
+			gray: "var(--gray-200, #f0f4f7)",
+		};
+	}
+	static pill(text, bg) {
+		return `<span style="display:inline-block; padding:1px 12px; border-radius:10px; font-size:12px; background:${bg};">${text}</span>`;
+	}
+	static statCard(big, label, sub, bg) {
+		return `
+			<div style="flex:1; border:1px solid var(--border-color, #e0e6ed); border-radius:6px; padding:10px 12px;">
+				<div class="text-muted small">${label}</div>
+				<div style="font-size:20px; font-weight:700; color:var(--text-color, #1f272e); margin:2px 0 5px;">${big}</div>
+				<div>${TallyMigratorPage.pill(sub, bg)}</div>
+			</div>`;
+	}
+
+	// Wire a collapsible disclosure (header row -> body) so it toggles on click AND
+	// on keyboard (Enter / Space), and keeps aria-expanded + the caret in sync. The
+	// header must carry role="button" tabindex="0" for the keyboard path to reach it.
+	static bindDisclosure(headId, bodyId, caretId) {
+		const toggle = () => {
+			const $body = $("#" + bodyId);
+			$body.toggle();
+			const open = $body.is(":visible");
+			$("#" + caretId).text(open ? "▾" : "▸");
+			$("#" + headId).attr("aria-expanded", open ? "true" : "false");
+		};
+		$("#" + headId)
+			.on("click", toggle)
+			.on("keydown", (e) => {
+				if (e.key === "Enter" || e.key === " " || e.key === "Spacebar") {
+					e.preventDefault();
+					toggle();
+				}
+			});
+	}
+
 	static get DQ_LABELS() {
 		return {
 			// Errors are real blockers - keep the plain problem framing.
@@ -968,7 +1014,7 @@ class TallyMigratorPage {
 		// Number stays in the regular text colour; the label below carries a soft
 		// colour as a background pill (green = mapped, red = errors, blue = warnings).
 		const card = (n, label, bg) => `
-			<div style="flex:1; border:1px solid #e0e6ed; border-radius:6px; padding:10px 12px;">
+			<div style="flex:1; border:1px solid var(--border-color, #e0e6ed); border-radius:6px; padding:10px 12px;">
 				<div style="font-size:20px; font-weight:700; color:var(--text-color, #1f272e);">${n}</div>
 				<div style="margin-top:5px;">
 					<span style="display:inline-block; padding:1px 12px; border-radius:10px; font-size:12px; background:${bg};">${label}</span>
@@ -997,16 +1043,26 @@ class TallyMigratorPage {
 
 		$("#dq-list").html(`
 			${toolbar}
-			<div style="border:1px solid #e0e6ed; border-radius:6px; padding:6px 14px; max-height:340px; overflow-y:auto;">
+			<div style="border:1px solid var(--border-color, #e0e6ed); border-radius:6px; padding:6px 14px; max-height:340px; overflow-y:auto;">
 				${rows}
 			</div>`);
 
-		$("#dq-list .dq-head").on("click", (e) => {
-			const idx = $(e.currentTarget).data("idx");
+		const toggleDqGroup = (el) => {
+			const idx = $(el).data("idx");
 			const $body = $("#dq-body-" + idx);
 			$body.toggle();
-			$("#dq-caret-" + idx).text($body.is(":visible") ? "▾" : "▸");
-		});
+			const open = $body.is(":visible");
+			$("#dq-caret-" + idx).text(open ? "▾" : "▸");
+			$(el).attr("aria-expanded", open ? "true" : "false");
+		};
+		$("#dq-list .dq-head")
+			.on("click", (e) => toggleDqGroup(e.currentTarget))
+			.on("keydown", (e) => {
+				if (e.key === "Enter" || e.key === " " || e.key === "Spacebar") {
+					e.preventDefault();
+					toggleDqGroup(e.currentTarget);
+				}
+			});
 		// Capture on input (every keystroke), not just change (blur): an edit the
 		// user hasn't tabbed away from must still be in memory when they reload or run.
 		$("#dq-list .dq-edit").on("input change", (e) => this.captureEdit(e.currentTarget));
@@ -1042,7 +1098,7 @@ class TallyMigratorPage {
 		const divider = idx === 0 ? "" : "border-top:1px solid var(--border-color, #f0f4f7);";
 		return `
 			<div style="${divider}">
-				<div class="dq-head" data-idx="${idx}" style="cursor:pointer; padding:8px 0; display:flex; align-items:center; gap:6px;">
+				<div class="dq-head" data-idx="${idx}" role="button" tabindex="0" aria-expanded="false" aria-controls="dq-body-${idx}" style="cursor:pointer; padding:8px 0; display:flex; align-items:center; gap:6px;">
 					<span style="display:inline-flex; align-items:center;">${glyph}</span>
 					<strong>${esc(label)}</strong>
 					<span class="text-muted">(${g.items.length})</span>
@@ -1178,7 +1234,7 @@ class TallyMigratorPage {
 				<span class="text-muted small">${n} unit${n === 1 ? "" : "s"} to resolve</span>
 				<button class="btn btn-default btn-xs" id="btn-uom-all-create">Set all to "create as new"</button>
 			</div>
-			<div style="max-height:340px; overflow-y:auto; border:1px solid #e0e6ed; border-radius:6px;">
+			<div style="max-height:340px; overflow-y:auto; border:1px solid var(--border-color, #e0e6ed); border-radius:6px;">
 				<table class="table table-condensed" style="margin:0;">
 					<thead>
 						<tr>
@@ -1250,7 +1306,7 @@ class TallyMigratorPage {
 			return;
 		}
 
-		frappe.dom.freeze("Creating units…");
+		frappe.dom.freeze(__("Creating units…"));
 		frappe.call({
 			method: "tally_migrator.api.create_uoms",
 			args: { uom_names: JSON.stringify([...toCreate]) },
@@ -1263,7 +1319,7 @@ class TallyMigratorPage {
 						.map(([name, reason]) => `<li><strong>${frappe.utils.escape_html(name)}</strong>: ${frappe.utils.escape_html(reason)}</li>`)
 						.join("");
 					frappe.msgprint({
-						title: "Some units couldn't be created",
+						title: __("Some units couldn't be created"),
 						indicator: "red",
 						message: `<p>Please map these to an existing unit instead, then try again:</p><ul>${lines}</ul>`,
 					});
@@ -1313,16 +1369,8 @@ class TallyMigratorPage {
 		// ── Summary cards ──────────────────────────────────────────────────────
 		// Same card language as Step 3: regular-black number, status carried by a
 		// soft background pill (green = good, amber = worth a look, grey = none).
-		const GREEN_BG = "var(--green-200, #daf0e1)";
-		const BLUE_BG = "var(--blue-200, #e3f1fd)";
-		const GRAY_BG = "var(--gray-200, #ededed)";
-		const pill = (text, bg) => `<span style="display:inline-block; padding:1px 12px; border-radius:10px; font-size:12px; background:${bg};">${text}</span>`;
-		const card = (big, label, sub, bg) => `
-			<div style="flex:1; border:1px solid #e0e6ed; border-radius:6px; padding:10px 12px;">
-				<div class="text-muted small">${label}</div>
-				<div style="font-size:20px; font-weight:700; color:var(--text-color, #1f272e); margin:2px 0 5px;">${big}</div>
-				<div>${pill(sub, bg)}</div>
-			</div>`;
+		const { green: GREEN_BG, blue: BLUE_BG, gray: GRAY_BG } = TallyMigratorPage.STAT_BG;
+		const card = TallyMigratorPage.statCard;
 
 		const plugCard = plug.clean
 			? card("Balanced", "Opening balances", "Dr = Cr", GREEN_BG)
@@ -1417,13 +1465,14 @@ class TallyMigratorPage {
 			.join("");
 
 		$("#review-all").html(`
-			<div id="review-all-head" style="cursor:pointer; display:flex; align-items:center; justify-content:space-between;
-				border:1px solid #e0e6ed; border-radius:6px; padding:10px 12px;">
+			<div id="review-all-head" role="button" tabindex="0" aria-expanded="false" aria-controls="review-all-body"
+				style="cursor:pointer; display:flex; align-items:center; justify-content:space-between;
+				border:1px solid var(--border-color, #e0e6ed); border-radius:6px; padding:10px 12px;">
 				<span class="text-muted">Show all ${fmt(m.total_accounts)} mapped accounts</span>
 				<span class="text-muted" id="review-all-caret">▸</span>
 			</div>
 			<div id="review-all-body" style="display:none; margin-top:8px; max-height:360px; overflow-y:auto;
-				border:1px solid #e0e6ed; border-radius:6px;">
+				border:1px solid var(--border-color, #e0e6ed); border-radius:6px;">
 				<table class="table table-condensed" style="margin:0; font-size:13px;">
 					<thead>
 						<tr>
@@ -1437,11 +1486,7 @@ class TallyMigratorPage {
 				</table>
 			</div>
 		`);
-		$("#review-all-head").on("click", () => {
-			const $body = $("#review-all-body");
-			$body.toggle();
-			$("#review-all-caret").text($body.is(":visible") ? "▾" : "▸");
-		});
+		TallyMigratorPage.bindDisclosure("review-all-head", "review-all-body", "review-all-caret");
 
 		this.renderPartyOpenings();
 	}
@@ -1458,18 +1503,9 @@ class TallyMigratorPage {
 		}
 		const esc = frappe.utils.escape_html;
 		const fmt = (n) => Number(n || 0).toLocaleString("en-IN");
-		// Same card language as Step 3: regular-black number, status carried by a
-		// soft background pill (green = good, amber = worth a look, grey = none).
-		const GREEN_BG = "var(--green-200, #daf0e1)";
-		const BLUE_BG = "var(--blue-200, #e3f1fd)";
-		const GRAY_BG = "var(--gray-200, #ededed)";
-		const pill = (text, bg) => `<span style="display:inline-block; padding:1px 12px; border-radius:10px; font-size:12px; background:${bg};">${text}</span>`;
-		const card = (big, label, sub, bg) => `
-			<div style="flex:1; border:1px solid #e0e6ed; border-radius:6px; padding:10px 12px;">
-				<div class="text-muted small">${label}</div>
-				<div style="font-size:20px; font-weight:700; color:var(--text-color, #1f272e); margin:2px 0 5px;">${big}</div>
-				<div>${pill(sub, bg)}</div>
-			</div>`;
+		// Shared card language with Step 3 / the accounts panel (see statCard).
+		const { green: GREEN_BG, blue: BLUE_BG, gray: GRAY_BG } = TallyMigratorPage.STAT_BG;
+		const card = TallyMigratorPage.statCard;
 
 		// Three cards: outstanding invoices, advances, and a mismatch/lump card that
 		// turns amber only when a party's bills did not tie to its ledger opening.
@@ -1545,13 +1581,14 @@ class TallyMigratorPage {
 			.join("");
 		const partyBook = partyRows
 			? `
-			<div id="review-parties-head" style="cursor:pointer; display:flex; align-items:center; justify-content:space-between;
-				border:1px solid #e0e6ed; border-radius:6px; padding:10px 12px; margin-top:12px;">
+			<div id="review-parties-head" role="button" tabindex="0" aria-expanded="false" aria-controls="review-parties-body"
+				style="cursor:pointer; display:flex; align-items:center; justify-content:space-between;
+				border:1px solid var(--border-color, #e0e6ed); border-radius:6px; padding:10px 12px; margin-top:12px;">
 				<span class="text-muted">Show all ${fmt(p.parties)} part${p.parties === 1 ? "y" : "ies"}</span>
 				<span class="text-muted" id="review-parties-caret">▸</span>
 			</div>
 			<div id="review-parties-body" style="display:none; margin-top:8px; max-height:360px; overflow-y:auto;
-				border:1px solid #e0e6ed; border-radius:6px;">
+				border:1px solid var(--border-color, #e0e6ed); border-radius:6px;">
 				<table class="table table-condensed" style="margin:0; font-size:13px;">
 					<thead>
 						<tr>
@@ -1566,6 +1603,20 @@ class TallyMigratorPage {
 			</div>`
 			: "";
 
+		// Foreign-currency parties are skipped at import (their exchange rate is
+		// unknown), so say so plainly rather than letting the doc count look short.
+		const foreignNote = p.foreign_skipped
+			? `<div style="margin-top:12px;">${TallyMigratorPage.callout(
+					"info",
+					TallyMigratorPage.iconRow(
+						"info",
+						`<strong>${fmt(p.foreign_skipped)} part${
+							p.foreign_skipped === 1 ? "y" : "ies"
+						} use a currency other than the company currency.</strong> Their opening balances are not posted automatically - the exchange rate isn't in the file. Enter these openings manually in ERPNext so the rate is correct.`
+					)
+			  )}</div>`
+			: "";
+
 		$("#review-parties").html(`
 			<h5 style="margin-bottom:8px;">Customer &amp; supplier opening balances</h5>
 			<p class="text-muted" style="margin-bottom:10px; font-size:13px;">
@@ -1575,13 +1626,10 @@ class TallyMigratorPage {
 			</p>
 			<div style="display:flex; gap:10px;">${cards}</div>
 			${warn}
+			${foreignNote}
 			${partyBook}
 		`);
-		$("#review-parties-head").on("click", () => {
-			const $body = $("#review-parties-body");
-			$body.toggle();
-			$("#review-parties-caret").text($body.is(":visible") ? "▾" : "▸");
-		});
+		TallyMigratorPage.bindDisclosure("review-parties-head", "review-parties-body", "review-parties-caret");
 	}
 
 	gotoRun() {
@@ -1893,7 +1941,7 @@ class TallyMigratorPage {
 		this.accountMapping = null;
 		this.recordOverrides = {};
 		this.states = [];
-		$("#review-summary, #review-exceptions, #review-all").empty();
+		$("#review-summary, #review-exceptions, #review-all, #review-parties").empty();
 		$("#file-status").html("");
 		$("#preview-box").hide().html("");
 		$("#btn-next-upload").prop("disabled", true);

@@ -145,18 +145,30 @@ def erpnext_totals(company: str, abbr: str) -> dict:
         rec_acc = frappe.get_cached_value("Company", company, "default_receivable_account")
         pay_acc = frappe.get_cached_value("Company", company, "default_payable_account")
         temp_acc = f"Temporary Opening - {abbr}"
+        classes = _gl_by_class(company, {rec_acc, pay_acc, temp_acc})
+        # Scope the control accounts to opening postings ONLY (this migration's opening
+        # invoices + advance Payment Entries), never the account's full balance. The
+        # tool supports re-runs and migrating into a company that may already hold
+        # activity on Receivable/Payable/Stock; a full-balance read would fold that
+        # pre-existing activity into the "ERPNext" column and show a false mismatch.
+        receivables = _opening_account_balance(company, rec_acc) if rec_acc else None
+        payables = _opening_account_balance(company, pay_acc) if pay_acc else None
+        stock = {"amount": _opening_stock_value(company), "dr_cr": "Dr"}
+        # Temporary Opening is the contra for every opening posting, so derive it as
+        # the balancing residual of the scoped figures rather than reading the GL.
+        # This keeps the ERPNext column internally balanced by construction and
+        # immune to any non-opening activity, exactly mirroring how the source side
+        # derives its own Temporary Opening (see source_totals).
+        temp_signed = -(
+            sum(_signed_of(s) for s in classes.values())
+            + _signed_of(receivables) + _signed_of(payables) + _signed_of(stock))
         return {
             "available": True,
-            "classes": _gl_by_class(company, {rec_acc, pay_acc, temp_acc}),
-            # Read the FULL control-account balance, not just is_opening rows: a party
-            # advance / on-account opening posts as a Payment Entry, whose GL is NOT
-            # flagged is_opening, so an is_opening-only read would overstate
-            # receivables/payables (gross invoices, missing the advance offset). The
-            # account's net balance right after migration is the true opening figure.
-            "receivables": _account_balance(company, rec_acc) if rec_acc else None,
-            "payables": _account_balance(company, pay_acc) if pay_acc else None,
-            "stock": {"amount": _stock_value(company), "dr_cr": "Dr"},
-            "temporary_opening": _account_balance(company, temp_acc),
+            "classes": classes,
+            "receivables": receivables,
+            "payables": payables,
+            "stock": stock,
+            "temporary_opening": _side(temp_signed),
         }
     except Exception:
         return {"available": False}
@@ -187,31 +199,53 @@ def _gl_by_class(company: str, exclude: set) -> dict:
     return {cls: _side(net) for cls, net in nets.items()}
 
 
-def _account_balance(company: str, account: str) -> dict:
-    """{amount, dr_cr} net (Dr-positive) of an account's whole non-cancelled balance.
+def _opening_account_balance(company: str, account: str) -> dict:
+    """{amount, dr_cr} net (Dr-positive) of just this migration's OPENING postings on
+    an account - never the account's full balance.
 
-    Used for the receivable / payable / Temporary Opening control accounts, which
-    must include the advance Payment Entries (not flagged is_opening). Computed right
-    after migration, when these accounts hold only the opening postings."""
+    Two sources, matching what the importers post against a control account:
+      * opening invoices - their GL is flagged ``is_opening='Yes'``;
+      * advance Payment Entries - NOT flagged is_opening, but carry the
+        ``PartyOpeningImporter`` remarks marker ('Tally opening: ...').
+    Excluding everything else keeps a re-run, or a company with pre-existing
+    activity on the account, from polluting the reconciliation figure."""
     import frappe
 
-    rows = frappe.get_all(
+    net = 0.0
+    opening_rows = frappe.get_all(
         "GL Entry",
-        filters={"company": company, "account": account, "is_cancelled": 0},
+        filters={"company": company, "account": account, "is_cancelled": 0,
+                 "is_opening": "Yes"},
         fields=["debit", "credit"])
-    net = sum((r.debit or 0) - (r.credit or 0) for r in rows)
+    net += sum((r.debit or 0) - (r.credit or 0) for r in opening_rows)
+    advance_rows = frappe.get_all(
+        "GL Entry",
+        filters={"company": company, "account": account, "is_cancelled": 0,
+                 "voucher_type": "Payment Entry",
+                 "remarks": ["like", "Tally opening:%"]},
+        fields=["debit", "credit"])
+    net += sum((r.debit or 0) - (r.credit or 0) for r in advance_rows)
     return _side(net)
 
 
-def _stock_value(company: str) -> float:
+def _opening_stock_value(company: str) -> float:
+    """Value of just the opening Stock Reconciliation(s) this migration posted, read
+    from their Stock Ledger Entries - not the warehouses' current stock value, which
+    would include any movement posted after (or before) the migration."""
     import frappe
 
-    whs = frappe.get_all(
-        "Warehouse", filters={"company": company, "is_group": 0}, pluck="name")
-    if not whs:
+    recons = frappe.get_all(
+        "Stock Reconciliation",
+        filters={"company": company, "purpose": "Opening Stock", "docstatus": ["<", 2]},
+        pluck="name")
+    if not recons:
         return 0.0
-    rows = frappe.get_all("Bin", filters={"warehouse": ["in", whs]}, fields=["stock_value"])
-    return round(sum(r.stock_value or 0 for r in rows), 2)
+    sles = frappe.get_all(
+        "Stock Ledger Entry",
+        filters={"voucher_type": "Stock Reconciliation", "voucher_no": ["in", recons],
+                 "is_cancelled": 0},
+        fields=["stock_value_difference"])
+    return round(sum(r.stock_value_difference or 0 for r in sles), 2)
 
 
 # ── Comparison ────────────────────────────────────────────────────────────────

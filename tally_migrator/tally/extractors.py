@@ -13,6 +13,11 @@ LEDGER_FIELDS = [
     "CountryName", "LedgerState", "PinCode",
     # P1 standard fields Tally states explicitly on the party ledger.
     "GSTRegistrationType", "CreditLimit", "EmailCC", "LedgerContact", "MailingName",
+    # Ledger currency name. Almost always the company base currency (redundant), but
+    # a forex party ledger carries a different one - the only in-file signal that a
+    # party's opening must NOT be posted in the company currency (see
+    # PartyOpeningImporter). Compared by equality, never mapped to an ISO code.
+    "CurrencyName",
     # Bank account details (→ ERPNext Bank Account, linked to the party).
     "BankAccountNo", "BankIFSC", "BankAccountHolder", "BankBranch", "BankName",
 ]

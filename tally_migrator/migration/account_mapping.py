@@ -131,8 +131,19 @@ def _party_openings(masters, bills) -> dict:
     for b in bills or []:
         by_party.setdefault(b.party, []).append(b)
 
+    # Tally base currency (modal ledger CurrencyName). A forex party is skipped by
+    # PartyOpeningImporter, so the preview skips it too and the doc counts match what
+    # actually posts. Equality only, never an ISO-code mapping.
+    from collections import Counter
+    _ccy = Counter(
+        (r.get("CurrencyName") or "").strip()
+        for r in (*masters.customers, *masters.suppliers)
+        if (r.get("CurrencyName") or "").strip()
+    )
+    base_ccy = _ccy.most_common(1)[0][0] if _ccy else ""
+
     invoices = advances = on_account = lump = 0
-    party_count = 0
+    party_count = foreign_skipped = 0
     mismatches: list[dict] = []
     parties_list: list[dict] = []
     for party_type, records in (("Customer", masters.customers),
@@ -143,6 +154,12 @@ def _party_openings(masters, bills) -> dict:
                 record.get("OpeningBalance", ""))
             party_bills = by_party.get(name, [])
             if not ledger_amt and not party_bills:
+                continue
+            # Forex party: skipped at import (currency unknown), so don't count its
+            # documents here either. Surfaced as a count so the screen can say so.
+            ccy = (record.get("CurrencyName") or "").strip()
+            if base_ccy and ccy and ccy != base_ccy:
+                foreign_skipped += 1
                 continue
             party_count += 1
 
@@ -204,6 +221,7 @@ def _party_openings(masters, bills) -> dict:
         "on_account": on_account,
         "lump": lump,
         "documents": invoices + advances + on_account + lump,
+        "foreign_skipped": foreign_skipped,
         "mismatches": mismatches,
         "parties_list": parties_list,
     }
