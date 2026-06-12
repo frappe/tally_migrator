@@ -172,14 +172,22 @@ def _is_noise(tag: str, info: dict) -> bool:
     pure Yes/No/Not-Applicable config toggles, and (via ``_looks_internal``) generic
     internal shapes - GUIDs, zeroed id pointers, effective-date markers, empties.
     Tags carrying a real value with a real destination (a bank number, a city, a
-    rate) are NOT noise and still surface."""
+    rate) are NOT noise and still surface.
+
+    Exception (boolean rescue): a Yes/No field that carries the Tally UDF namespace
+    marker (``is_udf``) is a *user-defined* field, not a built-in config toggle, so it
+    must NOT be swallowed by the Yes/No sentinel - it escapes to the actionable list
+    and is classified ``boolean`` (an ERPNext Check candidate for Step 3). Built-in
+    Yes/No flags (no namespace) stay noise exactly as before. This is high-precision:
+    the namespace is the only signal that reliably tells a business boolean from a
+    config flag; the two are otherwise identical (both just "Yes"/"No")."""
     if tag in _AUDIT_TAGS or tag in _NO_TARGET_TAGS or tag.startswith(_LEGACY_TAX_PREFIXES):
         return True
     sample = (info.get("sample") or "").strip().lower()
     if tag.endswith(".LIST") and not sample:
         return True                          # empty structural container
-    if sample in _NOISE_VALUE_SENTINELS:     # boolean toggle / unused-feature sentinel
-        return True
+    if sample in _NOISE_VALUE_SENTINELS and not info.get("is_udf"):
+        return True                          # config toggle / unused-feature sentinel
     return _looks_internal(tag, info.get("sample", ""))
 
 
@@ -225,6 +233,85 @@ def value_kind(sample: str) -> str:
     if _AMOUNT_RE.match(s):
         return "numbers"
     return ""
+
+
+# ── Step 2: characterise & rank an unmapped field from its value distribution ──
+# Turns the flat "won't migrate" list into a ranked shortlist: read each field's
+# SHAPE (boolean / select / typed / identifier / freetext) and an importance score
+# from the distribution of its values - never from a curated tag-name list, so it
+# generalises to UDFs nobody has seen. The shape is what Step 3 will offer to import
+# as (a Check, a Select with these options, a typed Data field, …).
+
+_BOOL_VOCAB = {"yes", "no", "true", "false", "0", "1", "y", "n"}
+_SELECT_MAX = 12          # at most this many distinct values still reads as a category
+# A field scoring at/above this is "meaningful" (likely business data); below it is a
+# constant or near-empty config remnant. A constant scores 0, a structured/varying
+# field clears it - so it cleanly separates "worth a look" from "config noise".
+_MEANINGFUL_SCORE = 0.2
+
+
+def _shape(distinct, values: list, filled: int, kind: str) -> tuple[str, list]:
+    """(shape, options) for a field, from its value distribution.
+
+    ``distinct`` is the count of distinct non-empty values, or ``None`` for "many"
+    (high cardinality). ``kind`` is the value_kind shape phrase ("" when plain text).
+    """
+    if distinct == "unknown":                     # source gave no distribution stats
+        return ("typed", []) if kind else ("freetext", [])
+    if distinct == 1:
+        # One value on every record carries no distinguishing information, whatever
+        # it looks like (a config "0", a default "No"). Constant, never boolean.
+        return "constant", sorted(values)
+    low = {(v or "").strip().lower() for v in (values or [])}
+    if distinct == 2 and low and low <= _BOOL_VOCAB:
+        return "boolean", sorted(values)          # two-valued Yes/No → ERPNext Check
+    if distinct is None:                          # >cap distinct values (high cardinality)
+        return ("typed", []) if kind else ("identifier", [])
+    if kind:
+        return "typed", []                        # GST/PAN/email/phone/date/number
+    if 2 <= distinct <= _SELECT_MAX and (filled or 0) >= 3:
+        return "select", sorted(values)           # low-cardinality category
+    if distinct > _SELECT_MAX:
+        return "identifier", []                   # many free-form values
+    return "freetext", []
+
+
+# Per-shape contribution to the importance score - a recognisable, structured shape
+# is more likely to be a field worth importing than free text.
+_SHAPE_WEIGHT = {
+    "typed": 0.35, "select": 0.25, "identifier": 0.15,
+    "boolean": 0.10, "freetext": 0.05, "constant": 0.0,
+}
+
+
+def classify_field(info: dict) -> dict:
+    """Derive ``{shape, options, score, fill_rate, distinct}`` for an unmapped field.
+
+    ``score`` (0..1) ranks how likely the field is to matter: fill-rate dominates (a
+    field present on most records is more significant than one on a handful), with a
+    bonus for a structured shape and for a UDF namespace (a deliberate Tally custom
+    field). Pure and degrades gracefully - a source that supplies only the legacy
+    {count, sample} keys still classifies (distribution unknown → freetext)."""
+    fill_rate = float(info.get("fill_rate") or 0.0)
+    filled = int(info.get("filled") or info.get("count") or 0)
+    distinct = info.get("distinct", "unknown")    # "unknown" ≠ None(=many): no stats
+    values = info.get("values") or []
+    kind = value_kind(info.get("sample", ""))
+    shape, options = _shape(distinct, values, filled, kind)
+    # Importance rewards INFORMATION, not mere presence: a constant (same value on
+    # every record) tells us nothing, so fill-rate must not lift it - only its shape
+    # weight (0) and any UDF bonus apply. A varying field earns the fill-rate term.
+    base = 0.0 if shape == "constant" else 0.5 * fill_rate
+    score = base + _SHAPE_WEIGHT.get(shape, 0.0)
+    if info.get("is_udf"):
+        score += 0.15
+    return {
+        "shape": shape,
+        "options": options,
+        "score": round(min(score, 1.0), 3),
+        "fill_rate": round(fill_rate, 3),
+        "distinct": distinct,
+    }
 
 
 def _read_leaf_tags(obj_type: str, fields: list) -> set[str]:
@@ -276,6 +363,7 @@ def coverage_report(source) -> dict:
     """
     types = []
     unmapped_total = 0
+    meaningful_unmapped_total = 0
     unwritten_total = 0
     noise_total = 0
     redundant_total = 0
@@ -328,7 +416,15 @@ def coverage_report(source) -> dict:
                 # (the no-loss audit) rather than only counting them.
                 noise.append(row)
             else:
+                # Step 2: characterise the field (shape + importance) so the report
+                # can rank it, not just list it. Only unmapped fields - the actionable
+                # losses - are classified; the other buckets need no triage.
+                row.update(classify_field(info))
                 unmapped.append(row)
+
+        # Most-likely-to-matter first (high fill-rate / structured shape / UDF), then
+        # alphabetical for a stable order within equal scores.
+        unmapped.sort(key=lambda r: (-r.get("score", 0.0), r["field"]))
 
         imported_total += len(imported)
         ignored_total += len(ignored)
@@ -338,6 +434,12 @@ def coverage_report(source) -> dict:
         # imported/ignored tags add nothing actionable and are omitted to stay lean.
         if unmapped or unwritten or redundant or noise:
             unmapped_total += len(unmapped)
+            # "Meaningful" = a field that likely carries business data worth a look,
+            # as opposed to a zero-information constant / near-empty config remnant.
+            # This is what lets the UI lead with "0 fields of real concern" even when
+            # the file technically carries dozens of (constant) unmapped tags.
+            meaningful_unmapped_total += sum(
+                1 for r in unmapped if r.get("score", 0.0) >= _MEANINGFUL_SCORE)
             unwritten_total += len(unwritten)
             redundant_total += len(redundant)
             types.append({
@@ -357,6 +459,9 @@ def coverage_report(source) -> dict:
         # not losses, so they don't make a file un-clean.
         "clean": unmapped_total == 0 and unwritten_total == 0,
         "unmapped_field_count": unmapped_total,
+        # Of the unmapped tags, how many look like real business data (the rest are
+        # zero-information constants / config remnants, ranked to the bottom).
+        "meaningful_unmapped_count": meaningful_unmapped_total,
         "unwritten_field_count": unwritten_total,
         # Fields already imported via another (nested) path; shown reassuringly.
         "redundant_field_count": redundant_total,

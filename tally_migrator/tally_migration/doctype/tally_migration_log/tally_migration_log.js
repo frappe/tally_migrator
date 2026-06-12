@@ -140,15 +140,76 @@ function render_coverage(frm) {
 			</table>`;
 	};
 
+	// Step 2: a plain-language phrase for a field's derived shape, so the audit reads
+	// "looks like a Yes/No flag" instead of a bare tag name. Falls back to the value-
+	// kind (or nothing) for older logs that predate the classifier.
+	const SHAPE_LABEL = {
+		boolean: "Yes/No flag",
+		select: "category",
+		identifier: "reference / ID",
+		constant: "constant (same on every record)",
+		freetext: "free text",
+	};
+	const shapeText = (u) => {
+		if (u.shape == null) return u.kind || ""; // legacy log
+		if (u.shape === "typed") return u.kind || "typed value";
+		let s = SHAPE_LABEL[u.shape] || u.shape;
+		if (u.shape === "select" && (u.options || []).length)
+			s += `: ${u.options.slice(0, 6).map(esc).join(", ")}`;
+		return s;
+	};
+	// Richer unmapped table: adds "What it looks like" (shape) and fill-rate columns
+	// so the user can judge each field at a glance, not just see its name.
+	const unmappedTable = (list) => {
+		const rows = list
+			.map(
+				(u) => `
+				<tr>
+					<td style="font-family:monospace;">${esc(u.field)}</td>
+					<td class="text-muted small">${esc(shapeText(u))}</td>
+					<td class="text-right text-muted">${u.fill_rate != null ? Math.round(u.fill_rate * 100) + "%" : ""}</td>
+					<td class="text-muted">${u.sample ? esc(String(u.sample)) : ""}</td>
+				</tr>`
+			)
+			.join("");
+		return `
+			<table class="table table-condensed" style="margin:0 0 6px;">
+				<thead><tr>
+					<th style="border-top:0;">Field</th>
+					<th style="border-top:0;">What it looks like</th>
+					<th style="border-top:0;" class="text-right">Filled</th>
+					<th style="border-top:0;">Sample value</th>
+				</tr></thead>
+				<tbody>${rows}</tbody>
+			</table>`;
+	};
+
 	// Loss tables (UDFs we never read + read-but-not-persisted), one block per type
 	// that actually has a loss - this is what makes a file "un-clean".
 	const lossTypes = report.types.filter(
 		(t) => (t.unmapped || []).length || (t.unwritten || []).length
 	);
+	// Whether the classifier ran (new logs). When it did, split each type's unmapped
+	// fields into the ones that look like real business data and the zero-information
+	// constants, so the latter can be tucked into a collapser instead of alarming.
+	const haveScores = report.meaningful_unmapped_count != null;
+	const isMeaningful = (u) => u.score == null || u.score >= 0.2;
 	const blocks = lossTypes
 		.map((t) => {
-			const unmapped = (t.unmapped || []).length
-				? `<div class="text-muted small" style="margin:2px 0;">Not read from the file (custom fields / UDFs):</div>${fieldTable(t.unmapped, "Sample value")}`
+			const all = t.unmapped || [];
+			const meaningful = haveScores ? all.filter(isMeaningful) : all;
+			const trivial = haveScores ? all.filter((u) => !isMeaningful(u)) : [];
+			const unmapped = all.length
+				? (meaningful.length
+						? `<div class="text-muted small" style="margin:2px 0;">Not read from the file (custom fields / UDFs):</div>${unmappedTable(meaningful)}`
+						: "") +
+				  (trivial.length
+						? collapsible(
+								trivial.length + 1, // always collapsed: reassurance-only detail
+								`Show ${trivial.length} config constant(s) - same value on every record, no business data`,
+								unmappedTable(trivial)
+						  )
+						: "")
 				: "";
 			const unwritten = (t.unwritten || []).length
 				? `<div class="small" style="margin:6px 0 2px; color:${TEXT}; display:flex; align-items:center; gap:6px;">${statusIcon("info")}<span>Read but not written to ERPNext:</span></div>${fieldTable(t.unwritten, "Sample value")}`
@@ -236,13 +297,31 @@ function render_coverage(frm) {
 		  )
 		: "";
 
+	// Lead with the meaningful count when the classifier ran: a file whose unmapped
+	// tags are all config constants is not a real loss, and saying "12 not migrated"
+	// would alarm without cause. Falls back to the raw count for older logs.
+	const meaningfulCount = report.meaningful_unmapped_count;
+	const rawUnmapped = report.unmapped_field_count || 0;
+	let lead;
+	if (meaningfulCount == null) {
+		lead = `<strong>${rawUnmapped}</strong> field(s) in your file were
+			<strong>not migrated</strong> (Tally custom fields / attributes outside the
+			supported mapping). The records themselves still imported.`;
+	} else if (meaningfulCount === 0) {
+		lead = `The <strong>${rawUnmapped}</strong> unmapped field(s) in your file are all
+			Tally config constants (the same value on every record) - <strong>no business
+			data</strong>. The records themselves imported in full.`;
+	} else {
+		const extra = rawUnmapped - meaningfulCount;
+		lead = `<strong>${meaningfulCount}</strong> field(s) that look like business data
+			were <strong>not migrated</strong> (Tally custom fields outside the supported
+			mapping)${extra > 0 ? `, plus ${extra} config constant(s) of no business value` : ""}.
+			The records themselves still imported.`;
+	}
+
 	wrapper.html(section(`
 		<div style="${CARD}">
-			<div class="text-muted small" style="margin-bottom:8px;">
-				<strong>${report.unmapped_field_count}</strong> field(s) in your file were
-				<strong>not migrated</strong> (Tally custom fields / attributes outside the
-				supported mapping). The records themselves still imported.
-			</div>
+			<div class="text-muted small" style="margin-bottom:8px;">${lead}</div>
 			${unwrittenNote}
 			${recon}
 			${collapsible(lossTypes.length, `Show field details (${lossTypes.length} record type(s))`, blocks)}

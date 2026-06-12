@@ -6,8 +6,18 @@ from unittest import mock
 
 from tally_migrator.migration import coverage as cov
 from tally_migrator.migration.coverage import (
-    coverage_report, read_tags, value_kind,
+    coverage_report, read_tags, value_kind, classify_field,
 )
+
+
+def _rich(filled, distinct, values, sample="", fill_rate=1.0, is_udf=False, count=None):
+    """A raw_tags entry with the Step-2 distribution stats."""
+    return {
+        "count": count if count is not None else filled,
+        "filled": filled, "fill_rate": fill_rate, "distinct": distinct,
+        "values": values, "sample": sample or (values[0] if values else ""),
+        "is_udf": is_udf, "records": ["Acme"],
+    }
 
 
 class _Src:
@@ -292,6 +302,86 @@ class TestCoverage(unittest.TestCase):
         red = report["types"][0]["redundant"][0]
         self.assertEqual(red["field"], "GSTIN")
         self.assertEqual(red["kind"], "GST numbers")
+
+
+class TestStep2Classification(unittest.TestCase):
+    """Step 2: shape + importance derived from each unmapped field's distribution."""
+
+    def test_boolean_shape(self):
+        c = classify_field(_rich(10, 2, ["No", "Yes"]))
+        self.assertEqual(c["shape"], "boolean")
+        self.assertEqual(c["options"], ["No", "Yes"])
+
+    def test_select_shape_low_cardinality(self):
+        c = classify_field(_rich(20, 3, ["Distributor", "Retail", "Wholesale"]))
+        self.assertEqual(c["shape"], "select")
+        self.assertEqual(c["options"], ["Distributor", "Retail", "Wholesale"])
+
+    def test_identifier_shape_high_cardinality(self):
+        # distinct=None means "many" (cardinality cap exceeded) → free-form id.
+        c = classify_field(_rich(48, None, []))
+        self.assertEqual(c["shape"], "identifier")
+
+    def test_typed_shape_from_value_kind(self):
+        c = classify_field(_rich(40, None, [], sample="27AABCR1234A1Z5"))
+        self.assertEqual(c["shape"], "typed")
+
+    def test_constant_shape_single_value(self):
+        c = classify_field(_rich(30, 1, ["Standard"]))
+        self.assertEqual(c["shape"], "constant")
+
+    def test_constant_zero_is_not_boolean(self):
+        # Tally config scaffolding is a single "0" on every record - a constant, not
+        # a boolean (even though "0" is in the boolean vocabulary), and it must score
+        # ~0 so it never outranks a genuinely varying field on fill-rate alone.
+        c = classify_field(_rich(50, 1, ["0"], fill_rate=1.0))
+        self.assertEqual(c["shape"], "constant")
+        self.assertEqual(c["score"], 0.0)
+        varying = classify_field(_rich(5, 4, ["A", "B", "C", "D"], fill_rate=0.1))
+        self.assertGreater(varying["score"], c["score"])
+
+    def test_score_rises_with_fill_rate_and_udf(self):
+        sparse = classify_field(_rich(1, 5, ["a", "b", "c", "d", "e"], fill_rate=0.02))
+        full = classify_field(_rich(50, 5, ["a", "b", "c", "d", "e"], fill_rate=1.0))
+        self.assertLess(sparse["score"], full["score"])
+        plain = classify_field(_rich(50, 5, ["a", "b"], fill_rate=1.0))
+        udf = classify_field(_rich(50, 5, ["a", "b"], fill_rate=1.0, is_udf=True))
+        self.assertLess(plain["score"], udf["score"])
+
+    def test_unmapped_rows_are_ranked_by_score(self):
+        # A near-empty free-text UDF should sort BELOW a fully-populated typed one.
+        report = coverage_report(_Src({"Ledger": {
+            "NAME": _tag(),
+            "RARELYUSEDNOTE": _rich(1, None, [], sample="misc", fill_rate=0.01),
+            "PARTYGSTIN2": _rich(50, None, [], sample="27AABCR1234A1Z5", fill_rate=1.0),
+        }}))
+        rows = report["types"][0]["unmapped"]
+        self.assertEqual([r["field"] for r in rows], ["PARTYGSTIN2", "RARELYUSEDNOTE"])
+        self.assertEqual(rows[0]["shape"], "typed")
+
+    def test_udf_yesno_escapes_noise_as_boolean(self):
+        # A Yes/No field with the UDF namespace marker is a user-defined boolean, not
+        # a built-in config flag - it must escape the Yes/No noise sentinel, land in
+        # the actionable list, and classify as a Check candidate. A Yes/No field
+        # WITHOUT the marker stays hidden as noise, exactly as before.
+        report = coverage_report(_Src({"Ledger": {
+            "NAME": _tag(),
+            "ISVIPCUSTOMER": _rich(10, 2, ["No", "Yes"], is_udf=True),   # business UDF
+            "ISBILLWISEON": _rich(10, 2, ["No", "Yes"], is_udf=False),   # config flag
+        }}))
+        led = report["types"][0]
+        unmapped = {r["field"]: r for r in led["unmapped"]}
+        self.assertIn("ISVIPCUSTOMER", unmapped)
+        self.assertEqual(unmapped["ISVIPCUSTOMER"]["shape"], "boolean")
+        self.assertEqual(report["unmapped_field_count"], 1)
+        noise = {r["field"] for r in led["noise"]}
+        self.assertIn("ISBILLWISEON", noise)
+
+    def test_classification_degrades_without_distribution_stats(self):
+        # Legacy {count, sample} entry (no distinct/fill_rate) still classifies.
+        c = classify_field({"count": 3, "sample": "Wholesale", "records": ["Acme"]})
+        self.assertEqual(c["shape"], "freetext")
+        self.assertEqual(c["fill_rate"], 0.0)
 
 
 if __name__ == "__main__":

@@ -789,17 +789,24 @@ class TallyMigratorPage {
 		const report = this.coverageReport;
 		const $sec = $("#coverage-section");
 		const types = report && report.types ? report.types : [];
-		// Only genuine losses (unmapped / read-but-not-saved) are worth the user's
-		// attention. Redundant duplicates and hidden noise are reassurance, not loss.
-		const lossCount =
-			(report ? report.unmapped_field_count || 0 : 0) +
-			(report ? report.unwritten_field_count || 0 : 0);
+		// Only genuine losses (unmapped business data / read-but-not-saved) are worth
+		// the user's attention. Step 2's classifier separates real unmapped data from
+		// zero-information config constants: a file whose only "unmapped" tags are
+		// constants is not a loss, so those are demoted to a muted note (like noise),
+		// never the amber alert. Older logs without scores fall back to the raw count.
+		const haveScores = !!report && report.meaningful_unmapped_count != null;
+		const rawUnmapped = report ? report.unmapped_field_count || 0 : 0;
+		const meaningfulUnmapped = haveScores ? report.meaningful_unmapped_count : rawUnmapped;
+		const unwritten = report ? report.unwritten_field_count || 0 : 0;
+		const constants = rawUnmapped - meaningfulUnmapped; // constant/config remnants
+		const lossCount = meaningfulUnmapped + unwritten;    // the REAL loss
 		const redundant = report ? report.redundant_field_count || 0 : 0;
 		const noise = report ? report.noise_field_count || 0 : 0;
-		// Stay silent on a clean file whose only skips are internal noise (every real
-		// export has hundreds) - that count still lives on the migration log. Speak up
-		// only for a real loss, or to explain a redundant duplicate the user may miss.
-		if (!report || (lossCount === 0 && redundant === 0)) {
+		const isMeaningful = (u) => !haveScores || u.score == null || u.score >= 0.2;
+		// Stay silent on a clean file whose only skips are internal noise / constants
+		// (every real export has hundreds) - those still live on the migration log.
+		// Speak up only for a real loss, or to explain a redundant duplicate.
+		if (!report || (lossCount === 0 && redundant === 0 && constants === 0)) {
 			$sec.hide().empty();
 			return;
 		}
@@ -825,7 +832,7 @@ class TallyMigratorPage {
 		const lossBlocks = types
 			.map((t) => {
 				const items = [
-					...(t.unmapped || []).map((u) =>
+					...(t.unmapped || []).filter(isMeaningful).map((u) =>
 						line(u, "No matching ERPNext field, so it will not be imported.")
 					),
 					...(t.unwritten || []).map((u) =>
@@ -854,6 +861,12 @@ class TallyMigratorPage {
 					audit / legacy-tax data) were hidden as they carry no business value.
 				</div>`
 			: "";
+		const constantsNote = constants
+			? `<div style="margin-top:6px; font-size:12px; color:var(--text-muted, #888);">
+					${plur(constants, "Tally config field")} hold the same value on every record
+					(no business data) - skipped, and recorded in full on the migration log.
+				</div>`
+			: "";
 
 		// Tone follows content. With NO real loss, the calm reassurance is honest.
 		// With real loss, we must NOT say "nothing to act on" - name the fields and
@@ -861,7 +874,7 @@ class TallyMigratorPage {
 		if (lossCount === 0) {
 			$sec.html(`
 				<div style="margin:0; background:var(--green-100, #e4f5e9); border:1px solid var(--green-200, #daf0e1); border-radius:8px; padding:12px 14px;">
-					${TallyMigratorPage.iconRow("success", `<strong>All your records will import fully.</strong> No fields with a place in ERPNext were left behind.${redundantNote}${noiseNote}`)}
+					${TallyMigratorPage.iconRow("success", `<strong>All your records will import fully.</strong> No fields with a place in ERPNext were left behind.${redundantNote}${noiseNote}${constantsNote}`)}
 				</div>
 			`).show();
 			return;
@@ -885,7 +898,7 @@ class TallyMigratorPage {
 						business. Nothing is changed automatically, and the full list is
 						saved on the migration log.
 						<div style="margin-top:10px;">${lossBlocks}</div>
-						${redundantNote}${noiseNote}
+						${redundantNote}${noiseNote}${constantsNote}
 					</div>
 				</div>
 			</div>

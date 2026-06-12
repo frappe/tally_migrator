@@ -291,25 +291,65 @@ class FileTallySource:
         extractor's fixed FETCH list never reads - Tally UDFs and any other
         fields outside our mapping - so nothing is dropped silently.
 
-        Returns ``{TAGNAME: {"count": int, "sample": str, "records": [names]}}``
-        where ``TAGNAME`` is the upper-cased local tag name (namespace stripped,
-        so a ``UDF:`` field appears under its bare name).
+        Returns ``{TAGNAME: {...}}`` where ``TAGNAME`` is the upper-cased local tag
+        name (XML namespace stripped) and each value carries both the original
+        coverage fields and the value-distribution stats the Step-2 classifier needs::
+
+            {"count": int,        # occurrences (incl. empty) - back-compat
+             "filled": int,       # occurrences with a non-empty value
+             "fill_rate": float,  # filled / total records of this type (0..1)
+             "distinct": int|None,# distinct non-empty values, or None when "many"
+                                  #   (more than DISTINCT_CAP - i.e. high cardinality)
+             "values": [str],     # up to 12 distinct example values (for Select/Bool)
+             "is_udf": bool,      # tag carried a namespace/colon (Tally UDF signal)
+             "sample": str, "records": [names]}
+
+        ``distinct``/``values`` are how the classifier tells a low-cardinality
+        category (Select) from a free-form identifier without any hand-listed names.
         """
+        DISTINCT_CAP = 50          # beyond this we stop tracking values and call it "many"
         tag = obj_type.upper().replace(" ", "")
+        records = self._by_tag.get(tag, ())
+        record_total = len(records)
         out: dict = {}
-        for elem in self._by_tag.get(tag, ()):
+        for elem in records:
             name = (elem.get("NAME") or elem.findtext("NAME") or "").strip()
             if not name:
                 continue
             for child in elem:
-                local = child.tag.split("}")[-1].upper()  # drop {namespace}
-                entry = out.setdefault(local, {"count": 0, "sample": "", "records": []})
+                full = child.tag                          # may be "{TallyUDF}Field"
+                local = full.split("}")[-1].upper()        # bare name (namespace dropped)
+                # A Tally UDF (user-defined field) serialises in the TallyUDF XML
+                # namespace (xmlns:UDF="TallyUDF"), which ElementTree renders as
+                # "{TallyUDF}Field"; a built-in master field carries no namespace. We
+                # must read this off the FULL tag - the namespace is gone after the
+                # split above. (Detection unverified on a real UDF export - see the
+                # parked-udf gate; correct by design, inert until such a file exists.)
+                is_udf = full.startswith("{") and "UDF" in full.split("}")[0].upper()
+                entry = out.setdefault(local, {
+                    "count": 0, "filled": 0, "sample": "", "records": [],
+                    "is_udf": is_udf, "_distinct": set(), "_overflow": False,
+                })
                 entry["count"] += 1
                 text = (child.text or "").strip()
-                if not entry["sample"] and text:
-                    entry["sample"] = text
+                if text:
+                    entry["filled"] += 1
+                    if not entry["sample"]:
+                        entry["sample"] = text
+                    if not entry["_overflow"] and text not in entry["_distinct"]:
+                        if len(entry["_distinct"]) < DISTINCT_CAP:
+                            entry["_distinct"].add(text)
+                        else:
+                            entry["_overflow"] = True   # high cardinality - stop tracking
                 if len(entry["records"]) < 5 and name not in entry["records"]:
                     entry["records"].append(name)
+        for entry in out.values():
+            distinct = entry.pop("_distinct")
+            overflow = entry.pop("_overflow")
+            entry["distinct"] = None if overflow else len(distinct)
+            entry["values"] = sorted(distinct)[:12]
+            entry["fill_rate"] = (round(entry["filled"] / record_total, 3)
+                                  if record_total else 0.0)
         return out
 
     def approx_record_count(self) -> int:
