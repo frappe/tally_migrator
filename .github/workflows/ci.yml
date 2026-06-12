@@ -113,7 +113,9 @@ jobs:
 
       - name: Fetch India Compliance
         working-directory: frappe-bench
-        run: bench get-app india_compliance --branch "$INDIA_COMPLIANCE_BRANCH"
+        # Full repo URL required: bench's short-name resolver only checks the
+        # frappe/erpnext GitHub orgs, and India Compliance lives under resilient-tech.
+        run: bench get-app https://github.com/resilient-tech/india-compliance --branch "$INDIA_COMPLIANCE_BRANCH"
 
       - name: Create the test site
         working-directory: frappe-bench

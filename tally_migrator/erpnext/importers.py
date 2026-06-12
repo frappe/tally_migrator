@@ -315,6 +315,20 @@ class PartyImporter(BaseImporter):
             return "Overseas"
         return infer_gst_category(record.get("GSTRegistrationNumber") or "", "India")
 
+    def _maybe_gstin(self, record: dict) -> dict:
+        """India Compliance owns the party-level ``gstin`` field and recomputes
+        ``gst_category`` from it on validate. If we set ``tax_id`` but not ``gstin``,
+        IC sees no registered GSTIN and clobbers our category to 'Unregistered' (and
+        the party stores no GSTIN at all). So when the field exists (IC installed)
+        and the GSTIN is structurally valid, set it too - which makes IC keep the
+        category we computed. An invalid or absent GSTIN falls back to ``tax_id``
+        only, exactly as before IC, so a bad GSTIN never blocks the party."""
+        gstin = (record.get("GSTRegistrationNumber") or "").strip().upper()
+        if (gstin and validate_gstin(gstin)[0]
+                and frappe.get_meta(self.doctype).has_field("gstin")):
+            return {"gstin": gstin}
+        return {}
+
     def _resolve_payment_terms(self, tally_credit_period: str) -> str:
         """
         Tally stores a credit period as '30 Days' or '30'. The Customer/Supplier
@@ -352,7 +366,12 @@ class PartyImporter(BaseImporter):
             addr.pincode = data.get("PinCode") or ""
             addr.phone = data.get("LedgerPhone") or data.get("LedgerMobile") or ""
             addr.email_id = data.get("LedgerEmail") or ""
-            addr.gstin = data.get("GSTRegistrationNumber") or ""
+            # Only set a structurally valid GSTIN: India Compliance validates the
+            # address GSTIN and rejects the whole address on a malformed one, which
+            # would lose the address entirely. A bad GSTIN is already flagged by the
+            # pre-flight; here we drop just the field and keep the address.
+            gstin = (data.get("GSTRegistrationNumber") or "").strip().upper()
+            addr.gstin = gstin if (gstin and validate_gstin(gstin)[0]) else ""
             addr.append("links", {"link_doctype": link_type, "link_name": link_name})
             addr.insert(ignore_permissions=True)
             frappe.db.commit()
@@ -458,6 +477,7 @@ class CustomerImporter(PartyImporter):
         limit = self._to_float(record.get("CreditLimit"))
         if limit > 0:
             doc["credit_limits"] = [{"company": self.company, "credit_limit": limit}]
+        doc.update(self._maybe_gstin(record))
         return doc
 
 
@@ -466,7 +486,7 @@ class SupplierImporter(PartyImporter):
     key_field = "supplier_name"
 
     def build_doc(self, record: dict) -> dict:
-        return {
+        doc = {
             "doctype": "Supplier",
             "supplier_name": record["_name"],
             "supplier_group": DEFAULT_SUPPLIER_GROUP,
@@ -476,6 +496,8 @@ class SupplierImporter(PartyImporter):
             "gst_category": self._gst_category(record),
             "payment_terms": self._resolve_payment_terms(record.get("BillCreditPeriod")),
         }
+        doc.update(self._maybe_gstin(record))
+        return doc
 
 
 # ── Item importer ───────────────────────────────────────────────────────────────

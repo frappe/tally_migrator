@@ -104,6 +104,26 @@ class TestERPNextImporter(unittest.TestCase):
             "Customer", {"customer_name": "_TMTest Customer Comp"}, "gst_category")
         self.assertEqual(cat, "Registered Composition")
 
+    def test_party_gstin_field_set_so_india_compliance_keeps_category(self):
+        """Regression: India Compliance owns the party `gstin` field and recomputes
+        gst_category from it on validate. If the importer sets only `tax_id`, IC
+        clobbers the category to 'Unregistered'. The importer must also set `gstin`
+        (when valid + the field exists) so IC preserves the computed category."""
+        if not frappe.db.has_column("Customer", "gstin"):
+            self.skipTest("gstin field requires the India Compliance app")
+        customer = {
+            "_name": "_TMTest Customer GSTIN",
+            "GSTRegistrationNumber": "27AAACT2727Q1ZW",
+            "GSTRegistrationType": "Regular",
+            "LedgerState": "Maharashtra",
+        }
+        self.importer.import_customers([customer])
+        row = frappe.db.get_value(
+            "Customer", {"customer_name": "_TMTest Customer GSTIN"},
+            ["gstin", "gst_category"], as_dict=True)
+        self.assertEqual(row.gstin, "27AAACT2727Q1ZW")
+        self.assertEqual(row.gst_category, "Registered Regular")
+
     def test_credit_limit_imported(self):
         customer = {"_name": "_TMTest Customer Credit", "CreditLimit": "200000"}
         self.importer.import_customers([customer])
@@ -138,6 +158,10 @@ class TestERPNextImporter(unittest.TestCase):
             "_name": "_TMTest Customer Mail",
             "MailingName": "_TMTest Mailing Title",
             "Address": "5 Mailing Road",
+            # India Compliance makes state mandatory on an Indian address; supply one
+            # so this test exercises its actual intent (MailingName -> address_title)
+            # rather than tripping IC's unrelated state requirement.
+            "LedgerState": "Maharashtra",
         }
         self.importer.import_customers([customer])
         self.assertTrue(
