@@ -279,23 +279,29 @@ def coverage_report(source) -> dict:
     unwritten_total = 0
     noise_total = 0
     redundant_total = 0
+    imported_total = 0
+    ignored_total = 0
+    total_tags = 0
     for obj_type, fields in MAPPED_FIELDS.items():
         mapped = _read_tags(obj_type, fields) | {"NAME"}
         written = _read_tags(obj_type, WRITTEN_FIELDS.get(obj_type, fields)) | {"NAME"}
         read_not_written = mapped - written
         read_leaves = _read_leaf_tags(obj_type, fields)
         tags = source.raw_tags(obj_type)
+        total_tags += len(tags)
 
-        unmapped, unwritten, redundant = [], [], []
+        # Every tag the file carries lands in EXACTLY ONE bucket below - the if/elif
+        # chain is exhaustive (the final ``else`` catches everything), so no field can
+        # silently vanish. That structural completeness is the no-loss guarantee; the
+        # invariant test re-checks ``total == sum(buckets)`` to keep it honest.
+        #   ignored   - Tally system identity tags (NAME/GUID/MASTERID…); not data.
+        #   imported  - read AND written to ERPNext (the data that made it through).
+        #   unwritten - read by the extractor but no importer persists it. Loss.
+        #   redundant - flat duplicate of a nested value we already import. Not a loss.
+        #   noise     - Tally-internal (flags/empty containers/audit/legacy tax).
+        #   unmapped  - a tag we never fetch (a UDF/custom field). Loss.
+        ignored, imported, unmapped, unwritten, redundant, noise = [], [], [], [], [], []
         for tag, info in sorted(tags.items()):
-            if tag in IGNORED_TAGS:
-                continue
-            # Tally-internal noise (flags/empty containers/audit/legacy tax) is
-            # hidden from the report but counted, so the user knows it was dropped
-            # without drowning the fields that actually carry data.
-            if tag not in mapped and _is_noise(tag, info):
-                noise_total += 1
-                continue
             # The field is shown by its raw Tally name; a derived value-shape phrase
             # ("Looks like GST numbers") gives the plain-language hint - no
             # hand-maintained tag dictionary.
@@ -306,17 +312,31 @@ def coverage_report(source) -> dict:
                 "sample": info.get("sample", ""),
                 "examples": info.get("records", []),
             }
-            if tag not in mapped:
+            if tag in IGNORED_TAGS:
+                ignored.append(row)
+            elif tag in mapped:
+                # A mapped tag the extractor fetches but no importer persists is still
+                # a loss; otherwise it reached ERPNext.
+                (unwritten if tag in read_not_written else imported).append(row)
+            elif tag in read_leaves:
                 # A flat tag whose name matches a NESTED path we already read is a
                 # duplicate of imported data, not a loss - reassure, don't alarm.
-                if tag in read_leaves:
-                    redundant.append(row)
-                else:
-                    unmapped.append(row)
-            elif tag in read_not_written:
-                unwritten.append(row)
+                redundant.append(row)
+            elif _is_noise(tag, info):
+                # Tally-internal: suppressed from the loss tables but RETAINED here in
+                # full, so the migration log can show every dropped field on demand
+                # (the no-loss audit) rather than only counting them.
+                noise.append(row)
+            else:
+                unmapped.append(row)
 
-        if unmapped or unwritten or redundant:
+        imported_total += len(imported)
+        ignored_total += len(ignored)
+        noise_total += len(noise)
+        # Surface a type whenever it carries anything we dropped, hid, or duplicated -
+        # noise included, so the log's "show everything" audit has it. Types with only
+        # imported/ignored tags add nothing actionable and are omitted to stay lean.
+        if unmapped or unwritten or redundant or noise:
             unmapped_total += len(unmapped)
             unwritten_total += len(unwritten)
             redundant_total += len(redundant)
@@ -325,7 +345,13 @@ def coverage_report(source) -> dict:
                 "unmapped": unmapped,
                 "unwritten": unwritten,
                 "redundant": redundant,
+                "noise": noise,
             })
+    # Reconciliation: every tag is accounted for in exactly one bucket. Computed here
+    # (not asserted) so a mismatch surfaces in the report/log instead of crashing a
+    # migration; the invariant test fails loudly in CI if it ever drifts.
+    accounted = (imported_total + ignored_total + noise_total
+                 + redundant_total + unmapped_total + unwritten_total)
     return {
         # "clean" = no actual data loss. Redundant duplicates and hidden noise are
         # not losses, so they don't make a file un-clean.
@@ -334,7 +360,15 @@ def coverage_report(source) -> dict:
         "unwritten_field_count": unwritten_total,
         # Fields already imported via another (nested) path; shown reassuringly.
         "redundant_field_count": redundant_total,
-        # Tally-internal fields intentionally suppressed from the per-field tables.
+        # Tally-internal fields suppressed from the per-field tables but itemised in
+        # each type's "noise" list for the log audit.
         "noise_field_count": noise_total,
+        # Fields that DID reach ERPNext, plus Tally system identity tags - counted so
+        # the totals reconcile and the user can see nothing fell through a crack.
+        "imported_field_count": imported_total,
+        "ignored_field_count": ignored_total,
+        "total_tag_count": total_tags,
+        # The machine-checked no-loss promise: True iff every tag landed in a bucket.
+        "accounted_for": accounted == total_tags,
         "types": types,
     }

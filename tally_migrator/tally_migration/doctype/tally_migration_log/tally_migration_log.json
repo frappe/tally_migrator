@@ -212,7 +212,7 @@
   {
    "fieldname": "section_coverage",
    "fieldtype": "Section Break",
-   "label": "Fields Not Migrated",
+   "label": "Field Coverage",
    "collapsible": 1,
    "depends_on": "eval:doc.coverage_report && doc.coverage_report != '{}'"
   },

@@ -115,17 +115,6 @@ function render_coverage(frm) {
 	if (!report || !report.types) return;
 
 	const esc = frappe.utils.escape_html;
-	if (report.clean || !report.types.length) {
-		wrapper.html(
-			section(
-				callout(
-					"success",
-					iconRow("success", "Every field in your file maps to an ERPNext field - nothing was left behind.")
-				)
-			)
-		);
-		return;
-	}
 
 	const fieldTable = (list, valueLabel) => {
 		const rows = list
@@ -151,7 +140,12 @@ function render_coverage(frm) {
 			</table>`;
 	};
 
-	const blocks = report.types
+	// Loss tables (UDFs we never read + read-but-not-persisted), one block per type
+	// that actually has a loss - this is what makes a file "un-clean".
+	const lossTypes = report.types.filter(
+		(t) => (t.unmapped || []).length || (t.unwritten || []).length
+	);
+	const blocks = lossTypes
 		.map((t) => {
 			const unmapped = (t.unmapped || []).length
 				? `<div class="text-muted small" style="margin:2px 0;">Not read from the file (custom fields / UDFs):</div>${fieldTable(t.unmapped, "Sample value")}`
@@ -166,6 +160,68 @@ function render_coverage(frm) {
 				</div>`;
 		})
 		.join("");
+
+	// Full no-loss audit: every Tally-internal field we suppressed is still listed
+	// here on demand, so a skeptical user can confirm nothing of value was hidden.
+	// (Older logs predate the itemised noise list, so guard for its absence.)
+	const noiseBlocks = report.types
+		.filter((t) => (t.noise || []).length)
+		.map(
+			(t) => `
+			<div style="margin-bottom:12px;">
+				<div style="font-weight:500; margin-bottom:4px;">${esc(t.entity_type)}</div>
+				${fieldTable(t.noise, "Sample value")}
+			</div>`
+		)
+		.join("");
+	const noiseCount = report.noise_field_count || 0;
+	const noiseAudit = noiseBlocks
+		? collapsible(
+				COLLAPSE_AT + 1, // always collapse this verbose, reassurance-only detail
+				`Show all ${noiseCount} Tally-internal field(s) we set aside`,
+				`<div class="text-muted small" style="margin:2px 0 8px;">Config flags, empty
+					containers, audit stamps and pre-GST tax scaffolding - no business value,
+					listed here so nothing is hidden.</div>${noiseBlocks}`
+		  )
+		: "";
+
+	// Reconciliation line: account for every tag in the file by bucket, so the audit
+	// reads as a closed balance ("all N accounted for"), not just a loss count. Shown
+	// only when the new totals are present (older logs omit them).
+	let recon = "";
+	if (report.total_tag_count != null) {
+		const internal = (report.noise_field_count || 0) + (report.ignored_field_count || 0);
+		const loss = (report.unmapped_field_count || 0) + (report.unwritten_field_count || 0);
+		const parts = [
+			`<strong>${report.imported_field_count || 0}</strong> imported`,
+			(report.redundant_field_count || 0) ? `<strong>${report.redundant_field_count}</strong> already captured via another field` : "",
+			internal ? `<strong>${internal}</strong> Tally-internal` : "",
+			loss ? `<strong>${loss}</strong> not migrated` : "",
+		].filter(Boolean).join(" · ");
+		const mismatch = report.accounted_for === false;
+		recon = callout(
+			mismatch ? "error" : "info",
+			iconRow(
+				mismatch ? "error" : "info",
+				mismatch
+					? `Coverage accounting did not reconcile (${report.total_tag_count} fields in file). Please report this log.`
+					: `All <strong>${report.total_tag_count}</strong> fields in your file are accounted for: ${parts}. Nothing was dropped without a record.`
+			),
+			"margin-bottom:8px;"
+		);
+	}
+
+	if (!lossTypes.length) {
+		// No real loss: lead with reassurance, but still offer the full audit beneath.
+		wrapper.html(section(`
+			<div style="${CARD}">
+				${callout("success", iconRow("success", "Every field that carries data reached ERPNext - nothing was left behind."))}
+				${recon ? `<div style="margin-top:8px;">${recon}</div>` : ""}
+				${noiseAudit}
+			</div>
+		`));
+		return;
+	}
 
 	const unwrittenCount = report.unwritten_field_count || 0;
 	const unwrittenNote = unwrittenCount
@@ -188,7 +244,9 @@ function render_coverage(frm) {
 				supported mapping). The records themselves still imported.
 			</div>
 			${unwrittenNote}
-			${collapsible(report.types.length, `Show field details (${report.types.length} record type(s))`, blocks)}
+			${recon}
+			${collapsible(lossTypes.length, `Show field details (${lossTypes.length} record type(s))`, blocks)}
+			${noiseAudit}
 		</div>
 	`));
 }

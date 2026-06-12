@@ -220,6 +220,66 @@ class TestCoverage(unittest.TestCase):
         self.assertNotIn("label", row)                       # no humanized label
         self.assertEqual(row["kind"], "")
 
+    # ── No-loss invariant (Step 1): every tag is accounted for ───────────────
+
+    @staticmethod
+    def _buckets_sum(report):
+        return (report["imported_field_count"] + report["ignored_field_count"]
+                + report["noise_field_count"] + report["redundant_field_count"]
+                + report["unmapped_field_count"] + report["unwritten_field_count"])
+
+    def test_every_tag_lands_in_exactly_one_bucket(self):
+        # One tag of each of the six classes. The counts must sum to the total tag
+        # count and ``accounted_for`` must hold - the no-loss guarantee, by number.
+        patched = {**cov.WRITTEN_FIELDS, "Ledger": ["Name", "Parent"]}
+        with mock.patch.object(cov, "WRITTEN_FIELDS", patched):
+            report = coverage_report(_Src({"Ledger": {
+                "GUID": _tag(),                                        # ignored
+                "NAME": _tag(),                                        # ignored
+                "PARENT": _tag(7, "Sundry Debtors", ["Acme"]),        # imported
+                "OPENINGBALANCE": _tag(5, "5000 Dr", ["Acme"]),       # unwritten (loss)
+                "GSTIN": _tag(8, "27AABCR1234A1Z5", ["Acme"]),        # redundant
+                "ISBILLWISEON": _tag(40, "No"),                       # noise
+                "CUSTOMERCATEGORY": _tag(3, "Wholesale", ["Acme"]),   # unmapped (loss)
+            }}))
+        self.assertEqual(report["total_tag_count"], 7)
+        self.assertEqual(report["ignored_field_count"], 2)
+        self.assertEqual(report["imported_field_count"], 1)
+        self.assertEqual(report["unwritten_field_count"], 1)
+        self.assertEqual(report["redundant_field_count"], 1)
+        self.assertEqual(report["noise_field_count"], 1)
+        self.assertEqual(report["unmapped_field_count"], 1)
+        self.assertTrue(report["accounted_for"])
+        self.assertEqual(self._buckets_sum(report), report["total_tag_count"])
+
+    def test_noise_is_itemised_not_just_counted(self):
+        # The previously-discarded noise rows are now retained in full on the type, so
+        # the migration log can show every dropped field on demand (the audit trail).
+        report = coverage_report(_Src({"Ledger": {
+            "NAME": _tag(),
+            "ISBILLWISEON": _tag(40, "No"),
+            "CUSTOMERCATEGORY": _tag(3, "Wholesale", ["Acme"]),
+        }}))
+        led = report["types"][0]
+        self.assertEqual([r["field"] for r in led["noise"]], ["ISBILLWISEON"])
+        self.assertEqual(led["noise"][0]["sample"], "No")
+        self.assertTrue(report["accounted_for"])
+
+    def test_accounting_reconciles_on_real_field_set(self):
+        # On the real mapped field set (plus a UDF, a redundant flat tag and noise),
+        # the totals still reconcile - no field of a genuine export shape slips out.
+        tags = {t: _tag(5, "x", ["Acme"]) for t in read_tags("Ledger")}
+        tags.update({
+            "GUID": _tag(), "MASTERID": _tag(),                       # ignored
+            "GSTIN": _tag(8, "27AABCR1234A1Z5", ["Acme"]),           # redundant
+            "ISBILLWISEON": _tag(40, "No"),                          # noise
+            "LOYALTYTIER": _tag(3, "Gold", ["Acme"]),                # unmapped UDF
+        })
+        report = coverage_report(_Src({"Ledger": tags}))
+        self.assertTrue(report["accounted_for"])
+        self.assertEqual(self._buckets_sum(report), report["total_tag_count"])
+        self.assertEqual(report["unmapped_field_count"], 1)
+
     def test_flat_tag_matching_a_nested_path_is_redundant_not_loss(self):
         # A flat <GSTIN> duplicates LEDGSTREGDETAILS.LIST/GSTIN, which we already
         # read - so it's redundant (not a loss) and the file stays clean. Detected
