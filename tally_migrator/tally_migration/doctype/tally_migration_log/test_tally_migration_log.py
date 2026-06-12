@@ -64,7 +64,20 @@ class TestTallyMigrationLog(unittest.TestCase):
         self.assertEqual(parsed["Customers"]["created"], 10)
 
     def test_permissions_deny_guest(self):
+        # A real permissioned insert (not the ignore_permissions helper, which would
+        # bypass the very check under test). No role is granted create on this
+        # doctype - logs are created server-side during a migration run - so a Guest
+        # insert must be denied.
         frappe.set_user("Guest")
-        with self.assertRaises(frappe.PermissionError):
-            self._make_log()
-        frappe.set_user("Administrator")
+        try:
+            doc = frappe.get_doc({
+                "doctype":        "Tally Migration Log",
+                "company":        self.company,
+                "tally_company":  "Test Company",
+                "migration_type": "Masters",
+                "status":         "Running",
+            })
+            with self.assertRaises(frappe.PermissionError):
+                doc.insert()
+        finally:
+            frappe.set_user("Administrator")

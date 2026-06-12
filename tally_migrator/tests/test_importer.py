@@ -92,6 +92,8 @@ class TestERPNextImporter(unittest.TestCase):
 
     def test_explicit_gst_registration_type_wins(self):
         """Tally's stated registration type overrides GSTIN/country inference."""
+        if not frappe.db.has_column("Customer", "gst_category"):
+            self.skipTest("gst_category requires the India Compliance app")
         customer = {
             "_name": "_TMTest Customer Comp",
             "GSTRegistrationNumber": "27AAACT2727Q1ZW",   # would infer Registered Regular

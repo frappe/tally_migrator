@@ -1629,6 +1629,10 @@ class PartyOpeningImporter:
         self.company = company
         self.abbr = abbr
         self.posting_date = posting_date
+        # Set for real in run() from the parties' ledger currencies; default blank so
+        # _process()/_tally_currency_foreign() stay valid (and treat the book as
+        # single-currency) even if _process is exercised before run() populates it.
+        self._tally_base_ccy = ""
 
     # ── Orchestration ─────────────────────────────────────────────────────────
     def run(self, bills: list, customers: list[dict],
