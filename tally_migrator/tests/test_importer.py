@@ -409,12 +409,18 @@ class TestERPNextImporter(unittest.TestCase):
         customers = [{"_name": cust, "OpeningBalance": "5000 Cr", "CurrencyName": "INR"}]
         marker_like = f"Tally opening: {cust}%"
 
+        from tally_migrator.migration import reconciliation as recon
+        rec_acc = frappe.get_cached_value("Company", company, "default_receivable_account")
+
         def _run():
             return PartyOpeningImporter(company, abbr, "2026-04-01").run(bills, customers, [])
 
         try:
+            bal_before = recon._opening_account_balance(company, rec_acc)
             r1 = _run()
+            bal_after_1 = recon._opening_account_balance(company, rec_acc)
             r2 = _run()   # re-run: must skip, not duplicate
+            bal_after_2 = recon._opening_account_balance(company, rec_acc)
             pes = frappe.get_all(
                 "Payment Entry",
                 filters={"company": company, "remarks": ["like", marker_like], "docstatus": 1},
@@ -427,6 +433,15 @@ class TestERPNextImporter(unittest.TestCase):
             # The marker must survive on the saved doc - the actual fix.
             self.assertEqual(pes[0].custom_remarks, 1)
             self.assertTrue((pes[0].remarks or "").startswith("Tally opening:"))
+            # Reconciliation read-back: the advance must be COUNTED (the figure moved
+            # off its starting point) and IDEMPOTENT (the re-run does not change it).
+            # This is the layer that masked the doubling bug - the advance is matched
+            # by its remarks marker, which set_remarks() used to wipe.
+            self.assertNotEqual(bal_after_1, bal_before,
+                                "reconciliation did not pick up the advance opening")
+            self.assertEqual(bal_after_1, bal_after_2,
+                             f"reconciliation figure changed on re-run: "
+                             f"{bal_after_1} -> {bal_after_2}")
         finally:
             for pe in frappe.get_all(
                     "Payment Entry",

@@ -1,5 +1,7 @@
 """Unit tests for the read-only reconciliation trial balance (pure parts, no DB)."""
 import unittest
+from types import SimpleNamespace
+from unittest import mock
 
 from tally_migrator.tally.extractors import AccountNode, ExtractedCOA, ExtractedMasters
 from tally_migrator.migration.reconciliation import source_totals, compare
@@ -162,6 +164,72 @@ class TestCompare(unittest.TestCase):
             keys,
             ["class_Asset", "class_LiabEquity", "receivables", "payables",
              "stock", "temporary_opening"])
+
+
+class TestCumulativeOpeningsFlag(unittest.TestCase):
+    """The cumulative-openings heads-up is doubly gated: it fires only when a
+    Receivables/Payables row diverges AND a prior Completed log for this company
+    imported a DIFFERENT source file. Neither signal alone may trip it - a real
+    single-export mismatch must keep the red alert. We drive the real method on a
+    lightweight stand-in self with frappe.get_all stubbed.
+
+    master_migrator imports frappe at module load, so this class is imported lazily
+    and skips on a pure (no-frappe) runner; it runs under bench like the other
+    frappe-tier tests."""
+
+    @classmethod
+    def setUpClass(cls):
+        try:
+            from tally_migrator.migration import master_migrator
+        except ModuleNotFoundError as exc:
+            raise unittest.SkipTest(f"frappe not importable: {exc}")
+        cls.mm = master_migrator
+
+    def _self(self):
+        return SimpleNamespace(
+            log=SimpleNamespace(name="TML-CURRENT"),
+            config=SimpleNamespace(erpnext_company="Frappe Tech",
+                                   source_file="NM.xml"))
+
+    def _rec(self, *, diverged_key="receivables", available=True):
+        # A matching row plus one diverging row keyed as requested.
+        rows = [
+            {"key": "class_Asset", "has_erpnext": True, "match": True},
+            {"key": diverged_key, "has_erpnext": True, "match": False},
+        ]
+        return {"available": available, "rows": rows}
+
+    def _run(self, rec, other_files):
+        with mock.patch.object(self.mm.frappe, "get_all",
+                               return_value=list(other_files)) as g:
+            self.mm.MasterMigrator._flag_cumulative_openings(self._self(), rec)
+        return rec, g
+
+    def test_fires_when_party_diverges_and_other_export_present(self):
+        rec, _ = self._run(self._rec(), ["Latest Data.xml", "Moooor.xml"])
+        self.assertTrue(rec.get("cumulative_openings"))
+        self.assertEqual(rec["other_exports"], ["Latest Data.xml", "Moooor.xml"])
+
+    def test_silent_when_no_other_export(self):
+        # Same file re-run only (or clean company): no different prior export.
+        rec, _ = self._run(self._rec(), [])
+        self.assertNotIn("cumulative_openings", rec)
+
+    def test_silent_when_no_party_divergence(self):
+        # Other exports exist, but only a non-party (ledger class) row diverges -
+        # that is a genuine mismatch to alarm on, not a cumulative artefact.
+        rec, g = self._run(self._rec(diverged_key="class_Asset"), ["Other.xml"])
+        self.assertNotIn("cumulative_openings", rec)
+        g.assert_not_called()   # short-circuits before querying logs
+
+    def test_silent_when_reconciliation_unavailable(self):
+        rec, g = self._run(self._rec(available=False), ["Other.xml"])
+        self.assertNotIn("cumulative_openings", rec)
+        g.assert_not_called()
+
+    def test_payables_divergence_also_triggers(self):
+        rec, _ = self._run(self._rec(diverged_key="payables"), ["Other.xml"])
+        self.assertTrue(rec.get("cumulative_openings"))
 
 
 if __name__ == "__main__":
