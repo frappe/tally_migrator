@@ -347,20 +347,25 @@ class TestERPNextImporter(unittest.TestCase):
         imp = OpeningBalanceImporter("_TMTest Co", "TC")
         # A prior run posted the Asset batch only (Equity failed last time).
         imp._existing_opening_state = lambda: (False, {"Asset"})
-        # Make account/party reference checks pass and capture what gets posted.
+        # Make account reference checks pass: any non-empty batch yields one line, so
+        # BOTH an Asset and an Equity batch are built (run() builds a batch only when
+        # _account_lines returns rows). The Asset batch then hits the already-posted
+        # skip path; the Equity batch is pending and posts.
         imp._account_lines = lambda accounts, result: (
             [{"account": "x", "debit_in_account_currency": 100.0,
-              "credit_in_account_currency": 0.0}]
-            if accounts and accounts[0].root_type == "Equity" else []
+              "credit_in_account_currency": 0.0}] if accounts else []
         )
         imp._party_lines = lambda *a, **k: []
         posted_labels = []
         imp._post_batch = lambda label, lines, pd, result: posted_labels.append(label)
 
+        asset = AccountNode(name="Cash", parent="", is_group=False,
+                            root_type="Asset", account_type="", is_reserved=False,
+                            opening_balance=100.0, opening_dr_cr="Dr")
         equity = AccountNode(name="Share Capital", parent="", is_group=False,
                              root_type="Equity", account_type="", is_reserved=False,
                              opening_balance=100.0, opening_dr_cr="Cr")
-        result = imp.run(accounts=[equity], customers=[], suppliers=[],
+        result = imp.run(accounts=[asset, equity], customers=[], suppliers=[],
                          posting_date="2024-04-01")
         # Equity is posted now; Asset is recognised as already done and skipped.
         self.assertEqual(posted_labels, ["Equity"])
