@@ -18,12 +18,14 @@ const STEPS = [
 	{ id: "section-run", label: "Migrate" },
 ];
 
-// Shared 4-column widths for the two collapsed Review tables (accounts + parties)
-// so they line up column-for-column with each other and header-to-body within each.
-// table-layout:fixed makes the browser honour these instead of sizing to content.
+// Column widths for the inferred-accounts Review table (Tally ledger | Classified
+// as | Opening | Why flagged). table-layout:fixed makes the browser honour these
+// instead of sizing to content. "Opening" is just a right-aligned number so it
+// needs little width; "Why flagged" holds a short sentence, so it gets the most -
+// otherwise it squeezes to one word per line.
 const REVIEW_COLGROUP =
-	'<colgroup><col style="width:42%;"><col style="width:23%;">' +
-	'<col style="width:20%;"><col style="width:15%;"></colgroup>';
+	'<colgroup><col style="width:36%;"><col style="width:21%;">' +
+	'<col style="width:12%;"><col style="width:31%;"></colgroup>';
 
 class TallyMigratorPage {
 	constructor(page, wrapper) {
@@ -159,8 +161,8 @@ class TallyMigratorPage {
 						<i class="fa fa-spinner fa-spin"></i> &nbsp;Checking your file against ERPNext…
 					</div>
 
-					<div id="check-clean" style="display:none; background:var(--green-100, #e4f5e9); border:1px solid var(--green-200, #daf0e1); border-radius:8px; padding:12px 14px;">
-						${TallyMigratorPage.iconRow("success", `<strong>Nothing to resolve.</strong> Everything in your file matches what ERPNext expects.`)}
+					<div id="check-clean" style="display:none; margin-bottom:18px; background:var(--green-100, #e4f5e9); border:1px solid var(--green-200, #daf0e1); border-radius:8px; padding:12px 14px;">
+						${TallyMigratorPage.iconRow("success", `<strong>Nothing to resolve.</strong> We found no data-quality issues (GST numbers, states, units, HSN codes) that need your input before importing.`)}
 					</div>
 
 					<!-- Data-quality report (read-only; informational + consent) -->
@@ -810,18 +812,16 @@ class TallyMigratorPage {
 		const rawUnmapped = report ? report.unmapped_field_count || 0 : 0;
 		const meaningfulUnmapped = haveScores ? report.meaningful_unmapped_count : rawUnmapped;
 		const unwritten = report ? report.unwritten_field_count || 0 : 0;
-		const constants = rawUnmapped - meaningfulUnmapped; // constant/config remnants
 		const lossCount = meaningfulUnmapped + unwritten;    // the REAL loss
-		const redundant = report ? report.redundant_field_count || 0 : 0;
-		const noise = report ? report.noise_field_count || 0 : 0;
-		const recognized = report && report.recognized_not_migrated ? report.recognized_not_migrated : [];
 		const isMeaningful = (u) => !haveScores || u.score == null || u.score >= 0.2;
-		// Stay silent on a clean file whose only skips are internal noise / constants
-		// (every real export has hundreds) - those still live on the migration log.
-		// Speak up only for a real loss, a redundant duplicate, or a recognised tax
-		// framework we deliberately skip (TDS/TCS) - that last one must be named so the
-		// scope decision is explicit rather than silent.
-		if (!report || (lossCount === 0 && redundant === 0 && constants === 0 && recognized.length === 0)) {
+		// Speak up ONLY to name a real loss - a business field with no ERPNext home.
+		// Everything else (internal noise, config constants, redundant duplicates,
+		// recognised-but-skipped taxes like TDS/TCS) is reassurance, not action: it
+		// lives on the migration log's full coverage audit, not on this busy screen.
+		// For a standard Tally export lossCount is 0, so this section stays silent -
+		// the absence of a warning is the reassurance, and it never contradicts the
+		// record-level errors/warnings shown above.
+		if (!report || lossCount === 0) {
 			$sec.hide().empty();
 			return;
 		}
@@ -863,47 +863,11 @@ class TallyMigratorPage {
 			})
 			.join("");
 
-		const redundantNote = redundant
-			? `<div style="margin-top:8px; font-size:12px; color:var(--text-muted, #777);">
-					${plur(redundant, "field")} in your file duplicate data we already
-					import from elsewhere (e.g. a flat GST number alongside the full GST
-					details) - safely skipped, nothing lost.
-				</div>`
-			: "";
-		const noiseNote = noise
-			? `<div style="margin-top:6px; font-size:12px; color:var(--text-muted, #888);">
-					${plur(noise, "Tally internal field")} (config flags, empty containers,
-					audit / legacy-tax data) were hidden as they carry no business value.
-				</div>`
-			: "";
-		const constantsNote = constants
-			? `<div style="margin-top:6px; font-size:12px; color:var(--text-muted, #888);">
-					${plur(constants, "Tally config field")} hold the same value on every record
-					(no business data) - skipped, and recorded in full on the migration log.
-				</div>`
-			: "";
-		const recognizedNote = recognized.length
-			? `<div style="margin-top:6px; font-size:12px; color:var(--text-muted, #777);">
-					We detected ${recognized.map((t) => esc(t)).join(" and ")} in this file.
-					This migration brings over master records and opening balances only - it
-					does not migrate tax-deduction configuration. Your ledger balances are
-					preserved in full.
-				</div>`
-			: "";
-
-		// Tone follows content. With NO real loss, the calm reassurance is honest.
-		// With real loss, we must NOT say "nothing to act on" - name the fields and
-		// ask the user to review, since only they know if a custom field matters.
-		if (lossCount === 0) {
-			$sec.html(`
-				<div style="margin:0; background:var(--green-100, #e4f5e9); border:1px solid var(--green-200, #daf0e1); border-radius:8px; padding:12px 14px;">
-					${TallyMigratorPage.iconRow("success", `<strong>All your records will import fully.</strong> No fields with a place in ERPNext were left behind.${redundantNote}${noiseNote}${constantsNote}${recognizedNote}`)}
-				</div>
-			`).show();
-			return;
-		}
-
-		// Real loss: amber, expanded by default, fields named in plain language.
+		// Real loss only reaches here (lossCount > 0): name the fields in plain
+		// language so the user can decide whether a custom field matters. This is the
+		// one thing the coverage system exists to surface; the reassurance counts
+		// (noise / constants / duplicates / taxes) are deliberately NOT shown here -
+		// they are on the migration log's full audit.
 		$sec.html(`
 			<div style="margin:0; background:var(--blue-100, #edf6fd); border:1px solid var(--blue-200, #e3f1fd); border-radius:8px; padding:12px 14px;">
 				<div style="display:flex; align-items:flex-start; gap:8px;">
@@ -921,7 +885,6 @@ class TallyMigratorPage {
 						business. Nothing is changed automatically, and the full list is
 						saved on the migration log.
 						<div style="margin-top:10px;">${lossBlocks}</div>
-						${redundantNote}${noiseNote}${constantsNote}${recognizedNote}
 					</div>
 				</div>
 			</div>
@@ -950,6 +913,27 @@ class TallyMigratorPage {
 				border: none;
 				box-shadow: none;
 			}
+				/* Reusable info tooltip: an inline (i) revealing secondary explanation
+				   on hover/focus, so the screen stays terse. */
+				.tally-migrator .tm-tip {
+					position: relative; display: inline-flex; align-items: center;
+					vertical-align: middle; margin-left: 5px; position: relative; top: -1px;
+					color: var(--text-muted, #999); cursor: help;
+				}
+				.tally-migrator .tm-tip-icon { display: block; }
+				.tally-migrator .tm-tip:hover { color: var(--text-color, #1f272e); }
+				.tally-migrator .tm-tip-bubble {
+					visibility: hidden; opacity: 0;
+					position: absolute; bottom: 145%; left: 50%; transform: translateX(-50%);
+					width: 240px; max-width: 70vw;
+					background: var(--text-color, #1f272e); color: var(--bg-color, #fff);
+					text-align: left; font-size: 12px; line-height: 1.45; font-weight: 400;
+					padding: 8px 10px; border-radius: 6px;
+					box-shadow: 0 4px 14px rgba(0,0,0,0.18); z-index: 1000;
+					transition: opacity 0.12s ease; pointer-events: none; white-space: normal;
+				}
+				.tally-migrator .tm-tip:hover .tm-tip-bubble,
+				.tally-migrator .tm-tip:focus .tm-tip-bubble { visibility: visible; opacity: 1; }
 		</style>`;
 	}
 
@@ -990,33 +974,6 @@ class TallyMigratorPage {
 			padding:12px 14px; color:var(--text-color, #1f272e);${extraStyle}">${inner}</div>`;
 	}
 
-	// A calm explainer for the Temporary Opening plug. A non-zero plug - sometimes a
-	// large one - looks alarming next to the opening figures, but it is expected: it
-	// is simply the amount by which the Tally opening balances do not net to zero,
-	// parked in the Temporary Opening account until the opening entries are finished.
-	// Reused on the Review step and the Log so the same reassurance appears wherever
-	// the plug is shown. Returns "" when the books balance (no plug).
-	static temporaryOpeningNote(plug) {
-		if (!plug || plug.clean || !plug.temporary_opening_plug) return "";
-		const fmt = (n) => Number(n || 0).toLocaleString("en-IN");
-		const gross = Number(plug.gross_opening || 0);
-		const amt = Number(plug.temporary_opening_plug || 0);
-		const share =
-			gross > 0 ? ` (about ${Math.round((amt / gross) * 100)}% of your total opening value)` : "";
-		return `<div style="margin-top:10px;">${TallyMigratorPage.callout(
-			"info",
-			TallyMigratorPage.iconRow(
-				"info",
-				`<strong>${fmt(amt)} ${frappe.utils.escape_html(
-					plug.plug_dr_cr
-				)} will sit in "Temporary Opening" - this is expected, not an error.</strong>${share}
-				It is the difference by which your Tally opening balances do not net to zero on their own.
-				ERPNext parks it in the Temporary Opening account so the trial balance stays balanced; you
-				clear it later by completing your opening entries. Nothing is missing or double-counted.`
-			)
-		)}</div>`;
-	}
-
 	// Soft status pill (tinted background, no border/icon) and the summary "stat
 	// card" used on the Review step. One definition shared by the accounts and
 	// party-openings panels so they stay pixel-identical. Background tints:
@@ -1031,10 +988,27 @@ class TallyMigratorPage {
 	static pill(text, bg) {
 		return `<span style="display:inline-block; padding:1px 12px; border-radius:10px; font-size:12px; background:${bg};">${text}</span>`;
 	}
-	static statCard(big, label, sub, bg) {
+	// Inline (i) that reveals `text` on hover/focus - for secondary explanation we
+	// don't want occupying a line of body copy. Keyboard-reachable (tabindex) and
+	// screen-reader labelled. Use ONLY for "what does this mean / why", never for
+	// anything the user must act on (errors, lost-field names, buttons).
+	static infoTip(text) {
+		const safe = frappe.utils.escape_html(text);
+		const icon =
+			`<svg class="tm-tip-icon" width="10" height="10" viewBox="0 0 16 16" fill="none" aria-hidden="true">` +
+			`<circle cx="8" cy="8" r="7" stroke="currentColor" stroke-width="1.1"/>` +
+			`<line x1="8" y1="7.2" x2="8" y2="11.5" stroke="currentColor" stroke-width="1.1" stroke-linecap="round"/>` +
+			`<circle cx="8" cy="4.8" r="0.8" fill="currentColor"/></svg>`;
+		return `<span class="tm-tip" tabindex="0" role="note" aria-label="${safe}">` +
+			`${icon}<span class="tm-tip-bubble">${safe}</span></span>`;
+	}
+	// `tip` (optional) appends an info (i) beside the label - secondary explanation
+	// on hover instead of a paragraph below the cards.
+	static statCard(big, label, sub, bg, tip = "") {
+		const tipIcon = tip ? TallyMigratorPage.infoTip(tip) : "";
 		return `
 			<div style="flex:1; border:1px solid var(--border-color, #e0e6ed); border-radius:6px; padding:10px 12px;">
-				<div class="text-muted small">${label}</div>
+				<div class="text-muted small">${label}${tipIcon}</div>
 				<div style="font-size:20px; font-weight:700; color:var(--text-color, #1f272e); margin:2px 0 5px;">${big}</div>
 				<div>${TallyMigratorPage.pill(sub, bg)}</div>
 			</div>`;
@@ -1468,13 +1442,23 @@ class TallyMigratorPage {
 		const { green: GREEN_BG, blue: BLUE_BG, gray: GRAY_BG } = TallyMigratorPage.STAT_BG;
 		const card = TallyMigratorPage.statCard;
 
+		const plugShare =
+			plug.gross_opening > 0
+				? ` (about ${Math.round((plug.temporary_opening_plug / plug.gross_opening) * 100)}% of total opening value)`
+				: "";
+		const plugTip =
+			`${fmt(plug.temporary_opening_plug)} ${plug.plug_dr_cr}${plugShare} is the difference by which your ` +
+			`Tally opening balances do not net to zero on their own. ERPNext parks it in the Temporary Opening ` +
+			`account so the trial balance stays balanced; you clear it later by completing your opening entries. ` +
+			`This is expected - nothing is missing or double-counted.`;
 		const plugCard = plug.clean
 			? card("Balanced", "Opening balances", "Dr = Cr", GREEN_BG)
 			: card(
 					`${fmt(plug.temporary_opening_plug)} ${esc(plug.plug_dr_cr)}`,
 					"Opening balances",
 					"posts to Temporary Opening",
-					BLUE_BG
+					BLUE_BG,
+					plugTip
 			  );
 
 		$("#review-summary").html(`
@@ -1484,11 +1468,13 @@ class TallyMigratorPage {
 					fmt(inferred),
 					"We had to infer",
 					inferred ? "please check" : "none",
-					inferred ? BLUE_BG : GRAY_BG
+					inferred ? BLUE_BG : GRAY_BG,
+					inferred
+						? "These ledgers sit under a custom Tally group with no standard ancestor, so we defaulted their account type. Open the list below to confirm each one is right."
+						: ""
 				)}
 				${plugCard}
 			</div>
-			${TallyMigratorPage.temporaryOpeningNote(plug)}
 		`);
 
 		// ── Exceptions: only the inferred rows, named and explained ────────────
@@ -1507,7 +1493,7 @@ class TallyMigratorPage {
 			$("#review-exceptions").html(`
 				<div style="margin:0; background:var(--blue-100, #edf6fd); border:1px solid var(--blue-200, #e3f1fd); border-radius:8px; padding:12px 14px;">
 					${TallyMigratorPage.iconRow("info", `<strong>${fmt(inferred)} account${inferred === 1 ? "" : "s"} we inferred - please confirm.</strong> These ledgers sit under a custom Tally group with no standard ancestor, so we defaulted their type. Only you know if that's right - it's easy to fix the group in Tally and re-upload.`)}
-					<div style="margin-top:10px; border:1px solid var(--border-color, #e0e6ed); border-radius:6px; overflow:hidden; background:var(--card-bg, #fff);">
+					<div style="margin-top:10px; border:1px solid var(--border-color, #e0e6ed); border-radius:6px; background:var(--card-bg, #fff);">
 						<table class="table table-condensed" style="margin:0; font-size:13px; table-layout:fixed;">
 							${REVIEW_COLGROUP}
 							<thead>
@@ -1515,7 +1501,9 @@ class TallyMigratorPage {
 									<th style="border-top:0; padding:6px 10px;">Tally ledger</th>
 									<th style="border-top:0; padding:6px 10px;">Classified as</th>
 									<th style="border-top:0; padding:6px 10px; text-align:right;">Opening</th>
-									<th style="border-top:0; padding:6px 10px;">Why flagged</th>
+									<th style="border-top:0; padding:6px 10px;">Why flagged ${TallyMigratorPage.infoTip(
+										"These ledgers had no standard Tally ancestor group, so we guessed the account type. If a guess is wrong, fix the ledger's group in Tally and re-upload."
+									)}</th>
 								</tr>
 							</thead>
 							<tbody>${rows}</tbody>
@@ -1639,7 +1627,7 @@ class TallyMigratorPage {
 			warn = `
 				<div style="margin:12px 0 0; background:var(--blue-100, #edf6fd); border:1px solid var(--blue-200, #e3f1fd); border-radius:8px; padding:12px 14px;">
 					${TallyMigratorPage.iconRow("info", `<strong>${fmt(p.on_account)} part${p.on_account === 1 ? "y's" : "ies'"} bills didn't add up to the ledger opening.</strong> The 'On Account' figure is the unreconciled gap between the party's bills and its ledger opening (not the total opening) - it posts as an 'On Account' opening so the party still ties to the trial balance. Review these in Tally; a bill may be missing or mis-dated.`)}
-					<div style="margin-top:10px; border:1px solid var(--border-color, #e0e6ed); border-radius:6px; overflow:hidden; background:var(--card-bg, #fff);">
+					<div style="margin-top:10px; border:1px solid var(--border-color, #e0e6ed); border-radius:6px; background:var(--card-bg, #fff);">
 						<table class="table table-condensed" style="margin:0; font-size:13px; table-layout:fixed;">
 							<colgroup><col style="width:32%;"><col style="width:16%;"><col style="width:24%;"><col style="width:28%;"></colgroup>
 							<thead>
@@ -1647,7 +1635,9 @@ class TallyMigratorPage {
 									<th style="border-top:0; padding:6px 10px;">Party</th>
 									<th style="border-top:0; padding:6px 10px;">Type</th>
 									<th style="border-top:0; padding:6px 10px; text-align:right; white-space:nowrap;">Ledger opening</th>
-									<th style="border-top:0; padding:6px 10px; text-align:right; white-space:nowrap;">On Account (gap)</th>
+									<th style="border-top:0; padding:6px 10px; text-align:right; white-space:nowrap;">On Account (gap) ${TallyMigratorPage.infoTip(
+										"When a party's bills don't add up to its ledger opening, we post the difference as an 'On Account' opening so the party still ties to the trial balance. A non-zero gap is worth checking in Tally - a bill may be missing or mis-dated."
+									)}</th>
 								</tr>
 							</thead>
 							<tbody>${rows}</tbody>

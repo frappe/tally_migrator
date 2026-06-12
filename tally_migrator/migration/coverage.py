@@ -138,6 +138,9 @@ _NO_TARGET_TAGS = {
     "PRIORSTATENAME",                        # historical GST state (only current kept)
     "DEFAULTTRANSFERMODE",                   # payment mode; no ERPNext party field
     "TAXTYPE", "RATEOFVAT",                  # legacy tax classification / VAT rate
+    "GSTDUTYHEAD",                           # GST duty head (CGST/SGST/IGST/Cess) on a
+                                             # tax ledger - GST config, modelled in
+                                             # ERPNext via tax templates, not per-ledger
     "DENOMINATOR",                           # unit conversion denominator (internal)
     "BASEUNITS",                             # stock-group default unit; Item Group has no UOM
     "COSTINGMETHOD", "VALUATIONMETHOD",      # only unmapped at stock-GROUP level
