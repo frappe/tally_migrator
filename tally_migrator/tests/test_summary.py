@@ -55,10 +55,10 @@ class TestMigrationSummary(unittest.TestCase):
         records = s.error_records()
         self.assertEqual(len(records), 2)
         self.assertIn(
-            {"record_type": "Customers", "record_name": "Acme", "reason": "Invalid GST"},
+            {"status": "Failed", "record_type": "Customers", "record_name": "Acme", "reason": "Invalid GST"},
             records)
         self.assertIn(
-            {"record_type": "Items", "record_name": "Widget", "reason": "Bad UOM"},
+            {"status": "Failed", "record_type": "Items", "record_name": "Widget", "reason": "Bad UOM"},
             records)
 
     def test_identical_reasons_collapse_to_one_row(self):
@@ -75,8 +75,10 @@ class TestMigrationSummary(unittest.TestCase):
         collapsed = next(r for r in records if "No HSN" in r["reason"])
         self.assertIn("3 records", collapsed["reason"])
         self.assertEqual(collapsed["record_name"], "Pen, Pencil, Eraser")
-        # No status glyph in stored reasons - the "(warning)" record_type marks them.
-        self.assertEqual(collapsed["record_type"], "Items (warning)")
+        # Non-fatal drops are marked by the explicit Status column, not a record_type
+        # suffix or a glyph baked into the reason.
+        self.assertEqual(collapsed["status"], "Skipped")
+        self.assertEqual(collapsed["record_type"], "Items")
         self.assertNotIn("⚠", collapsed["reason"])
         # The odd-one-out is untouched and not merged.
         self.assertTrue(any("Bad UOM" in r["reason"] for r in records))

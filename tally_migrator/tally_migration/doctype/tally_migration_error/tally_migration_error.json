@@ -8,6 +8,15 @@
   "engine": "InnoDB",
   "fields": [
     {
+      "fieldname": "status",
+      "fieldtype": "Select",
+      "label": "Status",
+      "options": "Failed\nSkipped",
+      "in_list_view": 1,
+      "columns": 1,
+      "read_only": 1
+    },
+    {
       "fieldname": "record_type",
       "fieldtype": "Data",
       "label": "Record Type",
@@ -26,9 +35,9 @@
     {
       "fieldname": "reason",
       "fieldtype": "Small Text",
-      "label": "Why it failed",
+      "label": "Details",
       "in_list_view": 1,
-      "columns": 6,
+      "columns": 4,
       "read_only": 1
     }
   ],
