@@ -39,6 +39,28 @@ function apply_dark_mode_theme(frm) {
 			color: ${MUTED}; transition: transform 0.15s ease;
 		}
 		.tally-migration-log details[open] > summary .tm-caret { transform: rotate(90deg); }
+		/* Inline info tooltip, identical to the wizard's infoTip: a small muted
+		   outline (i) that reveals a styled bubble on hover/focus. Uses currentColor
+		   so it stays quiet, never a loud filled blue icon. */
+		.tally-migration-log .tm-tip {
+			position: relative; display: inline-flex; align-items: center;
+			vertical-align: -0.12em; margin-left: 6px;
+			color: var(--text-muted, #999); cursor: help;
+		}
+		.tally-migration-log .tm-tip-icon { display: block; }
+		.tally-migration-log .tm-tip:hover { color: var(--text-color, #1f272e); }
+		.tally-migration-log .tm-tip-bubble {
+			visibility: hidden; opacity: 0;
+			position: absolute; bottom: 145%; left: 50%; transform: translateX(-50%);
+			width: 240px; max-width: 70vw;
+			background: var(--text-color, #1f272e); color: var(--bg-color, #fff);
+			text-align: left; font-size: 12px; line-height: 1.45; font-weight: 400;
+			padding: 8px 10px; border-radius: 6px;
+			box-shadow: 0 4px 14px rgba(0,0,0,0.18); z-index: 1000;
+			transition: opacity 0.12s ease; pointer-events: none; white-space: normal;
+		}
+		.tally-migration-log .tm-tip:hover .tm-tip-bubble,
+		.tally-migration-log .tm-tip:focus .tm-tip-bubble { visibility: visible; opacity: 1; }
 	</style>`);
 }
 
@@ -90,6 +112,27 @@ function arrowIcon() {
 function caretMarker() {
 	return `<span class="tm-caret">${frappe.utils.icon("right", "sm")}</span>`;
 }
+
+// Inline info tooltip: a small muted outline (i) that reveals `text` on hover or
+// focus. Identical markup to the wizard's TallyMigratorPage.infoTip so the two
+// surfaces look the same; styled by the .tm-tip rules in apply_dark_mode_theme().
+function infoTip(text) {
+	const safe = frappe.utils.escape_html(text);
+	const icon =
+		`<svg class="tm-tip-icon" width="10" height="10" viewBox="0 0 16 16" fill="none" aria-hidden="true">` +
+		`<circle cx="8" cy="8" r="7" stroke="currentColor" stroke-width="1.1"/>` +
+		`<line x1="8" y1="7.2" x2="8" y2="11.5" stroke="currentColor" stroke-width="1.1" stroke-linecap="round"/>` +
+		`<circle cx="8" cy="4.8" r="0.8" fill="currentColor"/></svg>`;
+	return `<span class="tm-tip" tabindex="0" role="note" aria-label="${safe}">${icon}<span class="tm-tip-bubble">${safe}</span></span>`;
+}
+
+// One canonical explanation of the Temporary Opening residual, reused by every
+// surface (recon tooltip, mapping callout) so the wording never drifts. Mirrors
+// the wizard plug tip and the saved warning in importers.py.
+const TEMP_OPENING_NOTE =
+	"It is the part of your Tally opening that does not balance on its own, plus any " +
+	"income/expense opening balances ERPNext cannot carry. This is normal - clear it " +
+	"as you finish your opening entries.";
 
 // Icon + content, with the 16px icon optically centred on the first line of text
 // (a 1.5em flex box), so headings of any size sit level with their marker.
@@ -445,9 +488,8 @@ function render_mapping(frm) {
 				"info",
 				iconRow(
 					"info",
-					`<strong>${fmt(plug.temporary_opening_plug)} ${esc(plug.plug_dr_cr)} is held in Temporary Opening - this is normal, not an error.</strong>${plugShare}
-					It is the part of your Tally opening that does not balance on its own, plus any income/expense opening
-					balances ERPNext cannot carry. Clear it as you finish your opening entries.`
+					`<strong>${fmt(plug.temporary_opening_plug)} ${esc(plug.plug_dr_cr)}${plugShare} is held in Temporary Opening to keep your books balanced.</strong>
+					${TEMP_OPENING_NOTE}`
 				),
 				"margin:6px 0;"
 		  );
@@ -557,14 +599,14 @@ function render_reconciliation(frm) {
 		.map((row) => {
 			const stat = !row.has_erpnext ? "" : row.match ? statusIcon("success") : statusIcon("error");
 			const note = row.is_opening_difference
-				? ` <span class="text-muted" style="display:inline-flex; vertical-align:middle; cursor:help;" title="The opening difference Tally could not balance on its own, plus any income/expense openings ERPNext cannot carry - a non-zero value here is faithful, not a gap.">${frappe.utils.icon("solid-info", "sm")}</span>`
+				? infoTip(`This amount is held in Temporary Opening to keep your books balanced. ${TEMP_OPENING_NOTE}`)
 				: "";
 			const erpDr = avail && row.has_erpnext ? dr(row.erpnext) : "";
 			const erpCr = avail && row.has_erpnext ? cr(row.erpnext) : "";
 			const nw = "vertical-align:top; white-space:nowrap;";
 			return `
 				<tr>
-					<td style="font-weight:500; word-break:break-word;">${esc(row.label)}${note}</td>
+					<td style="font-weight:500; word-break:break-word;"><span style="display:inline-flex; align-items:center; flex-wrap:wrap;">${esc(row.label)}${note}</span></td>
 					<td class="text-right" style="${nw}">${dr(row.source)}</td>
 					<td class="text-right" style="${nw}">${cr(row.source)}</td>
 					<td class="text-right text-muted" style="${nw}">${erpDr}</td>
@@ -591,7 +633,7 @@ function render_reconciliation(frm) {
 		: "";
 
 	wrapper.html(section(`
-		<div style="${CARD} max-width:100%; overflow:hidden;">
+		<div style="${CARD} max-width:100%;">
 			${callout(v.kind, iconRow(v.kind, v.text), "margin-bottom:8px;")}
 			<table class="table table-condensed" style="margin:0; width:100%; table-layout:fixed; font-size:12px;">
 				<colgroup>
