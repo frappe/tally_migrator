@@ -19,13 +19,12 @@ const STEPS = [
 ];
 
 // Column widths for the inferred-accounts Review table (Tally ledger | Classified
-// as | Opening | Why flagged). table-layout:fixed makes the browser honour these
-// instead of sizing to content. "Opening" is just a right-aligned number so it
-// needs little width; "Why flagged" holds a short sentence, so it gets the most -
-// otherwise it squeezes to one word per line.
+// as | Opening). table-layout:fixed makes the browser honour these instead of
+// sizing to content. The shared "why" - no standard Tally ancestor - is stated
+// once in the banner above the table, so there's no per-row reason column.
 const REVIEW_COLGROUP =
-	'<colgroup><col style="width:36%;"><col style="width:21%;">' +
-	'<col style="width:12%;"><col style="width:31%;"></colgroup>';
+	'<colgroup><col style="width:50%;"><col style="width:30%;">' +
+	'<col style="width:20%;"></colgroup>';
 
 class TallyMigratorPage {
 	constructor(page, wrapper) {
@@ -1481,14 +1480,16 @@ class TallyMigratorPage {
 
 		// ── Exceptions: only the inferred rows, named and explained ────────────
 		if (inferred) {
-			const rows = m.inferred
+			// Largest opening first - the rows with a real balance (which actually
+			// post to the defaulted account) lead; zero-opening rows fall to the end.
+			const rows = [...m.inferred]
+				.sort((a, b) => (b.amount || 0) - (a.amount || 0))
 				.map(
 					(r) => `
 					<tr>
 						<td style="padding:6px 10px;"><strong>${esc(r.name)}</strong></td>
 						<td style="padding:6px 10px;" class="text-muted">${classifiedAs(r)}</td>
 						<td style="padding:6px 10px; text-align:right;">${ob(r)}</td>
-						<td style="padding:6px 10px;" class="text-muted">no standard Tally group - defaulted</td>
 					</tr>`
 				)
 				.join("");
@@ -1503,9 +1504,6 @@ class TallyMigratorPage {
 									<th style="border-top:0; padding:6px 10px;">Tally ledger</th>
 									<th style="border-top:0; padding:6px 10px;">Classified as</th>
 									<th style="border-top:0; padding:6px 10px; text-align:right;">Opening</th>
-									<th style="border-top:0; padding:6px 10px;">Why flagged ${TallyMigratorPage.infoTip(
-										"These ledgers had no standard Tally ancestor group, so we guessed the account type. If a guess is wrong, fix the ledger's group in Tally and re-upload."
-									)}</th>
 								</tr>
 							</thead>
 							<tbody>${rows}</tbody>
@@ -1606,14 +1604,22 @@ class TallyMigratorPage {
 			),
 			p.on_account
 				? card(fmt(p.on_account), "Bills didn't reconcile", "posts 'On Account'", BLUE_BG)
-				: card(fmt(p.lump), "No bill detail", p.lump ? "single opening invoice" : "none", GRAY_BG),
+				: card(
+						fmt(p.lump),
+						"No bill detail",
+						p.lump ? "single opening invoice" : "none",
+						GRAY_BG,
+						"These parties had no bill-wise breakup in Tally. Each gets one opening invoice for its full balance, instead of a separate invoice per outstanding bill."
+				  ),
 		].join("");
 
 		// Per-party mismatch detail: only the parties whose bills did not add up to
 		// the ledger opening - the rows actually worth checking in Tally.
 		let warn = "";
 		if (p.on_account && (p.mismatches || []).length) {
-			const rows = p.mismatches
+			// Largest unreconciled gap first - the mismatches most worth checking.
+			const rows = [...p.mismatches]
+				.sort((a, b) => (b.amount || 0) - (a.amount || 0))
 				.map(
 					(m) => `
 					<tr>
@@ -1651,7 +1657,8 @@ class TallyMigratorPage {
 		// Collapsed per-party list - the twin of the COA book, so the user can drill
 		// into every party's opening, side and document count without it dominating
 		// the screen.
-		const partyRows = (p.parties_list || [])
+		const partyRows = [...(p.parties_list || [])]
+			.sort((a, b) => (b.amount || 0) - (a.amount || 0))
 			.map((r) => {
 				const amt = r.amount
 					? `${fmt(r.amount)} ${esc(r.dr_cr || "")}`.trim()

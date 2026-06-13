@@ -433,7 +433,8 @@ function render_mapping(frm) {
 				<th style="border-top:0;">Classified as</th>
 				<th style="border-top:0;" class="text-right">Opening</th>
 			</tr></thead>
-			<tbody>${m.inferred
+			<tbody>${[...m.inferred]
+				.sort((a, b) => (b.amount || 0) - (a.amount || 0))
 				.map(
 					(r) => `<tr>
 						<td>${esc(r.name)}</td>
