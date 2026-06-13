@@ -96,6 +96,41 @@ class TestCoverage(unittest.TestCase):
         self.assertEqual(u["sample"], "Wholesale")
         self.assertEqual(u["examples"], ["Acme", "Bolt Co"])
 
+    def test_employee_hr_costcentre_fields_are_recognised_not_unmapped(self):
+        # Employees Tally exports as Cost Centres carry a closed payroll/HR field set.
+        # On a Cost Centre they must be recognised as a deliberate skip - re-labelled
+        # "employee / HR detail", held with the noise (not the loss table), and named
+        # in the HR note - never guessed as "phone numbers"/"dates" or alarmed as loss.
+        tags = {
+            "NAME": _tag(),
+            "PARENT": _tag(),                                   # mapped
+            "BANKACCOUNTNUMBER": _tag(8, "50156154985", ["Asha"]),
+            "PFJOININGDATE": _tag(8, "20210601", ["Asha"]),
+            "GENDER": _tag(8, "Male", ["Asha"]),
+            "PFACCOUNTNUMBER": _tag(8, "KA/PF/1001", ["Asha"]),
+        }
+        report = coverage_report(_Src({"Cost Centre": tags}))
+        self.assertTrue(report["clean"])                        # not a data loss
+        self.assertEqual(report["unmapped_field_count"], 0)
+        self.assertEqual(report["hr_field_count"], 4)
+        self.assertTrue(report["hr_not_migrated"])
+        cc = report["types"][0]
+        self.assertEqual(cc["entity_type"], "Cost Centre")
+        self.assertEqual(cc["unmapped"], [])
+        hr = {r["field"]: r for r in cc["noise"]}
+        self.assertIn("BANKACCOUNTNUMBER", hr)
+        self.assertEqual(hr["BANKACCOUNTNUMBER"]["kind"], "an employee / HR detail")
+
+    def test_employee_field_only_recognised_on_cost_centre(self):
+        # The recognition is scoped to Cost Centres: the same tag name on another
+        # object type stays a normal unmapped field (no over-broad enumeration).
+        tags = {"NAME": _tag(), "GENDER": _tag(8, "Male", ["Acme", "Bolt"])}
+        report = coverage_report(_Src({"Ledger": tags}))
+        self.assertFalse(report["clean"])
+        self.assertEqual(report["unmapped_field_count"], 1)
+        self.assertEqual(report["hr_field_count"], 0)
+        self.assertFalse(report["hr_not_migrated"])
+
     def test_ignores_housekeeping_tags(self):
         tags = {"NAME": _tag(), "GUID": _tag(), "MASTERID": _tag(), "ALTERID": _tag()}
         report = coverage_report(_Src({"Ledger": tags}))

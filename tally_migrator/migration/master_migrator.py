@@ -25,9 +25,11 @@ def _collapse_identical(rows: list[dict], sample: int = 5) -> list[dict]:
     groups: dict[tuple, dict] = {}
     order: list[tuple] = []
     for r in rows:
-        key = (r["record_type"], r["reason"])
+        # Status is part of the key so a hard failure and a non-fatal skip that happen
+        # to share a record_type + reason are never merged into one row.
+        key = (r["status"], r["record_type"], r["reason"])
         if key not in groups:
-            groups[key] = {"record_type": r["record_type"],
+            groups[key] = {"status": r["status"], "record_type": r["record_type"],
                            "names": [], "reason": r["reason"]}
             order.append(key)
         groups[key]["names"].append(str(r["record_name"]))
@@ -37,14 +39,15 @@ def _collapse_identical(rows: list[dict], sample: int = 5) -> list[dict]:
         g = groups[key]
         names, n = g["names"], len(g["names"])
         if n == 1:
-            out.append({"record_type": g["record_type"],
+            out.append({"status": g["status"], "record_type": g["record_type"],
                         "record_name": names[0], "reason": g["reason"]})
             continue
         shown = ", ".join(names[:sample])
         more = f" (+{n - sample} more)" if n > sample else ""
         # Prepend the count so the table headline reads e.g. "13 records · opening
-        # stock …". Warnings are marked by their "(warning)" record_type, not a glyph.
+        # stock …". The Status column (Failed / Skipped) tells the two apart.
         out.append({
+            "status": g["status"],
             "record_type": g["record_type"],
             "record_name": f"{shown}{more}",
             "reason": f"{n} records · {g['reason']}",
@@ -137,13 +140,14 @@ class MigrationSummary:
         opening stock posted at a zero rate) reads as one line listing the affected
         records, instead of flooding the table with identical messages."""
         rows = [
-            {"record_type": label, "record_name": e["name"], "reason": e["reason"]}
+            {"status": "Failed", "record_type": label,
+             "record_name": e["name"], "reason": e["reason"]}
             for label, result in self.results.items()
             for e in result.errors
         ]
         rows += [
-            {"record_type": f"{label} (warning)", "record_name": w["name"],
-             "reason": w["reason"]}
+            {"status": "Skipped", "record_type": label,
+             "record_name": w["name"], "reason": w["reason"]}
             for label, result in self.results.items()
             for w in result.warnings
         ]

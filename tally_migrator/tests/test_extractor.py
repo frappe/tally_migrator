@@ -43,6 +43,17 @@ class _MockClient:
             ]
         return []
 
+    def get_child_list(self, obj_type, child_tag, fields):
+        if obj_type == "Ledger" and child_tag == "LEDMULTIADDRESSLIST.LIST":
+            return [{"_parent": "Customer A",
+                     "ADDRESS.LIST/ADDRESS": "Godown 5, Karnataka",
+                     "ADDRESSNAME": "Warehouse",
+                     "PINCODE": "560001"}]
+        if obj_type == "Ledger" and child_tag == "CONTACTDETAILS.LIST":
+            return [{"_parent": "Customer A", "Name": "Accounts",
+                     "PhoneNumber": "9496278969", "IsDefaultWhatsAppNum": "Yes"}]
+        return []
+
 
 class TestTallyExtractor(unittest.TestCase):
     def setUp(self):
@@ -85,6 +96,22 @@ class TestTallyExtractor(unittest.TestCase):
         self.assertEqual(s["items"], 1)
         self.assertEqual(s["warehouses"], 2)
 
+    def test_party_address_book_and_contacts_attached(self):
+        """A party's repeating address-book + extra phone contacts are attached to
+        its ledger record (_extra_addresses / _extra_contacts); parties without such
+        child rows get no extra keys."""
+        masters = self.extractor.extract_all()
+        a = next(c for c in masters.customers if c["_name"] == "Customer A")
+        self.assertEqual(a["_extra_addresses"],
+                         [{"address": "Godown 5, Karnataka", "name": "Warehouse",
+                           "state": "", "pincode": "560001"}])
+        self.assertEqual(len(a["_extra_contacts"]), 1)
+        self.assertEqual(a["_extra_contacts"][0]["phone"], "9496278969")
+        self.assertTrue(a["_extra_contacts"][0]["whatsapp"])
+        b = next(c for c in masters.customers if c["_name"] == "Customer B")
+        self.assertNotIn("_extra_addresses", b)
+        self.assertNotIn("_extra_contacts", b)
+
     def test_parse_quantity_handles_unit_suffix(self):
         """Stock opening quantities are unit-suffixed ('55 Nos') in real Tally
         exports; the amount parser reads them as 0, so the quantity parser must
@@ -115,6 +142,33 @@ class TestTallyExtractor(unittest.TestCase):
         self.assertEqual(pr(""), 0.0)
         self.assertEqual(pr(None), 0.0)
         self.assertEqual(pr("/Nos"), 0.0)
+
+    def test_repeated_masters_deduped_by_name(self):
+        """Tally re-emits a master wherever it is referenced, so a real export carries
+        the same Unit / Godown several times. Those phantom duplicates must collapse to
+        one record per name (else the preview fires a false 'will merge' warning), and a
+        bare reference-stub emission must not wipe out the full definition's fields."""
+
+        class DupClient(_MockClient):
+            def get_collection(self, obj_type, fields, tag_map=None):
+                if obj_type == "Unit":
+                    return [
+                        {"_name": "Nos", "IsSimpleUnit": "Yes", "DecimalPlaces": "0"},
+                        {"_name": "Nos"},                       # bare repeat - must not clobber
+                        {"_name": "Box", "IsSimpleUnit": "Yes"},
+                        {"_name": "Box"},
+                    ]
+                if obj_type == "Godown":
+                    return [{"_name": "Main Location"}, {"_name": "Main Location"}]
+                return []
+
+        masters = TallyExtractor(DupClient()).extract_all()
+        self.assertEqual([u["_name"] for u in masters.units], ["Nos", "Box"])
+        self.assertEqual(len(masters.warehouses), 1)
+        # The bare repeat did not overwrite the full record's fields.
+        nos = next(u for u in masters.units if u["_name"] == "Nos")
+        self.assertEqual(nos["IsSimpleUnit"], "Yes")
+        self.assertEqual(nos["DecimalPlaces"], "0")
 
     def test_bfs_handles_deep_nesting(self):
         """Groups 3 levels deep must still be recognised as Debtors."""

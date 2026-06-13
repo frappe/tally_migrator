@@ -44,12 +44,26 @@ class TestSourceTotals(unittest.TestCase):
             _acct("HDFC Bank", "Asset", 10200, "Dr"),
             _acct("Cash", "Asset", 5000, "Dr"),
             _acct("Capital", "Equity", 100000, "Cr"),
-            _acct("Rent", "Expense", 2000, "Dr"),
         ])
         cls = _classes(source_totals(coa, _masters()))
         self.assertEqual(cls["Asset"], {"amount": 15200.0, "dr_cr": "Dr"})
         self.assertEqual(cls["LiabEquity"], {"amount": 100000.0, "dr_cr": "Cr"})
-        self.assertEqual(cls["Expense"], {"amount": 2000.0, "dr_cr": "Dr"})
+
+    def test_pl_openings_fold_into_temporary_opening(self):
+        # ERPNext forbids posting a P&L (Income/Expense) opening, so it is never emitted
+        # as its own class - the amount stays inside the Temporary Opening difference,
+        # matching what ERPNext actually holds, so the trial balance still reconciles.
+        coa = _coa([
+            _acct("HDFC Bank", "Asset", 10200, "Dr"),
+            _acct("Discount Received", "Income", 1900, "Cr"),
+            _acct("Rent", "Expense", 2000, "Dr"),
+        ])
+        s = source_totals(coa, _masters())
+        cls = _classes(s)
+        self.assertNotIn("Income", cls)
+        self.assertNotIn("Expense", cls)
+        # Only the asset (10200 Dr) drives the contra; the P&L lines are folded in.
+        self.assertEqual(s["temporary_opening"], {"amount": 10200.0, "dr_cr": "Cr"})
 
     def test_liability_and_equity_merge_into_one_class(self):
         # Tally calls capital Equity, ERPNext often roots it under Liability; merging

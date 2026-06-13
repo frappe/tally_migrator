@@ -19,13 +19,12 @@ const STEPS = [
 ];
 
 // Column widths for the inferred-accounts Review table (Tally ledger | Classified
-// as | Opening | Why flagged). table-layout:fixed makes the browser honour these
-// instead of sizing to content. "Opening" is just a right-aligned number so it
-// needs little width; "Why flagged" holds a short sentence, so it gets the most -
-// otherwise it squeezes to one word per line.
+// as | Opening). table-layout:fixed makes the browser honour these instead of
+// sizing to content. The shared "why" - no standard Tally ancestor - is stated
+// once in the banner above the table, so there's no per-row reason column.
 const REVIEW_COLGROUP =
-	'<colgroup><col style="width:36%;"><col style="width:21%;">' +
-	'<col style="width:12%;"><col style="width:31%;"></colgroup>';
+	'<colgroup><col style="width:50%;"><col style="width:30%;">' +
+	'<col style="width:20%;"></colgroup>';
 
 class TallyMigratorPage {
 	constructor(page, wrapper) {
@@ -61,20 +60,13 @@ class TallyMigratorPage {
 					<div id="resume-banner" style="display:none;"></div>
 					<h4>Bring your Tally data into ERPNext</h4>
 					<p class="text-muted" style="margin-bottom:18px;">
-						This tool copies your master records - Customers, Suppliers, Items and Warehouses -
-						from Tally into ERPNext. It takes a few short steps.
+						This tool brings your Tally masters, accounts and opening balances into ERPNext. It
+						checks your file and shows you a preview first, so nothing changes until you are ready.
 					</p>
 
-					<div style="display:flex; gap:10px; align-items:flex-start; background:var(--blue-100, #edf6fd); border:1px solid var(--blue-200, #e3f1fd); border-radius:8px; padding:12px 14px;">
-						<span style="flex:0 0 auto; display:inline-flex; align-items:center; height:1.5em;">${TallyMigratorPage.statusIcon("success")}</span>
-						<div style="font-size:13px;">
-							<strong>Your existing ERPNext data is safe.</strong>
-							Nothing is ever overwritten or deleted. If a record already exists, the migrator
-							skips it. You can run this as many times as you like.
-						</div>
-					</div>
+					${TallyMigratorPage.callout("info", TallyMigratorPage.iconRow("success", `<strong>Your existing ERPNext data is safe.</strong> Nothing is ever overwritten or deleted. If a record already exists, the migrator skips it. You can run this as many times as you like.`))}
 
-					<div class="well well-sm" style="margin-top:18px;">
+					<div style="margin-top:18px;">
 						<strong>First, export a file from Tally</strong>
 						<ol style="margin:10px 0 0 0; padding-left:20px; font-size:13px; line-height:1.7;">
 							<li>Open your company in <strong>Tally Prime</strong>.</li>
@@ -99,7 +91,7 @@ class TallyMigratorPage {
 					<div id="preview-box" style="display:none; margin-top:18px;"></div>
 
 					<div style="margin-top:24px;">
-						<button id="btn-next-upload" class="btn btn-primary btn-sm" disabled>Continue →</button>
+						<button id="btn-next-upload" class="btn btn-primary btn-sm" disabled>Continue ${TallyMigratorPage.navIcon("right")}</button>
 					</div>
 				</div>
 
@@ -108,12 +100,14 @@ class TallyMigratorPage {
 					<h4>Choose where the data should go</h4>
 					<p class="text-muted">Select the ERPNext company that will receive these records.</p>
 
-					<div class="form-group">
-						<label class="control-label">ERPNext Company</label>
-						<select id="erpnext-company" class="form-control" style="max-width:360px;"></select>
-						<div id="company-empty" style="display:none; margin-top:8px;" class="text-muted small">
-							No company found. <a href="/app/company/new">Create a Company in ERPNext</a> first,
-							then come back and refresh this page.
+					<div class="row">
+						<div class="form-group col-sm-6">
+							<label class="control-label">ERPNext Company</label>
+							<select id="erpnext-company" class="form-control" style="max-width:360px;"></select>
+							<div id="company-empty" style="display:none; margin-top:8px;" class="text-muted small">
+								No company found. <a href="/app/company/new">Create a Company in ERPNext</a> first,
+								then come back and refresh this page.
+							</div>
 						</div>
 					</div>
 
@@ -139,14 +133,14 @@ class TallyMigratorPage {
 						</div>
 					</div>
 
-					<div class="well well-sm" style="margin-top:16px; margin-bottom:20px;">
+					<div style="margin-top:16px; margin-bottom:20px;">
 						<strong>Here's what will be imported</strong>
 						<div id="configure-counts" style="margin-top:10px;"></div>
 					</div>
 
-					<button id="btn-back-2" class="btn btn-default btn-sm">← Back</button>
+					<button id="btn-back-2" class="btn btn-default btn-sm">${TallyMigratorPage.navIcon("left")} Back</button>
 					&nbsp;
-					<button id="btn-next-2" class="btn btn-primary btn-sm">Continue →</button>
+					<button id="btn-next-2" class="btn btn-primary btn-sm">Continue ${TallyMigratorPage.navIcon("right")}</button>
 				</div>
 
 				<!-- STEP 3: Pre-flight check -->
@@ -161,8 +155,8 @@ class TallyMigratorPage {
 						<i class="fa fa-spinner fa-spin"></i> &nbsp;Checking your file against ERPNext…
 					</div>
 
-					<div id="check-clean" style="display:none; margin-bottom:18px; background:var(--green-100, #e4f5e9); border:1px solid var(--green-200, #daf0e1); border-radius:8px; padding:12px 14px;">
-						${TallyMigratorPage.iconRow("success", `<strong>Nothing to resolve.</strong> We found no data-quality issues (GST numbers, states, units, HSN codes) that need your input before importing.`)}
+					<div id="check-clean" style="display:none; margin-bottom:18px;">
+						${TallyMigratorPage.callout("success", TallyMigratorPage.iconRow("success", `<strong>Nothing to resolve.</strong> We found no data-quality issues (GST numbers, states, units, HSN codes) that need your input before importing.`))}
 					</div>
 
 					<!-- Data-quality report (read-only; informational + consent) -->
@@ -196,9 +190,9 @@ class TallyMigratorPage {
 
 
 					<div style="margin-top:24px;">
-						<button id="btn-back-check" class="btn btn-default btn-sm">← Back</button>
+						<button id="btn-back-check" class="btn btn-default btn-sm">${TallyMigratorPage.navIcon("left")} Back</button>
 						&nbsp;
-						<button id="btn-next-check" class="btn btn-primary btn-sm">Continue →</button>
+						<button id="btn-next-check" class="btn btn-primary btn-sm">Continue ${TallyMigratorPage.navIcon("right")}</button>
 						<button id="btn-startover-check" class="btn btn-default btn-sm pull-right"
 							style="color:var(--text-muted, #8d99a6);">Start over</button>
 					</div>
@@ -218,9 +212,9 @@ class TallyMigratorPage {
 					<div id="review-parties"></div>
 
 					<div style="margin-top:24px;">
-						<button id="btn-back-review" class="btn btn-default btn-sm">← Back</button>
+						<button id="btn-back-review" class="btn btn-default btn-sm">${TallyMigratorPage.navIcon("left")} Back</button>
 						&nbsp;
-						<button id="btn-next-review" class="btn btn-primary btn-sm">Continue →</button>
+						<button id="btn-next-review" class="btn btn-primary btn-sm">Continue ${TallyMigratorPage.navIcon("right")}</button>
 					</div>
 				</div>
 
@@ -241,9 +235,9 @@ class TallyMigratorPage {
 					<div id="error-section" style="display:none; background:var(--red-100, #fff0f0); border:1px solid var(--red-200, #fcd7d7); border-radius:8px; padding:12px 14px;"></div>
 
 					<div id="run-actions">
-						<button id="btn-back-3" class="btn btn-default btn-sm">← Back</button>
+						<button id="btn-back-3" class="btn btn-default btn-sm">${TallyMigratorPage.navIcon("left")} Back</button>
 						&nbsp;
-						<button id="btn-run" class="btn btn-primary btn-sm">▶ Run Migration</button>
+						<button id="btn-run" class="btn btn-primary btn-sm">Run Migration</button>
 					</div>
 				</div>
 
@@ -762,7 +756,7 @@ class TallyMigratorPage {
 				${blockers ? `<div style="margin-top:10px;">${blockers}</div>` : ""}
 				${warnings ? `<div style="margin-top:10px;">${warnings}</div>` : ""}
 				<div style="margin-top:10px;">
-					<button class="btn btn-xs btn-default" id="btn-recheck-readiness">Re-check</button>
+					<button class="btn btn-xs btn-default" id="btn-recheck-readiness">${TallyMigratorPage.navIcon("refresh")} Re-check</button>
 				</div>
 		`)).show();
 
@@ -908,11 +902,6 @@ class TallyMigratorPage {
 				--red-100: #361515;    --red-200: #521515;
 				--gray-100: #232323;   --gray-200: #2b2b2b;   --gray-300: #343434;
 			}
-			[data-theme="dark"] .tally-migrator .well {
-				background-color: transparent;
-				border: none;
-				box-shadow: none;
-			}
 				/* Reusable info tooltip: an inline (i) revealing secondary explanation
 				   on hover/focus, so the screen stays terse. */
 				.tally-migrator .tm-tip {
@@ -951,6 +940,21 @@ class TallyMigratorPage {
 		)}</span>`;
 	}
 
+	// Directional / action icons pulled from Frappe's SVG sprite, so navigation and
+	// disclosure affordances never fall back to a text glyph used as an icon. `dir`
+	// is a sprite name: left, right, down, refresh.
+	static navIcon(dir) {
+		return `<span style="display:inline-flex; align-items:center; vertical-align:middle;">${frappe.utils.icon(
+			dir,
+			"sm"
+		)}</span>`;
+	}
+
+	// Disclosure caret as an SVG: points right when collapsed, down when open.
+	static caretIcon(open) {
+		return TallyMigratorPage.navIcon(open ? "down" : "right");
+	}
+
 	// Icon + content as a row, with the 16px icon vertically centred on the FIRST
 	// line of text (not the top of a multi-line block). This is the single source
 	// of icon/text alignment for every notice, so they all line up identically.
@@ -963,6 +967,11 @@ class TallyMigratorPage {
 		</div>`;
 	}
 
+	// Background + border use the palette tints, which this page re-points to dark
+	// surface colours in dark mode (see themeStyle); text rides on --text-color, which
+	// Frappe flips per theme. That pairing keeps every callout readable in both modes -
+	// do NOT swap in --text-on-* (e.g. --green-800), as those tints are not remapped for
+	// dark mode here and would render dark text on the dark box.
 	static callout(kind, inner, extraStyle = "") {
 		const t =
 			{
@@ -1022,7 +1031,7 @@ class TallyMigratorPage {
 			const $body = $("#" + bodyId);
 			$body.toggle();
 			const open = $body.is(":visible");
-			$("#" + caretId).text(open ? "▾" : "▸");
+			$("#" + caretId).html(TallyMigratorPage.caretIcon(open));
 			$("#" + headId).attr("aria-expanded", open ? "true" : "false");
 		};
 		$("#" + headId)
@@ -1107,7 +1116,7 @@ class TallyMigratorPage {
 		const toolbar = hasEditable
 			? `<div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:8px;">
 					<span class="text-muted small">Fix a value below, then re-check - or continue anyway.</span>
-					<button class="btn btn-default btn-xs" id="btn-dq-recheck">↻ Re-check</button>
+					<button class="btn btn-default btn-xs" id="btn-dq-recheck">${TallyMigratorPage.navIcon("refresh")} Re-check</button>
 				</div>`
 			: "";
 
@@ -1122,7 +1131,7 @@ class TallyMigratorPage {
 			const $body = $("#dq-body-" + idx);
 			$body.toggle();
 			const open = $body.is(":visible");
-			$("#dq-caret-" + idx).text(open ? "▾" : "▸");
+			$("#dq-caret-" + idx).html(TallyMigratorPage.caretIcon(open));
 			$(el).attr("aria-expanded", open ? "true" : "false");
 		};
 		$("#dq-list .dq-head")
@@ -1172,7 +1181,7 @@ class TallyMigratorPage {
 					<span style="display:inline-flex; align-items:center;">${glyph}</span>
 					<strong>${esc(label)}</strong>
 					<span class="text-muted">(${g.items.length})</span>
-					<span class="text-muted" style="margin-left:auto;" id="dq-caret-${idx}">▸</span>
+					<span class="text-muted" style="margin-left:auto;" id="dq-caret-${idx}">${TallyMigratorPage.caretIcon(false)}</span>
 				</div>
 				${g.fix_hint ? `<div class="text-muted small" style="margin:-2px 0 6px;">${esc(g.fix_hint)}</div>` : ""}
 				<div class="dq-body" id="dq-body-${idx}" style="display:none; margin:0 0 8px 16px;">${items}</div>
@@ -1287,7 +1296,7 @@ class TallyMigratorPage {
 				return `
 				<tr class="uom-row" data-tally-uom="${esc(issue.tally_uom)}">
 					<td style="font-weight:600; vertical-align:middle;">${esc(issue.tally_uom)}</td>
-					<td class="text-muted text-center" style="width:28px; vertical-align:middle;">→</td>
+					<td class="text-center" style="width:28px; vertical-align:middle;">${TallyMigratorPage.navIcon("right")}</td>
 					<td>
 						<select class="form-control input-sm uom-choice">
 							<option value="__create__" ${chosen === "__create__" ? "selected" : ""}>Create new unit: "${esc(issue.erpnext_uom)}"</option>
@@ -1447,10 +1456,10 @@ class TallyMigratorPage {
 				? ` (about ${Math.round((plug.temporary_opening_plug / plug.gross_opening) * 100)}% of total opening value)`
 				: "";
 		const plugTip =
-			`${fmt(plug.temporary_opening_plug)} ${plug.plug_dr_cr}${plugShare} is the difference by which your ` +
-			`Tally opening balances do not net to zero on their own. ERPNext parks it in the Temporary Opening ` +
-			`account so the trial balance stays balanced; you clear it later by completing your opening entries. ` +
-			`This is expected - nothing is missing or double-counted.`;
+			`${fmt(plug.temporary_opening_plug)} ${plug.plug_dr_cr}${plugShare} is held in Temporary Opening ` +
+			`to keep your books balanced. It is the part of your Tally opening that does not balance on its own, ` +
+			`plus any income/expense opening balances ERPNext cannot carry. This is normal - clear it as you ` +
+			`finish your opening entries.`;
 		const plugCard = plug.clean
 			? card("Balanced", "Opening balances", "Dr = Cr", GREEN_BG)
 			: card(
@@ -1479,14 +1488,16 @@ class TallyMigratorPage {
 
 		// ── Exceptions: only the inferred rows, named and explained ────────────
 		if (inferred) {
-			const rows = m.inferred
+			// Largest opening first - the rows with a real balance (which actually
+			// post to the defaulted account) lead; zero-opening rows fall to the end.
+			const rows = [...m.inferred]
+				.sort((a, b) => (b.amount || 0) - (a.amount || 0))
 				.map(
 					(r) => `
 					<tr>
 						<td style="padding:6px 10px;"><strong>${esc(r.name)}</strong></td>
 						<td style="padding:6px 10px;" class="text-muted">${classifiedAs(r)}</td>
 						<td style="padding:6px 10px; text-align:right;">${ob(r)}</td>
-						<td style="padding:6px 10px;" class="text-muted">no standard Tally group - defaulted</td>
 					</tr>`
 				)
 				.join("");
@@ -1501,9 +1512,6 @@ class TallyMigratorPage {
 									<th style="border-top:0; padding:6px 10px;">Tally ledger</th>
 									<th style="border-top:0; padding:6px 10px;">Classified as</th>
 									<th style="border-top:0; padding:6px 10px; text-align:right;">Opening</th>
-									<th style="border-top:0; padding:6px 10px;">Why flagged ${TallyMigratorPage.infoTip(
-										"These ledgers had no standard Tally ancestor group, so we guessed the account type. If a guess is wrong, fix the ledger's group in Tally and re-upload."
-									)}</th>
 								</tr>
 							</thead>
 							<tbody>${rows}</tbody>
@@ -1554,7 +1562,7 @@ class TallyMigratorPage {
 				style="cursor:pointer; display:flex; align-items:center; justify-content:space-between;
 				border:1px solid var(--border-color, #e0e6ed); border-radius:6px; padding:10px 12px;">
 				<span class="text-muted">Show all ${fmt(m.total_accounts)} mapped accounts</span>
-				<span class="text-muted" id="review-all-caret">▸</span>
+				<span class="text-muted" id="review-all-caret">${TallyMigratorPage.caretIcon(false)}</span>
 			</div>
 			<div id="review-all-body" style="display:none; margin-top:8px; max-height:360px; overflow-y:auto;
 				border:1px solid var(--border-color, #e0e6ed); border-radius:6px;">
@@ -1604,14 +1612,22 @@ class TallyMigratorPage {
 			),
 			p.on_account
 				? card(fmt(p.on_account), "Bills didn't reconcile", "posts 'On Account'", BLUE_BG)
-				: card(fmt(p.lump), "No bill detail", p.lump ? "single opening invoice" : "none", GRAY_BG),
+				: card(
+						fmt(p.lump),
+						"No bill detail",
+						p.lump ? "single opening invoice" : "none",
+						GRAY_BG,
+						"These parties had no bill-wise breakup in Tally. Each gets one opening invoice for its full balance, instead of a separate invoice per outstanding bill."
+				  ),
 		].join("");
 
 		// Per-party mismatch detail: only the parties whose bills did not add up to
 		// the ledger opening - the rows actually worth checking in Tally.
 		let warn = "";
 		if (p.on_account && (p.mismatches || []).length) {
-			const rows = p.mismatches
+			// Largest unreconciled gap first - the mismatches most worth checking.
+			const rows = [...p.mismatches]
+				.sort((a, b) => (b.amount || 0) - (a.amount || 0))
 				.map(
 					(m) => `
 					<tr>
@@ -1649,7 +1665,8 @@ class TallyMigratorPage {
 		// Collapsed per-party list - the twin of the COA book, so the user can drill
 		// into every party's opening, side and document count without it dominating
 		// the screen.
-		const partyRows = (p.parties_list || [])
+		const partyRows = [...(p.parties_list || [])]
+			.sort((a, b) => (b.amount || 0) - (a.amount || 0))
 			.map((r) => {
 				const amt = r.amount
 					? `${fmt(r.amount)} ${esc(r.dr_cr || "")}`.trim()
@@ -1672,7 +1689,7 @@ class TallyMigratorPage {
 				style="cursor:pointer; display:flex; align-items:center; justify-content:space-between;
 				border:1px solid var(--border-color, #e0e6ed); border-radius:6px; padding:10px 12px; margin-top:12px;">
 				<span class="text-muted">Show all ${fmt(p.parties)} part${p.parties === 1 ? "y" : "ies"}</span>
-				<span class="text-muted" id="review-parties-caret">▸</span>
+				<span class="text-muted" id="review-parties-caret">${TallyMigratorPage.caretIcon(false)}</span>
 			</div>
 			<div id="review-parties-body" style="display:none; margin-top:8px; max-height:360px; overflow-y:auto;
 				border:1px solid var(--border-color, #e0e6ed); border-radius:6px;">
@@ -1998,7 +2015,7 @@ class TallyMigratorPage {
 				${hasErrors || totalWarnings ? "Fix the source in Tally (or in ERPNext), then upload again - records that already imported will simply be skipped." : ""}
 			</p>`;
 		html += `<div style="margin-top:16px;">
-				<button id="btn-restart" class="btn btn-default btn-sm">↺ Migrate another file</button>
+				<button id="btn-restart" class="btn btn-default btn-sm">${TallyMigratorPage.navIcon("refresh")} Migrate another file</button>
 			</div></div>`;
 
 		$("#results-section").html(html).show();

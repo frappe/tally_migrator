@@ -123,6 +123,24 @@ _RECOGNIZED_NOT_MIGRATED = {
     "TDS": "TDS (tax deducted at source)",
     "TCS": "TCS (tax collected at source)",
 }
+# TallyPrime exports EMPLOYEES as Cost Centre records, each carrying a fixed set of
+# payroll/HR tags. Payroll/HR is out of scope (see the parked HR-migration note), so
+# rather than guess each tag's value-shape - "looks like phone numbers" for a bank
+# a/c number, "looks like dates" for a PF joining date - we recognize this CLOSED
+# Tally field set and report it as a DELIBERATE skip, the same honest treatment as
+# TDS/TCS. A closed vendor ontology is the one case where enumeration is correct
+# (every open-ended field is still derived from its value shape). Matched only on
+# Cost Centre records, so a same-named tag elsewhere is unaffected. Normalised form
+# (uppercase, no spaces) to match the source's tag keys.
+_EMPLOYEE_COSTCENTRE_TAGS = {
+    "GENDER", "BANKACCOUNTNUMBER", "BANKDETAILS", "IFSCODE",
+    "PFACCOUNTNUMBER", "PFJOININGDATE", "ESIINSURANCENUMBER",
+    "DATEOFBIRTH", "DATEOFJOINING", "EMPLOYEEDATEOFRELEAVING",
+    "PASSPORTNUMBER", "PASSPORTEXPIRYDATE", "AADHARNUMBER",
+    "FATHERORHUSBANDNAME", "MARITALSTATUS", "BLOODGROUP",
+}
+_HR_NOT_MIGRATED_LABEL = (
+    "Employee / HR details (gender, PF, bank, dates of birth/joining)")
 # Tags that DO carry a value but have no ERPNext destination - Tally-internal
 # pointers, data redundant with a field we already import, pre-GST excise
 # scaffolding, or attributes that only exist at a level ERPNext doesn't model.
@@ -349,7 +367,7 @@ _BUCKET_KEYS = ("ignored", "imported", "unmapped", "unwritten", "redundant", "no
 
 
 def _bucket_type_tags(tags: dict, mapped: set, read_not_written: set,
-                      read_leaves: set) -> tuple:
+                      read_leaves: set, obj_type: str = "") -> tuple:
     """Classify one object type's tags into the six no-loss buckets.
 
     Every tag lands in EXACTLY ONE bucket - the if/elif chain is exhaustive (the
@@ -362,11 +380,14 @@ def _bucket_type_tags(tags: dict, mapped: set, read_not_written: set,
         redundant - flat duplicate of a nested value we already import. Not a loss.
         noise     - Tally-internal (flags/empty containers/audit/legacy tax).
         unmapped  - a tag we never fetch (a UDF/custom field). Loss.
-    Returns ``(buckets, recognized_prefixes)`` - the latter naming any current-tax
-    framework (TDS/TCS) seen, so the report can flag it as a deliberate skip.
+    Returns ``(buckets, recognized_prefixes, hr_fields)`` - ``recognized_prefixes``
+    names any current-tax framework (TDS/TCS) seen and ``hr_fields`` the employee/HR
+    Cost-Centre tags, so the report can flag both as deliberate skips.
     """
     buckets: dict[str, list] = {k: [] for k in _BUCKET_KEYS}
     recognized: set = set()
+    hr_fields: set = set()   # employee/HR tags on Cost Centres - deliberately skipped
+    is_cost_centre = _norm(obj_type) == _norm("Cost Centre")
     for tag, info in sorted(tags.items()):
         # Detection only - the tag still flows through the buckets (hidden as noise),
         # so the no-loss accounting is unchanged.
@@ -393,6 +414,15 @@ def _bucket_type_tags(tags: dict, mapped: set, read_not_written: set,
             # A flat tag whose name matches a NESTED path we already read is a
             # duplicate of imported data, not a loss - reassure, don't alarm.
             buckets["redundant"].append(row)
+        elif is_cost_centre and _norm(tag) in _EMPLOYEE_COSTCENTRE_TAGS:
+            # An employee-on-Cost-Centre payroll/HR field: a recognised, deliberate
+            # skip (see _EMPLOYEE_COSTCENTRE_TAGS). Re-label it as such instead of
+            # guessing its value-shape, name it in the HR note, and hold it with the
+            # noise (suppressed from the loss tables but still counted and itemised
+            # in the full audit) - exactly how TDS/TCS are handled.
+            row["kind"] = "an employee / HR detail"
+            hr_fields.add(tag)
+            buckets["noise"].append(row)
         elif _is_noise(tag, info):
             # Tally-internal: suppressed from the loss tables but RETAINED here in
             # full, so the migration log can show every dropped field on demand.
@@ -406,7 +436,7 @@ def _bucket_type_tags(tags: dict, mapped: set, read_not_written: set,
     # Most-likely-to-matter first (high fill-rate / structured shape / UDF), then
     # alphabetical for a stable order within equal scores.
     buckets["unmapped"].sort(key=lambda r: (-r.get("score", 0.0), r["field"]))
-    return buckets, recognized
+    return buckets, recognized, hr_fields
 
 
 def coverage_report(source) -> dict:
@@ -448,6 +478,7 @@ def coverage_report(source) -> dict:
     ignored_total = 0
     total_tags = 0
     recognized_prefixes: set = set()   # current taxes we saw but deliberately skip
+    hr_fields_seen: set = set()        # employee/HR Cost-Centre tags, deliberately skip
     for obj_type, fields in MAPPED_FIELDS.items():
         mapped = _read_tags(obj_type, fields) | {"NAME"}
         written = _read_tags(obj_type, WRITTEN_FIELDS.get(obj_type, fields)) | {"NAME"}
@@ -456,9 +487,10 @@ def coverage_report(source) -> dict:
         tags = source.raw_tags(obj_type)
         total_tags += len(tags)
 
-        buckets, recognized = _bucket_type_tags(
-            tags, mapped, read_not_written, read_leaves)
+        buckets, recognized, hr_fields = _bucket_type_tags(
+            tags, mapped, read_not_written, read_leaves, obj_type)
         recognized_prefixes |= recognized
+        hr_fields_seen |= hr_fields
         ignored, imported, unmapped, unwritten, redundant, noise = (
             buckets["ignored"], buckets["imported"], buckets["unmapped"],
             buckets["unwritten"], buckets["redundant"], buckets["noise"])
@@ -517,5 +549,10 @@ def coverage_report(source) -> dict:
         # the underlying ledger balances are still imported in full.
         "recognized_not_migrated": [
             _RECOGNIZED_NOT_MIGRATED[p] for p in sorted(recognized_prefixes)],
+        # Employees that Tally exports as Cost Centres carry payroll/HR fields we
+        # deliberately don't migrate. A plain-language note (not the per-field loss
+        # table) when any were seen, so it reads as an intentional scope decision.
+        "hr_not_migrated": _HR_NOT_MIGRATED_LABEL if hr_fields_seen else "",
+        "hr_field_count": len(hr_fields_seen),
         "types": types,
     }

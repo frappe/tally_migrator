@@ -47,8 +47,11 @@ const BAR_CREATED = "var(--green-500, #30a66d)";
 const BAR_SKIPPED = "var(--gray-400, #c0c8d0)";
 const BAR_FAILED = "var(--red-500, #e24c4c)";
 
-// Every section card shares one box: same border, radius, padding.
-const CARD = `border:1px solid ${BORDER}; border-radius:8px; padding:14px 16px;`;
+// Sections sit directly on the form surface (each already has a native Frappe
+// section header), rather than each being re-boxed in an identical border. This
+// keeps the information on the surface and avoids seven look-alike cards stacking
+// into grid-like sameness. Semantic colour still rides on the inner callouts.
+const CARD = "";
 
 // Single source of truth for vertical rhythm. EVERY render path - boxed card or
 // a bare clean-state callout - is wrapped in this, so the gap above and below is
@@ -63,6 +66,12 @@ function statusIcon(kind) {
 	// drops the 16px glyph onto the text baseline so inline icons sit level
 	// (in a flex iconRow vertical-align is ignored, so block usage is unaffected).
 	return `<span style="display:inline-flex; align-items:center; line-height:0; vertical-align:-0.18em;">${frappe.utils.icon(name, "sm")}</span>`;
+}
+
+// An inline SVG arrow (from Frappe's icon sprite) for "from → to" / "maps to"
+// relationships, so the UI never falls back to a text glyph as an icon.
+function arrowIcon() {
+	return `<span style="display:inline-flex; align-items:center; vertical-align:middle; color:${MUTED};">${frappe.utils.icon("right", "sm")}</span>`;
 }
 
 // Icon + content, with the 16px icon optically centred on the first line of text
@@ -165,20 +174,28 @@ function render_coverage(frm) {
 			.map(
 				(u) => `
 				<tr>
-					<td style="font-family:monospace;">${esc(u.field)}</td>
-					<td class="text-muted small">${esc(shapeText(u))}</td>
+					<td style="font-family:monospace; word-break:break-word;">${esc(u.field)}</td>
+					<td class="text-muted small" style="word-break:break-word;">${esc(shapeText(u))}</td>
 					<td class="text-right text-muted">${u.fill_rate != null ? Math.round(u.fill_rate * 100) + "%" : ""}</td>
-					<td class="text-muted">${u.sample ? esc(String(u.sample)) : ""}</td>
+					<td class="text-muted" style="word-break:break-word;">${u.sample ? esc(String(u.sample)) : ""}</td>
 				</tr>`
 			)
 			.join("");
+		// Fixed layout + explicit column widths so headers never wrap and a long
+		// "category: a, b, c…" value can't blow one column out - it wraps in place.
 		return `
-			<table class="table table-condensed" style="margin:0 0 6px;">
+			<table class="table table-condensed" style="margin:0 0 6px; table-layout:fixed; width:100%;">
+				<colgroup>
+					<col style="width:26%;">
+					<col style="width:34%;">
+					<col style="width:12%;">
+					<col style="width:28%;">
+				</colgroup>
 				<thead><tr>
-					<th style="border-top:0;">Field</th>
-					<th style="border-top:0;">What it looks like</th>
-					<th style="border-top:0;" class="text-right">Filled</th>
-					<th style="border-top:0;">Sample value</th>
+					<th style="border-top:0; white-space:nowrap;">Field</th>
+					<th style="border-top:0; white-space:nowrap;">What it looks like</th>
+					<th style="border-top:0; white-space:nowrap;" class="text-right">Filled</th>
+					<th style="border-top:0; white-space:nowrap;">Sample value</th>
 				</tr></thead>
 				<tbody>${rows}</tbody>
 			</table>`;
@@ -289,6 +306,23 @@ function render_coverage(frm) {
 		  )
 		: "";
 
+	// Employees that Tally exports as Cost Centres carry payroll/HR fields (gender,
+	// PF, bank, dates). Named as a deliberate skip - not guessed value-shapes or a
+	// silent loss - mirroring the tax note above; the cost centres themselves import.
+	const hrNote = report.hr_not_migrated
+		? callout(
+				"info",
+				iconRow(
+					"info",
+					`We detected <strong>${esc(report.hr_not_migrated)}</strong> on cost
+					centres Tally uses for employees. Payroll / HR migration is out of scope,
+					so these fields are not migrated; the cost centres themselves import in
+					full. Bring employees across separately in HR / Payroll.`
+				),
+				"margin-bottom:8px;"
+		  )
+		: "";
+
 	if (!lossTypes.length) {
 		// No real loss: lead with reassurance, but still offer the full audit beneath.
 		wrapper.html(section(`
@@ -296,6 +330,7 @@ function render_coverage(frm) {
 				${callout("success", iconRow("success", "Every field that carries data reached ERPNext - nothing was left behind."))}
 				${recon ? `<div style="margin-top:8px;">${recon}</div>` : ""}
 				${recognizedNote}
+				${hrNote}
 				${noiseAudit}
 			</div>
 		`));
@@ -343,6 +378,7 @@ function render_coverage(frm) {
 			${unwrittenNote}
 			${recon}
 			${recognizedNote}
+			${hrNote}
 			${collapsible(lossTypes.length, `Show field details (${lossTypes.length} record type(s))`, blocks)}
 			${noiseAudit}
 		</div>
@@ -392,9 +428,9 @@ function render_mapping(frm) {
 				"info",
 				iconRow(
 					"info",
-					`<strong>${fmt(plug.temporary_opening_plug)} ${esc(plug.plug_dr_cr)} posted to Temporary Opening - this is expected, not an error.</strong>${plugShare}
-					It is the difference by which the Tally opening balances do not net to zero on their own; ERPNext parks it
-					in Temporary Opening to keep the trial balance balanced. Clear it later by completing the opening entries.`
+					`<strong>${fmt(plug.temporary_opening_plug)} ${esc(plug.plug_dr_cr)} is held in Temporary Opening - this is normal, not an error.</strong>${plugShare}
+					It is the part of your Tally opening that does not balance on its own, plus any income/expense opening
+					balances ERPNext cannot carry. Clear it as you finish your opening entries.`
 				),
 				"margin:6px 0;"
 		  );
@@ -406,7 +442,8 @@ function render_mapping(frm) {
 				<th style="border-top:0;">Classified as</th>
 				<th style="border-top:0;" class="text-right">Opening</th>
 			</tr></thead>
-			<tbody>${m.inferred
+			<tbody>${[...m.inferred]
+				.sort((a, b) => (b.amount || 0) - (a.amount || 0))
 				.map(
 					(r) => `<tr>
 						<td>${esc(r.name)}</td>
@@ -503,7 +540,7 @@ function render_reconciliation(frm) {
 		.map((row) => {
 			const stat = !row.has_erpnext ? "" : row.match ? statusIcon("success") : statusIcon("error");
 			const note = row.is_opening_difference
-				? `<div class="text-muted small" style="font-weight:400;">Tally's own "Difference in Opening Balances" - a non-zero value here is faithful, not a gap.</div>`
+				? `<div class="text-muted small" style="font-weight:400;">The opening difference Tally could not balance on its own, plus any income/expense openings ERPNext cannot carry - a non-zero value here is faithful, not a gap.</div>`
 				: "";
 			const erpDr = avail && row.has_erpnext ? dr(row.erpnext) : "";
 			const erpCr = avail && row.has_erpnext ? cr(row.erpnext) : "";
@@ -672,7 +709,7 @@ function render_edits(frm) {
 				<td><span class="text-muted">${esc(e.entity_type || "")}</span> · ${esc(e.record_name || "")}</td>
 				<td>${esc(e.field || "")}</td>
 				<td class="text-muted">${e.old ? esc(String(e.old)) : blank}</td>
-				<td class="text-muted">→</td>
+				<td class="text-center">${arrowIcon()}</td>
 				<td>${e.new ? esc(String(e.new)) : blank}</td>
 			</tr>`
 		)
