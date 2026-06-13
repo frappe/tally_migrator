@@ -29,6 +29,16 @@ function apply_dark_mode_theme(frm) {
 			--red-100: #361515;    --red-200: #521515;
 			--gray-100: #232323;   --gray-200: #2b2b2b;   --gray-300: #343434;
 		}
+		/* Replace the browser's default <details> triangle with Frappe's SVG caret
+		   (a "right" icon that rotates to point down when open), so disclosure
+		   markers match the carets used elsewhere instead of a black glyph. */
+		.tally-migration-log details > summary { list-style: none; }
+		.tally-migration-log details > summary::-webkit-details-marker { display: none; }
+		.tally-migration-log details > summary .tm-caret {
+			display: inline-flex; align-items: center; vertical-align: middle;
+			color: ${MUTED}; transition: transform 0.15s ease;
+		}
+		.tally-migration-log details[open] > summary .tm-caret { transform: rotate(90deg); }
 	</style>`);
 }
 
@@ -74,6 +84,13 @@ function arrowIcon() {
 	return `<span style="display:inline-flex; align-items:center; vertical-align:middle; color:${MUTED};">${frappe.utils.icon("right", "sm")}</span>`;
 }
 
+// Disclosure caret for a native <details> summary - the CSS in
+// apply_dark_mode_theme() hides the browser triangle and rotates this to point
+// down when the section is open, matching the wizard's caret vocabulary.
+function caretMarker() {
+	return `<span class="tm-caret">${frappe.utils.icon("right", "sm")}</span>`;
+}
+
 // Icon + content, with the 16px icon optically centred on the first line of text
 // (a 1.5em flex box), so headings of any size sit level with their marker.
 function iconRow(kind, html) {
@@ -99,7 +116,7 @@ const COLLAPSE_AT = 8;
 function collapsible(count, summaryText, innerHtml) {
 	if (count <= COLLAPSE_AT) return innerHtml;
 	return `<details style="margin-top:4px;">
-		<summary style="cursor:pointer; user-select:none; color:${MUTED}; font-size:12px;"><span style="margin-left:6px;">${summaryText}</span></summary>
+		<summary style="cursor:pointer; user-select:none; color:${MUTED}; font-size:12px;">${caretMarker()}<span style="margin-left:6px;">${summaryText}</span></summary>
 		<div style="margin-top:8px;">${innerHtml}</div>
 	</details>`;
 }
@@ -540,7 +557,7 @@ function render_reconciliation(frm) {
 		.map((row) => {
 			const stat = !row.has_erpnext ? "" : row.match ? statusIcon("success") : statusIcon("error");
 			const note = row.is_opening_difference
-				? `<div class="text-muted small" style="font-weight:400;">The opening difference Tally could not balance on its own, plus any income/expense openings ERPNext cannot carry - a non-zero value here is faithful, not a gap.</div>`
+				? ` <span class="text-muted" style="display:inline-flex; vertical-align:middle; cursor:help;" title="The opening difference Tally could not balance on its own, plus any income/expense openings ERPNext cannot carry - a non-zero value here is faithful, not a gap.">${frappe.utils.icon("solid-info", "sm")}</span>`
 				: "";
 			const erpDr = avail && row.has_erpnext ? dr(row.erpnext) : "";
 			const erpCr = avail && row.has_erpnext ? cr(row.erpnext) : "";
@@ -663,7 +680,7 @@ function render_created(frm) {
 			return `
 				<details style="border-top:1px solid var(--gray-200, #f0f4f7); padding:8px 0;">
 					<summary style="cursor:pointer; user-select:none; font-weight:500;">
-						<span style="margin-left:6px;">${esc(label)} <span class="text-muted" style="font-weight:400;">(${names.length})</span></span>
+						${caretMarker()}<span style="margin-left:6px;">${esc(label)} <span class="text-muted" style="font-weight:400;">(${names.length})</span></span>
 					</summary>
 					<div class="small" style="line-height:1.8; margin:6px 0 0 14px;">${links}</div>
 				</details>`;

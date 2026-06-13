@@ -1440,7 +1440,7 @@ class TallyMigratorPage {
 		// Opening balance cell: amount + Dr/Cr, muted when zero.
 		const ob = (r) =>
 			r.amount
-				? `${fmt(r.amount)} <span class="text-muted">${esc(r.dr_cr)}</span>`
+				? `<span style="white-space:nowrap;">${fmt(r.amount)} <span class="text-muted">${esc(r.dr_cr)}</span></span>`
 				: `<span class="text-muted">0</span>`;
 		const classifiedAs = (r) =>
 			esc(r.root_type) + (r.account_type ? ` · ${esc(r.account_type)}` : "");
@@ -1530,9 +1530,11 @@ class TallyMigratorPage {
 		// ── Full chart of accounts (collapsed) ─────────────────────────────────
 		const book = (m.groups || [])
 			.map((g) => {
+				// Each subtotal stays on its own line with the amount glued to its
+				// Dr/Cr suffix (nowrap), so a long mixed-sign group never orphans "Cr".
 				const sub = [];
-				if (g.subtotal_dr) sub.push(`${fmt(g.subtotal_dr)} Dr`);
-				if (g.subtotal_cr) sub.push(`${fmt(g.subtotal_cr)} Cr`);
+				if (g.subtotal_dr) sub.push(`<span style="white-space:nowrap;">${fmt(g.subtotal_dr)} Dr</span>`);
+				if (g.subtotal_cr) sub.push(`<span style="white-space:nowrap;">${fmt(g.subtotal_cr)} Cr</span>`);
 				const accRows = g.accounts
 					.map(
 						(r) => `
@@ -1551,7 +1553,7 @@ class TallyMigratorPage {
 				return `
 					<tr style="background:var(--fg-color, #f7fafc);">
 						<td colspan="3" style="padding:6px 10px; font-weight:600;">${esc(g.root_type)}</td>
-						<td style="padding:6px 10px; text-align:right; font-weight:600;">${sub.join(" · ")}</td>
+						<td style="padding:6px 10px; text-align:right; font-weight:600;">${sub.join("<br>")}</td>
 					</tr>
 					${accRows}`;
 			})
