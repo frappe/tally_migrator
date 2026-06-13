@@ -251,6 +251,28 @@ class TestActiveRunGuard(unittest.TestCase):
                 mock.patch("frappe.utils.time_diff_in_seconds", return_value=10 * 3600):
             self._api()._assert_no_active_run("Acme")   # stale -> must not raise
 
+    def test_live_async_job_blocks_regardless_of_age(self):
+        # An enqueued run with a still-alive RQ job blocks even past the age cap that
+        # would have freed a sync run - liveness wins over age.
+        rows = [frappe._dict(
+            {"name": "LOG-1", "modified": "2026-01-01 00:00:00", "job_id": "tally-masters-LOG-1"})]
+        with mock.patch("frappe.get_all", return_value=rows), \
+                mock.patch.object(self._api(), "_is_job_alive", return_value=True), \
+                mock.patch("frappe.utils.time_diff_in_seconds", return_value=10 * 3600), \
+                mock.patch("frappe.utils.now", return_value="ignored"), \
+                mock.patch("frappe.utils.pretty_date", return_value="earlier"):
+            with self.assertRaises(frappe.ValidationError):
+                self._api()._assert_no_active_run("Acme")
+
+    def test_dead_async_job_allows_even_when_recent(self):
+        # A crashed worker leaves a recent 'Running' log, but its RQ job is gone, so a
+        # re-run is allowed immediately rather than waiting out the age cap.
+        rows = [frappe._dict(
+            {"name": "LOG-1", "modified": "2026-01-01 00:00:00", "job_id": "tally-masters-LOG-1"})]
+        with mock.patch("frappe.get_all", return_value=rows), \
+                mock.patch.object(self._api(), "_is_job_alive", return_value=False):
+            self._api()._assert_no_active_run("Acme")   # dead job -> must not raise
+
 
 class TestItemHsnRecovery(unittest.TestCase):
     """An India-Compliance HSN rejection must not lose the item: the importer

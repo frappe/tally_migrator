@@ -767,6 +767,11 @@ class TallyMigratorPage {
 	// Re-run only the readiness check (after the user fixes setup in another tab),
 	// without re-scanning the whole file.
 	recheckReadiness() {
+		// Disable the button while the call is in flight so a rapid double-click can't
+		// queue duplicate readiness checks (the button is re-rendered by renderReadiness).
+		const $btn = $("#btn-recheck-readiness");
+		if ($btn.prop("disabled")) return;
+		$btn.prop("disabled", true);
 		frappe.call({
 			method: "tally_migrator.api.company_readiness",
 			args: { erpnext_company: $("#erpnext-company").val() },
@@ -774,6 +779,7 @@ class TallyMigratorPage {
 				this.readiness = r.message || null;
 				this.renderReadiness();
 			},
+			error: () => $btn.prop("disabled", false),
 		});
 	}
 

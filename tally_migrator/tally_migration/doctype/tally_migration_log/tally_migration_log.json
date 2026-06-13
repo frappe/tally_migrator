@@ -72,6 +72,14 @@
    "description": "Per-record field fixes (GSTIN/state/HSN/\u2026) made on the pre-flight screen. Kept so a re-run re-applies the same fixes instead of importing the unfixed data."
   },
   {
+   "fieldname": "job_id",
+   "fieldtype": "Data",
+   "label": "Background Job ID",
+   "read_only": 1,
+   "hidden": 1,
+   "description": "RQ job id for an async (enqueued) run. Used to tell a still-running run from a crashed one when guarding against a duplicate start."
+  },
+  {
    "fieldname": "col_break_1",
    "fieldtype": "Column Break"
   },
