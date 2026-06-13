@@ -47,7 +47,8 @@ class _MockClient:
         if obj_type == "Ledger" and child_tag == "LEDMULTIADDRESSLIST.LIST":
             return [{"_parent": "Customer A",
                      "ADDRESS.LIST/ADDRESS": "Godown 5, Karnataka",
-                     "ADDRESSNAME": "Warehouse"}]
+                     "ADDRESSNAME": "Warehouse",
+                     "PINCODE": "560001"}]
         if obj_type == "Ledger" and child_tag == "CONTACTDETAILS.LIST":
             return [{"_parent": "Customer A", "Name": "Accounts",
                      "PhoneNumber": "9496278969", "IsDefaultWhatsAppNum": "Yes"}]
@@ -102,7 +103,8 @@ class TestTallyExtractor(unittest.TestCase):
         masters = self.extractor.extract_all()
         a = next(c for c in masters.customers if c["_name"] == "Customer A")
         self.assertEqual(a["_extra_addresses"],
-                         [{"address": "Godown 5, Karnataka", "name": "Warehouse"}])
+                         [{"address": "Godown 5, Karnataka", "name": "Warehouse",
+                           "state": "", "pincode": "560001"}])
         self.assertEqual(len(a["_extra_contacts"]), 1)
         self.assertEqual(a["_extra_contacts"][0]["phone"], "9496278969")
         self.assertTrue(a["_extra_contacts"][0]["whatsapp"])

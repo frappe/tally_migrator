@@ -315,8 +315,8 @@ class PartyImporter(BaseImporter):
 
         The primary mailing address is created by ``_save_address``; a real export
         also carries an address book (``LEDMULTIADDRESSLIST.LIST``) the extractor
-        attaches as ``_extra_addresses`` ([{address, name}]). Each becomes its own
-        ERPNext Address linked to the party. Non-fatal per address."""
+        attaches as ``_extra_addresses`` ([{address, name, state, pincode}]). Each
+        becomes its own ERPNext Address linked to the party. Non-fatal per address."""
         for a in data.get("_extra_addresses") or []:
             text = (a.get("address") or "").strip()
             if not text:
@@ -329,6 +329,10 @@ class PartyImporter(BaseImporter):
                                      if label.lower() in self._ADDRESS_TYPES else "Other")
                 addr.address_line1 = text
                 addr.city = "Not Specified"
+                row_pin = (a.get("pincode") or "").strip()
+                if row_pin:
+                    addr.pincode = row_pin
+                addr.state = self._extra_address_state(a, data)
                 addr.country = (data.get("CountryName") or "").strip() or self.company_country
                 addr.append("links", {"link_doctype": link_type, "link_name": link_name})
                 addr.insert(ignore_permissions=True)
@@ -336,6 +340,46 @@ class PartyImporter(BaseImporter):
             except Exception as exc:
                 frappe.log_error("Tally Migrator", f"Extra address failed for {link_name}: {exc}")
                 result.add_warning(link_name, f"additional address not created: {exc}")
+
+    def _extra_address_state(self, row: dict, data: dict) -> str:
+        """ERPNext state for an address-book row, most-precise signal first:
+
+        1. the row's OWN state (a real export rarely sets it, but use it when present);
+        2. else derive from the row's OWN pincode (India Compliance's pincode<->state
+           map - so the derived state is guaranteed consistent with the pincode and
+           passes validation);
+        3. else inherit the PARTY's state (the only signal a typical export carries -
+           and in practice the branch is usually in the party's own state).
+
+        India Compliance requires a state on an Indian address, so this never returns
+        empty for a party that has one - keeping the address rather than dropping it."""
+        own = TALLY_STATE_MAP.get((row.get("state") or "").strip(), "")
+        if own:
+            return own
+        from_pin = self._state_from_pincode((row.get("pincode") or "").strip())
+        if from_pin:
+            return from_pin
+        return self._resolve_state(data)
+
+    @staticmethod
+    def _state_from_pincode(pincode: str) -> str:
+        """ERPNext state whose pincode range covers this PIN's first 3 digits, using
+        India Compliance's own ``STATE_PINCODE_MAPPING`` (so the result matches IC's
+        validation). Returns "" when IC is absent or the PIN maps to no state."""
+        pin = "".join(filter(str.isdigit, pincode or ""))
+        if len(pin) < 3:
+            return ""
+        try:
+            from india_compliance.gst_india.constants import STATE_PINCODE_MAPPING
+        except Exception:
+            return ""
+        prefix = int(pin[:3])
+        for state, ranges in STATE_PINCODE_MAPPING.items():
+            # A value is either a single (lo, hi) range or a tuple of such ranges.
+            spans = ranges if isinstance(ranges[0], (tuple, list)) else (ranges,)
+            if any(lo <= prefix <= hi for lo, hi in spans):
+                return state
+        return ""
 
     def _save_extra_contacts(self, link_name: str, link_type: str, data: dict,
                              result: "ImportResult") -> None:
@@ -414,6 +458,7 @@ class PartyImporter(BaseImporter):
         raw_address = (data.get("Address") or "").strip()
         if not raw_address:
             return
+        _msg_mark = None   # message-queue length, set just before insert (see below)
         try:
             addr = frappe.new_doc("Address")
             addr.address_title = (data.get("MailingName") or "").strip() or link_name
@@ -436,6 +481,14 @@ class PartyImporter(BaseImporter):
             gstin = (data.get("GSTRegistrationNumber") or "").strip().upper()
             addr.gstin = gstin if (gstin and validate_gstin(gstin)[0]) else ""
             addr.append("links", {"link_doctype": link_type, "link_name": link_name})
+            # Remember the message-queue length so that, if the insert fails on a
+            # pincode/state mismatch, we can drop India Compliance's own "Invalid
+            # Postal Code" msgprint (queued before it raised) on the salvage path -
+            # otherwise dozens of them surface in a dialog for an address we DID keep.
+            try:
+                _msg_mark = len(frappe.local.message_log)
+            except Exception:
+                _msg_mark = None
             addr.insert(ignore_permissions=True)
             frappe.db.commit()
         except Exception as exc:
@@ -451,6 +504,13 @@ class PartyImporter(BaseImporter):
                     addr.pincode = ""
                     addr.insert(ignore_permissions=True)
                     frappe.db.commit()
+                    # Drop the failed attempt's queued "Invalid Postal Code" message -
+                    # the address was salvaged, so that warning would only be noise.
+                    if _msg_mark is not None:
+                        try:
+                            del frappe.local.message_log[_msg_mark:]
+                        except Exception:
+                            pass
                     result.add_warning(
                         link_name, "address imported without its PIN code - the PIN did "
                         "not match the state (verify and set it in ERPNext)")

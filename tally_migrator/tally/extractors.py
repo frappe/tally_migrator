@@ -252,12 +252,19 @@ class TallyExtractor:
             return
         addrs: dict[str, list] = {}
         for r in getter("Ledger", "LEDMULTIADDRESSLIST.LIST",
-                        ["ADDRESS.LIST/ADDRESS", "ADDRESSNAME"]):
+                        ["ADDRESS.LIST/ADDRESS", "ADDRESSNAME", "STATE", "PINCODE"]):
             text = (r.get("ADDRESS.LIST/ADDRESS") or "").strip()
             if not text:
                 continue
-            addrs.setdefault((r.get("_parent") or "").strip(), []).append(
-                {"address": text, "name": (r.get("ADDRESSNAME") or "").strip()})
+            # State/pincode are usually absent on a Tally address-book row (only the
+            # primary mailing address carries them), but read them when present so the
+            # importer can use the row's OWN location before falling back to the party's.
+            addrs.setdefault((r.get("_parent") or "").strip(), []).append({
+                "address": text,
+                "name": (r.get("ADDRESSNAME") or "").strip(),
+                "state": (r.get("STATE") or "").strip(),
+                "pincode": (r.get("PINCODE") or "").strip(),
+            })
         contacts: dict[str, list] = {}
         for r in getter("Ledger", "CONTACTDETAILS.LIST",
                         ["Name", "PhoneNumber", "IsDefaultWhatsAppNum"]):

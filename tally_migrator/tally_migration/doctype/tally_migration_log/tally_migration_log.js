@@ -165,20 +165,28 @@ function render_coverage(frm) {
 			.map(
 				(u) => `
 				<tr>
-					<td style="font-family:monospace;">${esc(u.field)}</td>
-					<td class="text-muted small">${esc(shapeText(u))}</td>
+					<td style="font-family:monospace; word-break:break-word;">${esc(u.field)}</td>
+					<td class="text-muted small" style="word-break:break-word;">${esc(shapeText(u))}</td>
 					<td class="text-right text-muted">${u.fill_rate != null ? Math.round(u.fill_rate * 100) + "%" : ""}</td>
-					<td class="text-muted">${u.sample ? esc(String(u.sample)) : ""}</td>
+					<td class="text-muted" style="word-break:break-word;">${u.sample ? esc(String(u.sample)) : ""}</td>
 				</tr>`
 			)
 			.join("");
+		// Fixed layout + explicit column widths so headers never wrap and a long
+		// "category: a, b, c…" value can't blow one column out - it wraps in place.
 		return `
-			<table class="table table-condensed" style="margin:0 0 6px;">
+			<table class="table table-condensed" style="margin:0 0 6px; table-layout:fixed; width:100%;">
+				<colgroup>
+					<col style="width:26%;">
+					<col style="width:34%;">
+					<col style="width:12%;">
+					<col style="width:28%;">
+				</colgroup>
 				<thead><tr>
-					<th style="border-top:0;">Field</th>
-					<th style="border-top:0;">What it looks like</th>
-					<th style="border-top:0;" class="text-right">Filled</th>
-					<th style="border-top:0;">Sample value</th>
+					<th style="border-top:0; white-space:nowrap;">Field</th>
+					<th style="border-top:0; white-space:nowrap;">What it looks like</th>
+					<th style="border-top:0; white-space:nowrap;" class="text-right">Filled</th>
+					<th style="border-top:0; white-space:nowrap;">Sample value</th>
 				</tr></thead>
 				<tbody>${rows}</tbody>
 			</table>`;
@@ -289,6 +297,23 @@ function render_coverage(frm) {
 		  )
 		: "";
 
+	// Employees that Tally exports as Cost Centres carry payroll/HR fields (gender,
+	// PF, bank, dates). Named as a deliberate skip - not guessed value-shapes or a
+	// silent loss - mirroring the tax note above; the cost centres themselves import.
+	const hrNote = report.hr_not_migrated
+		? callout(
+				"info",
+				iconRow(
+					"info",
+					`We detected <strong>${esc(report.hr_not_migrated)}</strong> on cost
+					centres Tally uses for employees. Payroll / HR migration is out of scope,
+					so these fields are not migrated; the cost centres themselves import in
+					full. Bring employees across separately in HR / Payroll.`
+				),
+				"margin-bottom:8px;"
+		  )
+		: "";
+
 	if (!lossTypes.length) {
 		// No real loss: lead with reassurance, but still offer the full audit beneath.
 		wrapper.html(section(`
@@ -296,6 +321,7 @@ function render_coverage(frm) {
 				${callout("success", iconRow("success", "Every field that carries data reached ERPNext - nothing was left behind."))}
 				${recon ? `<div style="margin-top:8px;">${recon}</div>` : ""}
 				${recognizedNote}
+				${hrNote}
 				${noiseAudit}
 			</div>
 		`));
@@ -343,6 +369,7 @@ function render_coverage(frm) {
 			${unwrittenNote}
 			${recon}
 			${recognizedNote}
+			${hrNote}
 			${collapsible(lossTypes.length, `Show field details (${lossTypes.length} record type(s))`, blocks)}
 			${noiseAudit}
 		</div>

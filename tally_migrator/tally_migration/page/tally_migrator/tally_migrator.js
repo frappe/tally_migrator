@@ -108,12 +108,14 @@ class TallyMigratorPage {
 					<h4>Choose where the data should go</h4>
 					<p class="text-muted">Select the ERPNext company that will receive these records.</p>
 
-					<div class="form-group">
-						<label class="control-label">ERPNext Company</label>
-						<select id="erpnext-company" class="form-control" style="max-width:360px;"></select>
-						<div id="company-empty" style="display:none; margin-top:8px;" class="text-muted small">
-							No company found. <a href="/app/company/new">Create a Company in ERPNext</a> first,
-							then come back and refresh this page.
+					<div class="row">
+						<div class="form-group col-sm-6">
+							<label class="control-label">ERPNext Company</label>
+							<select id="erpnext-company" class="form-control" style="max-width:360px;"></select>
+							<div id="company-empty" style="display:none; margin-top:8px;" class="text-muted small">
+								No company found. <a href="/app/company/new">Create a Company in ERPNext</a> first,
+								then come back and refresh this page.
+							</div>
 						</div>
 					</div>
 

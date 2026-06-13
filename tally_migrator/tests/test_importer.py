@@ -408,7 +408,7 @@ class TestERPNextImporter(unittest.TestCase):
         imp = CustomerImporter("_TMTest Co", "TC")
         result = ImportResult("Customer")
         record = {
-            "_name": "ACME", "CountryName": "India",
+            "_name": "ACME", "CountryName": "India", "LedgerState": "Karnataka",
             "_extra_addresses": [
                 {"address": "Godown 5, Karnataka", "name": "Warehouse"},
                 {"address": "Shop 2, MG Road", "name": "Branch Office"},  # unmatched -> Other
@@ -429,10 +429,33 @@ class TestERPNextImporter(unittest.TestCase):
         self.assertEqual(addresses[0].address_type, "Warehouse")
         self.assertEqual(addresses[0].address_title, "ACME - Warehouse")
         self.assertEqual(addresses[1].address_type, "Other")     # "Branch Office" not a known type
+        # Extra addresses inherit the party's state (India Compliance requires one on an
+        # Indian address; the Tally address-book row carries none of its own).
+        self.assertEqual(addresses[0].state, "Karnataka")
+        self.assertEqual(addresses[1].state, "Karnataka")
         self.assertEqual(len(contacts), 2)
         self.assertEqual(contacts[0].first_name, "Accounts")
         self.assertEqual(contacts[0].tables["phone_nos"][0]["is_primary_mobile_no"], 1)  # WhatsApp default
         self.assertEqual(contacts[1].tables["phone_nos"][0]["is_primary_mobile_no"], 0)
+
+    def test_extra_address_state_chain(self):
+        """Extra-address state resolves most-precise first: the row's own state, else
+        derived from the row's own pincode (IC map), else the party's state."""
+        from tally_migrator.erpnext.importers import CustomerImporter
+        imp = CustomerImporter("_TMTest Co", "TC")
+        party = {"LedgerState": "Karnataka"}
+        # 1. row carries its own state -> used verbatim (mapped)
+        self.assertEqual(
+            imp._extra_address_state({"state": "Maharashtra"}, party), "Maharashtra")
+        # 2. no row state, but a row pincode -> derived from it (Chennai 600xxx -> TN),
+        #    NOT the party's Karnataka
+        self.assertEqual(
+            imp._extra_address_state({"pincode": "600001"}, party), "Tamil Nadu")
+        # 3. neither -> inherit the party's state
+        self.assertEqual(imp._extra_address_state({}, party), "Karnataka")
+        # pincode helper: too-short / unknown -> "" (never raises)
+        self.assertEqual(imp._state_from_pincode("56"), "")
+        self.assertEqual(imp._state_from_pincode("560001"), "Karnataka")
 
     def test_address_kept_without_pincode_on_state_mismatch(self):
         """India Compliance rejects a pincode whose digits don't match the state. The
