@@ -363,6 +363,110 @@ class TestERPNextImporter(unittest.TestCase):
         self.assertEqual(result.warned, 1)
         self.assertIn("not created by", result.warnings[0]["reason"])
 
+    def test_purchase_opening_due_date_clamped_to_bill_date(self):
+        """A Purchase Invoice's due date can't precede its supplier-invoice (bill)
+        date - ERPNext rejects it. When a Tally bill is dated after the opening
+        posting date, the due date must clamp up to the bill date, not stay at
+        posting_date. Regression for the 'Due Date cannot be before Supplier
+        Invoice Date' failure on real data."""
+        from tally_migrator.erpnext.importers import PartyOpeningImporter
+
+        imp = PartyOpeningImporter("_TMTest Co", "TC", "2026-04-01")
+        imp._stock_uom = lambda: "Nos"
+        imp._temp_account = lambda: "Temporary Opening - TC"
+        imp._cost_center = lambda: "Main - TC"
+
+        # bill dated AFTER the opening posting_date -> due_date must move up to it
+        late = imp._invoice_dict("Supplier", "Pioneer Hardware", 100.0,
+                                 "P/023", "2026-04-15", "marker")
+        self.assertEqual(late["bill_date"], "2026-04-15")
+        self.assertEqual(late["due_date"], "2026-04-15")
+
+        # bill dated BEFORE the posting date -> due_date stays at posting_date
+        early = imp._invoice_dict("Supplier", "Pioneer Hardware", 100.0,
+                                  "P/099", "2026-03-10", "marker")
+        self.assertEqual(early["due_date"], "2026-04-01")
+
+    def test_extra_addresses_and_contacts_created(self):
+        """A party's address book (LEDMULTIADDRESSLIST) becomes extra ERPNext Address
+        rows and its additional named phones (CONTACTDETAILS) become extra Contact
+        rows - beyond the single primary address/contact. Known ADDRESSNAME labels
+        map to the matching address_type; others fall back to 'Other'."""
+        from unittest import mock
+        from tally_migrator.erpnext.importers import CustomerImporter, ImportResult
+
+        class FakeDoc:
+            def __init__(self, dt):
+                self.doctype = dt
+                self.tables = {}
+            def append(self, tbl, row):
+                self.tables.setdefault(tbl, []).append(row)
+            def insert(self, **k):
+                pass
+
+        created = []
+        imp = CustomerImporter("_TMTest Co", "TC")
+        result = ImportResult("Customer")
+        record = {
+            "_name": "ACME", "CountryName": "India",
+            "_extra_addresses": [
+                {"address": "Godown 5, Karnataka", "name": "Warehouse"},
+                {"address": "Shop 2, MG Road", "name": "Branch Office"},  # unmatched -> Other
+            ],
+            "_extra_contacts": [
+                {"name": "Accounts", "phone": "9496278969", "whatsapp": True},
+                {"name": "Dispatch", "phone": "9324652431", "whatsapp": False},
+            ],
+        }
+        with mock.patch("frappe.new_doc", side_effect=lambda dt: created.append(FakeDoc(dt)) or created[-1]), \
+                mock.patch("frappe.db.commit"):
+            imp._save_extra_addresses("ACME", "Customer", record, result)
+            imp._save_extra_contacts("ACME", "Customer", record, result)
+
+        addresses = [d for d in created if d.doctype == "Address"]
+        contacts = [d for d in created if d.doctype == "Contact"]
+        self.assertEqual(len(addresses), 2)
+        self.assertEqual(addresses[0].address_type, "Warehouse")
+        self.assertEqual(addresses[0].address_title, "ACME - Warehouse")
+        self.assertEqual(addresses[1].address_type, "Other")     # "Branch Office" not a known type
+        self.assertEqual(len(contacts), 2)
+        self.assertEqual(contacts[0].first_name, "Accounts")
+        self.assertEqual(contacts[0].tables["phone_nos"][0]["is_primary_mobile_no"], 1)  # WhatsApp default
+        self.assertEqual(contacts[1].tables["phone_nos"][0]["is_primary_mobile_no"], 0)
+
+    def test_address_kept_without_pincode_on_state_mismatch(self):
+        """India Compliance rejects a pincode whose digits don't match the state. The
+        importer must keep the address (dropping just the PIN) instead of losing it -
+        and never crash. Regression for the PIN/state warning aborting the migration."""
+        from unittest import mock
+        from tally_migrator.erpnext.importers import CustomerImporter, ImportResult
+
+        class FakeAddr:
+            def __init__(self):
+                self.links = []
+            def append(self, t, r):
+                self.links.append(r)
+            def insert(self, **k):
+                if getattr(self, "pincode", ""):   # IC rejects the bad PIN
+                    raise Exception("Postal Code 166982 is not associated with Kerala")
+                self.inserted = True
+
+        fake = FakeAddr()
+        imp = CustomerImporter("_TMTest Co", "TC")
+        imp._resolve_state = lambda d: "Kerala"
+        result = ImportResult("Customer")
+        rec = {"Address": "3 Marine Drive", "MailingName": "X", "PinCode": "166982",
+               "CountryName": "India", "GSTRegistrationNumber": ""}
+        with mock.patch("frappe.new_doc", return_value=fake), \
+                mock.patch("frappe.db.commit"), mock.patch("frappe.db.rollback"), \
+                mock.patch("frappe.log_error"):
+            imp._save_address("X", "Customer", rec, result)
+
+        self.assertTrue(getattr(fake, "inserted", False))   # address still created
+        self.assertEqual(fake.pincode, "")                  # only the PIN was dropped
+        self.assertEqual(len(result.errors), 0)             # no hard failure
+        self.assertTrue(any("without its PIN" in w["reason"] for w in result.warnings))
+
     def test_partial_opening_rerun_posts_only_missing_batches(self):
         """Re-running after a partial failure must post the batches that never
         posted, not skip everything. Regression for C-A: the all-or-nothing guard
@@ -496,6 +600,34 @@ class TestERPNextImporter(unittest.TestCase):
         self.assertEqual(result.skipped, 1)
         self.assertEqual(result.warned, 1)
         self.assertIn("already posted", result.warnings[0]["reason"])
+
+    def test_default_warehouse_skips_other_company_global_default(self):
+        """Stock Settings' default_warehouse is global. On a multi-company site it
+        can point at another company's warehouse; using it makes the Opening Stock
+        reconciliation fail ('Warehouse X does not belong to company Y'). The lookup
+        must be company-scoped and fall through to our own warehouse."""
+        from unittest import mock
+        from tally_migrator.erpnext.importers import StockOpeningImporter
+
+        imp = StockOpeningImporter("_TMTest Co", "TC")
+        calls = []
+
+        def fake_exists(_doctype, filt):
+            calls.append(filt)
+            name = filt.get("name", "")
+            if name == "Stores - FT":          # the global default - other company
+                return filt.get("company") in (None, "FT")
+            return name.endswith(" - TC")      # our company's migrated warehouse
+
+        with mock.patch("frappe.db.get_single_value", return_value="Stores - FT"), \
+                mock.patch("frappe.db.exists", side_effect=fake_exists):
+            wh = imp._default_warehouse()
+
+        self.assertNotEqual(wh, "Stores - FT")          # must not grab other company's
+        self.assertTrue(wh.endswith(" - TC"))           # company-scoped fallback wins
+        # the Stock Settings default was looked up *with* a company filter
+        self.assertTrue(any(c.get("name") == "Stores - FT" and "company" in c
+                            for c in calls))
 
     def test_zero_valuation_opening_stock_warns(self):
         """A positive opening qty with no rate/standard cost still posts, but warns

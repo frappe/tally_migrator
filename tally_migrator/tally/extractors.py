@@ -222,6 +222,10 @@ class TallyExtractor:
         # its group ancestry - the single source of truth also used by COA
         # extraction, so customer/supplier splitting needs no parallel BFS here.
         resolver = LedgerResolver(groups, ledgers)
+        # Enrich each party ledger with its address-book + extra phone contacts
+        # (repeating child lists a real export carries beyond the single primary
+        # mailing address / mobile). No-op for a live client without child lists.
+        self._attach_party_subrecords(ledgers)
         return ExtractedMasters(
             customers    = [l for l in ledgers if resolver.kind_of(l["_name"]) == CUSTOMER],
             suppliers    = [l for l in ledgers if resolver.kind_of(l["_name"]) == SUPPLIER],
@@ -230,6 +234,47 @@ class TallyExtractor:
             stock_groups = self.client.get_collection("Stock Group", STOCKGROUP_FIELDS),
             units        = self.client.get_collection("Unit", UNIT_FIELDS),
         )
+
+    def _attach_party_subrecords(self, ledgers: list[dict]) -> None:
+        """Attach each ledger's extra addresses + phone contacts in place.
+
+        A real Tally export keeps a party's address book in repeating
+        ``LEDMULTIADDRESSLIST.LIST`` rows (each an ``ADDRESS.LIST/ADDRESS`` plus an
+        ``ADDRESSNAME`` label) and its additional named phone numbers in
+        ``CONTACTDETAILS.LIST`` (NAME / PHONENUMBER / ISDEFAULTWHATSAPPNUM). These
+        are beyond the single primary mailing address + mobile the flat fields
+        carry, so the importer can create extra ERPNext Address / Contact rows.
+        No-op when the source can't supply child lists (live get_collection-only
+        client) - the party still imports with its primary address/contact.
+        """
+        getter = getattr(self.client, "get_child_list", None)
+        if getter is None:
+            return
+        addrs: dict[str, list] = {}
+        for r in getter("Ledger", "LEDMULTIADDRESSLIST.LIST",
+                        ["ADDRESS.LIST/ADDRESS", "ADDRESSNAME"]):
+            text = (r.get("ADDRESS.LIST/ADDRESS") or "").strip()
+            if not text:
+                continue
+            addrs.setdefault((r.get("_parent") or "").strip(), []).append(
+                {"address": text, "name": (r.get("ADDRESSNAME") or "").strip()})
+        contacts: dict[str, list] = {}
+        for r in getter("Ledger", "CONTACTDETAILS.LIST",
+                        ["Name", "PhoneNumber", "IsDefaultWhatsAppNum"]):
+            phone = (r.get("PhoneNumber") or "").strip()
+            if not phone:
+                continue
+            contacts.setdefault((r.get("_parent") or "").strip(), []).append({
+                "name": (r.get("Name") or "").strip(),
+                "phone": phone,
+                "whatsapp": (r.get("IsDefaultWhatsAppNum") or "").strip().lower() == "yes",
+            })
+        for led in ledgers:
+            nm = led.get("_name", "")
+            if nm in addrs:
+                led["_extra_addresses"] = addrs[nm]
+            if nm in contacts:
+                led["_extra_contacts"] = contacts[nm]
 
     # ── Chart of Accounts ──────────────────────────────────────────────────────
 

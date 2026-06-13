@@ -285,7 +285,7 @@ def _insert_bank_account(*, account_name: str, bank: str, account_no: str,
             result.add_created(ba.name, "Bank Account")
         return ba.name
     except Exception as exc:
-        frappe.log_error(f"Bank account save failed for {warn_name}: {exc}", "Tally Migrator")
+        frappe.log_error("Tally Migrator", f"Bank account save failed for {warn_name}: {exc}")
         result.add_warning(warn_name, f"bank account not created: {exc}")
         frappe.db.rollback()
         return ""
@@ -298,8 +298,71 @@ class PartyImporter(BaseImporter):
 
     def after_insert(self, name: str, record: dict, result: "ImportResult") -> None:
         self._save_address(name, self.doctype, record, result)
+        self._save_extra_addresses(name, self.doctype, record, result)
         self._save_contact(name, self.doctype, record, result)
+        self._save_extra_contacts(name, self.doctype, record, result)
         self._save_bank_account(name, self.doctype, record, result)
+
+    # ERPNext Address.address_type select options - a Tally address-book label
+    # (ADDRESSNAME) that matches one is reused, else the address is typed "Other"
+    # with the label preserved in its title.
+    _ADDRESS_TYPES = {"billing", "shipping", "office", "personal", "plant", "postal",
+                      "shop", "subsidiary", "warehouse", "current", "permanent", "other"}
+
+    def _save_extra_addresses(self, link_name: str, link_type: str, data: dict,
+                              result: "ImportResult") -> None:
+        """Create the party's *additional* addresses (its Tally address book).
+
+        The primary mailing address is created by ``_save_address``; a real export
+        also carries an address book (``LEDMULTIADDRESSLIST.LIST``) the extractor
+        attaches as ``_extra_addresses`` ([{address, name}]). Each becomes its own
+        ERPNext Address linked to the party. Non-fatal per address."""
+        for a in data.get("_extra_addresses") or []:
+            text = (a.get("address") or "").strip()
+            if not text:
+                continue
+            label = (a.get("name") or "").strip()
+            try:
+                addr = frappe.new_doc("Address")
+                addr.address_title = f"{link_name} - {label}" if label else link_name
+                addr.address_type = (label.title()
+                                     if label.lower() in self._ADDRESS_TYPES else "Other")
+                addr.address_line1 = text
+                addr.city = "Not Specified"
+                addr.country = (data.get("CountryName") or "").strip() or self.company_country
+                addr.append("links", {"link_doctype": link_type, "link_name": link_name})
+                addr.insert(ignore_permissions=True)
+                frappe.db.commit()
+            except Exception as exc:
+                frappe.log_error("Tally Migrator", f"Extra address failed for {link_name}: {exc}")
+                result.add_warning(link_name, f"additional address not created: {exc}")
+
+    def _save_extra_contacts(self, link_name: str, link_type: str, data: dict,
+                             result: "ImportResult") -> None:
+        """Create the party's *additional* named phone contacts.
+
+        The primary contact is created by ``_save_contact``; a real export also
+        carries extra named numbers (``CONTACTDETAILS.LIST``) the extractor attaches
+        as ``_extra_contacts`` ([{name, phone, whatsapp}]). Each becomes its own
+        ERPNext Contact linked to the party, with the WhatsApp-default number marked
+        the primary mobile. Non-fatal per contact."""
+        for c in data.get("_extra_contacts") or []:
+            phone = (c.get("phone") or "").strip()
+            if not phone:
+                continue
+            try:
+                contact = frappe.new_doc("Contact")
+                contact.first_name = (c.get("name") or "").strip() or link_name
+                contact.append("phone_nos", {
+                    "phone": phone,
+                    "is_primary_mobile_no": 1 if c.get("whatsapp") else 0,
+                })
+                contact.append("links", {"link_doctype": link_type, "link_name": link_name})
+                contact.insert(ignore_permissions=True)
+                frappe.db.commit()
+            except Exception as exc:
+                frappe.log_error("Tally Migrator", f"Extra contact failed for {link_name}: {exc}")
+                result.add_warning(link_name, f"additional contact not created: {exc}")
 
     def _gst_category(self, record: dict) -> str:
         """ERPNext GST Category. Tally's explicit registration type wins when set
@@ -376,7 +439,26 @@ class PartyImporter(BaseImporter):
             addr.insert(ignore_permissions=True)
             frappe.db.commit()
         except Exception as exc:
-            frappe.log_error(f"Address save failed for {link_name}: {exc}", "Tally Migrator")
+            # India Compliance hard-rejects a pincode whose leading digits don't match
+            # the state ("Postal Code X ... is not associated with <State>"). The
+            # pre-flight already warns "PIN and state to verify", so rather than lose
+            # the whole address, drop just the suspect PIN and retry once - mirroring
+            # how we drop a rejected GSTIN above. Keeps the address; flags the PIN.
+            msg = str(exc).lower()
+            if addr.pincode and ("not associated with" in msg or "postal code" in msg):
+                frappe.db.rollback()
+                try:
+                    addr.pincode = ""
+                    addr.insert(ignore_permissions=True)
+                    frappe.db.commit()
+                    result.add_warning(
+                        link_name, "address imported without its PIN code - the PIN did "
+                        "not match the state (verify and set it in ERPNext)")
+                    return
+                except Exception as exc2:
+                    exc = exc2
+            frappe.db.rollback()
+            frappe.log_error("Tally Migrator", f"Address save failed for {link_name}: {exc}")
             result.add_warning(link_name, f"address not created: {exc}")
 
     @staticmethod
@@ -427,7 +509,7 @@ class PartyImporter(BaseImporter):
             contact.insert(ignore_permissions=True)
             frappe.db.commit()
         except Exception as exc:
-            frappe.log_error(f"Contact save failed for {link_name}: {exc}", "Tally Migrator")
+            frappe.log_error("Tally Migrator", f"Contact save failed for {link_name}: {exc}")
             result.add_warning(link_name, f"contact not created: {exc}")
 
     def _save_bank_account(self, link_name: str, link_type: str, data: dict,
@@ -681,7 +763,7 @@ class ItemImporter(BaseImporter):
                     ig.insert(ignore_permissions=True)
                     frappe.db.commit()
                 except Exception as exc:
-                    frappe.log_error(f"Item Group creation failed: {group}: {exc}", "Tally Migrator")
+                    frappe.log_error("Tally Migrator", f"Item Group creation failed: {group}: {exc}")
                     result.add_warning(group, f"item group not created: {exc}")
 
 
@@ -909,7 +991,7 @@ class UnitImporter:
             frappe.get_doc(doc).insert(ignore_permissions=True)
             frappe.db.commit()
         except Exception as exc:
-            frappe.log_error(f"UOM conversion failed for {u['_name']}: {exc}", "Tally Migrator")
+            frappe.log_error("Tally Migrator", f"UOM conversion failed for {u['_name']}: {exc}")
             result.add_warning(
                 u["_name"],
                 f"compound unit conversion (1 {base} = {factor:g} {additional}) "
@@ -1853,7 +1935,19 @@ class PartyOpeningImporter:
             # Tally bill reference and date here (Sales Invoice has none, so the
             # marker in remarks is the only carrier there).
             data["bill_no"] = bill_no
-            data["bill_date"] = bill_date or self.posting_date
+            bd = bill_date or self.posting_date
+            data["bill_date"] = bd
+            # A Purchase Invoice's due date can never precede its supplier-invoice
+            # (bill) date - ERPNext rejects it ("Due Date cannot be before Supplier
+            # Invoice Date"). The opening posting_date is normally >= the bill date,
+            # but real Tally data can carry a bill dated after the opening date, so
+            # clamp the due date up to the bill date when that happens.
+            try:
+                from frappe.utils import getdate
+                if getdate(bd) > getdate(self.posting_date):
+                    data["due_date"] = bd
+            except Exception:
+                pass
         return data
 
     def _advance_dict(self, party_type: str, party: str, amount: float,
@@ -2133,7 +2227,11 @@ class StockOpeningImporter:
         any leaf warehouse for the company.
         """
         ss = frappe.db.get_single_value("Stock Settings", "default_warehouse")
-        if ss and frappe.db.exists("Warehouse", {"name": ss, "is_group": 0}):
+        # Stock Settings' default is global, so on a multi-company site it can point
+        # at another company's warehouse - scope it to ours or the Stock Reconciliation
+        # is rejected ("Warehouse X does not belong to company Y").
+        if ss and frappe.db.exists(
+                "Warehouse", {"name": ss, "is_group": 0, "company": self.company}):
             return ss
         candidate = company_scoped(DEFAULT_WAREHOUSE, self.abbr)
         if frappe.db.exists("Warehouse", {"name": candidate, "is_group": 0}):

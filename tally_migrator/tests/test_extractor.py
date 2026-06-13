@@ -43,6 +43,16 @@ class _MockClient:
             ]
         return []
 
+    def get_child_list(self, obj_type, child_tag, fields):
+        if obj_type == "Ledger" and child_tag == "LEDMULTIADDRESSLIST.LIST":
+            return [{"_parent": "Customer A",
+                     "ADDRESS.LIST/ADDRESS": "Godown 5, Karnataka",
+                     "ADDRESSNAME": "Warehouse"}]
+        if obj_type == "Ledger" and child_tag == "CONTACTDETAILS.LIST":
+            return [{"_parent": "Customer A", "Name": "Accounts",
+                     "PhoneNumber": "9496278969", "IsDefaultWhatsAppNum": "Yes"}]
+        return []
+
 
 class TestTallyExtractor(unittest.TestCase):
     def setUp(self):
@@ -84,6 +94,21 @@ class TestTallyExtractor(unittest.TestCase):
         self.assertEqual(s["suppliers"], 1)
         self.assertEqual(s["items"], 1)
         self.assertEqual(s["warehouses"], 2)
+
+    def test_party_address_book_and_contacts_attached(self):
+        """A party's repeating address-book + extra phone contacts are attached to
+        its ledger record (_extra_addresses / _extra_contacts); parties without such
+        child rows get no extra keys."""
+        masters = self.extractor.extract_all()
+        a = next(c for c in masters.customers if c["_name"] == "Customer A")
+        self.assertEqual(a["_extra_addresses"],
+                         [{"address": "Godown 5, Karnataka", "name": "Warehouse"}])
+        self.assertEqual(len(a["_extra_contacts"]), 1)
+        self.assertEqual(a["_extra_contacts"][0]["phone"], "9496278969")
+        self.assertTrue(a["_extra_contacts"][0]["whatsapp"])
+        b = next(c for c in masters.customers if c["_name"] == "Customer B")
+        self.assertNotIn("_extra_addresses", b)
+        self.assertNotIn("_extra_contacts", b)
 
     def test_parse_quantity_handles_unit_suffix(self):
         """Stock opening quantities are unit-suffixed ('55 Nos') in real Tally
