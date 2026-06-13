@@ -47,8 +47,11 @@ const BAR_CREATED = "var(--green-500, #30a66d)";
 const BAR_SKIPPED = "var(--gray-400, #c0c8d0)";
 const BAR_FAILED = "var(--red-500, #e24c4c)";
 
-// Every section card shares one box: same border, radius, padding.
-const CARD = `border:1px solid ${BORDER}; border-radius:8px; padding:14px 16px;`;
+// Sections sit directly on the form surface (each already has a native Frappe
+// section header), rather than each being re-boxed in an identical border. This
+// keeps the information on the surface and avoids seven look-alike cards stacking
+// into grid-like sameness. Semantic colour still rides on the inner callouts.
+const CARD = "";
 
 // Single source of truth for vertical rhythm. EVERY render path - boxed card or
 // a bare clean-state callout - is wrapped in this, so the gap above and below is
@@ -63,6 +66,12 @@ function statusIcon(kind) {
 	// drops the 16px glyph onto the text baseline so inline icons sit level
 	// (in a flex iconRow vertical-align is ignored, so block usage is unaffected).
 	return `<span style="display:inline-flex; align-items:center; line-height:0; vertical-align:-0.18em;">${frappe.utils.icon(name, "sm")}</span>`;
+}
+
+// An inline SVG arrow (from Frappe's icon sprite) for "from → to" / "maps to"
+// relationships, so the UI never falls back to a text glyph as an icon.
+function arrowIcon() {
+	return `<span style="display:inline-flex; align-items:center; vertical-align:middle; color:${MUTED};">${frappe.utils.icon("right", "sm")}</span>`;
 }
 
 // Icon + content, with the 16px icon optically centred on the first line of text
@@ -700,7 +709,7 @@ function render_edits(frm) {
 				<td><span class="text-muted">${esc(e.entity_type || "")}</span> · ${esc(e.record_name || "")}</td>
 				<td>${esc(e.field || "")}</td>
 				<td class="text-muted">${e.old ? esc(String(e.old)) : blank}</td>
-				<td class="text-muted">→</td>
+				<td class="text-center">${arrowIcon()}</td>
 				<td>${e.new ? esc(String(e.new)) : blank}</td>
 			</tr>`
 		)
