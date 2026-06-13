@@ -84,6 +84,13 @@ def source_totals(coa, masters) -> dict:
     for a in coa.accounts:
         if a.is_group or not a.opening_balance:
             continue
+        # A Profit & Loss (Income/Expense) opening is never posted - ERPNext forbids it
+        # in an Opening Entry (see OpeningBalanceImporter._account_lines). Its amount
+        # therefore stays inside the Temporary Opening difference, so leave it out of the
+        # class totals entirely: that folds it into the temporary_opening residual below,
+        # matching what ERPNext actually holds, so the trial balance reconciles.
+        if a.root_type in ("Income", "Expense"):
+            continue
         cls = _class_of(a.root_type)
         by_class[cls] = by_class.get(cls, 0.0) + _signed(
             a.opening_balance, a.opening_dr_cr)

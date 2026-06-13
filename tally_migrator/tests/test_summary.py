@@ -40,7 +40,7 @@ class TestMigrationSummary(unittest.TestCase):
         self.assertTrue(s.has_errors)
         lines = s.error_lines().splitlines()
         self.assertIn("[Customers] Acme: Invalid GST", lines)
-        self.assertIn("[Items] Widget: bad UOM", lines)
+        self.assertIn("[Items] Widget: Bad UOM", lines)
         self.assertEqual(len(lines), 2)
 
     def test_as_dict_shape(self):
@@ -58,7 +58,7 @@ class TestMigrationSummary(unittest.TestCase):
             {"record_type": "Customers", "record_name": "Acme", "reason": "Invalid GST"},
             records)
         self.assertIn(
-            {"record_type": "Items", "record_name": "Widget", "reason": "bad UOM"},
+            {"record_type": "Items", "record_name": "Widget", "reason": "Bad UOM"},
             records)
 
     def test_identical_reasons_collapse_to_one_row(self):
@@ -72,14 +72,14 @@ class TestMigrationSummary(unittest.TestCase):
             _result("Item", warnings=[("Pen", same), ("Pencil", same),
                                       ("Eraser", same), ("Glue", "bad UOM")]))
         records = s.error_records()
-        collapsed = next(r for r in records if "no HSN" in r["reason"])
+        collapsed = next(r for r in records if "No HSN" in r["reason"])
         self.assertIn("3 records", collapsed["reason"])
         self.assertEqual(collapsed["record_name"], "Pen, Pencil, Eraser")
         # No status glyph in stored reasons - the "(warning)" record_type marks them.
         self.assertEqual(collapsed["record_type"], "Items (warning)")
         self.assertNotIn("⚠", collapsed["reason"])
         # The odd-one-out is untouched and not merged.
-        self.assertTrue(any("bad UOM" in r["reason"] for r in records))
+        self.assertTrue(any("Bad UOM" in r["reason"] for r in records))
         self.assertEqual(len(records), 2)
 
     def test_unique_reasons_pass_through_unchanged(self):

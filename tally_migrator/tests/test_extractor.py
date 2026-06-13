@@ -143,6 +143,33 @@ class TestTallyExtractor(unittest.TestCase):
         self.assertEqual(pr(None), 0.0)
         self.assertEqual(pr("/Nos"), 0.0)
 
+    def test_repeated_masters_deduped_by_name(self):
+        """Tally re-emits a master wherever it is referenced, so a real export carries
+        the same Unit / Godown several times. Those phantom duplicates must collapse to
+        one record per name (else the preview fires a false 'will merge' warning), and a
+        bare reference-stub emission must not wipe out the full definition's fields."""
+
+        class DupClient(_MockClient):
+            def get_collection(self, obj_type, fields, tag_map=None):
+                if obj_type == "Unit":
+                    return [
+                        {"_name": "Nos", "IsSimpleUnit": "Yes", "DecimalPlaces": "0"},
+                        {"_name": "Nos"},                       # bare repeat - must not clobber
+                        {"_name": "Box", "IsSimpleUnit": "Yes"},
+                        {"_name": "Box"},
+                    ]
+                if obj_type == "Godown":
+                    return [{"_name": "Main Location"}, {"_name": "Main Location"}]
+                return []
+
+        masters = TallyExtractor(DupClient()).extract_all()
+        self.assertEqual([u["_name"] for u in masters.units], ["Nos", "Box"])
+        self.assertEqual(len(masters.warehouses), 1)
+        # The bare repeat did not overwrite the full record's fields.
+        nos = next(u for u in masters.units if u["_name"] == "Nos")
+        self.assertEqual(nos["IsSimpleUnit"], "Yes")
+        self.assertEqual(nos["DecimalPlaces"], "0")
+
     def test_bfs_handles_deep_nesting(self):
         """Groups 3 levels deep must still be recognised as Debtors."""
 

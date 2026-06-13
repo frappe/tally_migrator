@@ -60,18 +60,11 @@ class TallyMigratorPage {
 					<div id="resume-banner" style="display:none;"></div>
 					<h4>Bring your Tally data into ERPNext</h4>
 					<p class="text-muted" style="margin-bottom:18px;">
-						This tool copies your master records - Customers, Suppliers, Items and Warehouses -
-						from Tally into ERPNext. It takes a few short steps.
+						This tool brings your Tally masters, accounts and opening balances into ERPNext. It
+						checks your file and shows you a preview first, so nothing changes until you are ready.
 					</p>
 
-					<div style="display:flex; gap:10px; align-items:flex-start; background:var(--blue-100, #edf6fd); border:1px solid var(--blue-200, #e3f1fd); border-radius:8px; padding:12px 14px;">
-						<span style="flex:0 0 auto; display:inline-flex; align-items:center; height:1.5em;">${TallyMigratorPage.statusIcon("success")}</span>
-						<div style="font-size:13px;">
-							<strong>Your existing ERPNext data is safe.</strong>
-							Nothing is ever overwritten or deleted. If a record already exists, the migrator
-							skips it. You can run this as many times as you like.
-						</div>
-					</div>
+					${TallyMigratorPage.callout("info", TallyMigratorPage.iconRow("success", `<strong>Your existing ERPNext data is safe.</strong> Nothing is ever overwritten or deleted. If a record already exists, the migrator skips it. You can run this as many times as you like.`))}
 
 					<div class="well well-sm" style="margin-top:18px;">
 						<strong>First, export a file from Tally</strong>
@@ -162,8 +155,8 @@ class TallyMigratorPage {
 						<i class="fa fa-spinner fa-spin"></i> &nbsp;Checking your file against ERPNext…
 					</div>
 
-					<div id="check-clean" style="display:none; margin-bottom:18px; background:var(--green-100, #e4f5e9); border:1px solid var(--green-200, #daf0e1); border-radius:8px; padding:12px 14px;">
-						${TallyMigratorPage.iconRow("success", `<strong>Nothing to resolve.</strong> We found no data-quality issues (GST numbers, states, units, HSN codes) that need your input before importing.`)}
+					<div id="check-clean" style="display:none; margin-bottom:18px;">
+						${TallyMigratorPage.callout("success", TallyMigratorPage.iconRow("success", `<strong>Nothing to resolve.</strong> We found no data-quality issues (GST numbers, states, units, HSN codes) that need your input before importing.`))}
 					</div>
 
 					<!-- Data-quality report (read-only; informational + consent) -->
@@ -964,6 +957,11 @@ class TallyMigratorPage {
 		</div>`;
 	}
 
+	// Background + border use the palette tints, which this page re-points to dark
+	// surface colours in dark mode (see themeStyle); text rides on --text-color, which
+	// Frappe flips per theme. That pairing keeps every callout readable in both modes -
+	// do NOT swap in --text-on-* (e.g. --green-800), as those tints are not remapped for
+	// dark mode here and would render dark text on the dark box.
 	static callout(kind, inner, extraStyle = "") {
 		const t =
 			{
@@ -1448,10 +1446,10 @@ class TallyMigratorPage {
 				? ` (about ${Math.round((plug.temporary_opening_plug / plug.gross_opening) * 100)}% of total opening value)`
 				: "";
 		const plugTip =
-			`${fmt(plug.temporary_opening_plug)} ${plug.plug_dr_cr}${plugShare} is the difference by which your ` +
-			`Tally opening balances do not net to zero on their own. ERPNext parks it in the Temporary Opening ` +
-			`account so the trial balance stays balanced; you clear it later by completing your opening entries. ` +
-			`This is expected - nothing is missing or double-counted.`;
+			`${fmt(plug.temporary_opening_plug)} ${plug.plug_dr_cr}${plugShare} is held in Temporary Opening ` +
+			`to keep your books balanced. It is the part of your Tally opening that does not balance on its own, ` +
+			`plus any income/expense opening balances ERPNext cannot carry. This is normal - clear it as you ` +
+			`finish your opening entries.`;
 		const plugCard = plug.clean
 			? card("Balanced", "Opening balances", "Dr = Cr", GREEN_BG)
 			: card(

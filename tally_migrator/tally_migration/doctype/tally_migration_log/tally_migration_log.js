@@ -419,9 +419,9 @@ function render_mapping(frm) {
 				"info",
 				iconRow(
 					"info",
-					`<strong>${fmt(plug.temporary_opening_plug)} ${esc(plug.plug_dr_cr)} posted to Temporary Opening - this is expected, not an error.</strong>${plugShare}
-					It is the difference by which the Tally opening balances do not net to zero on their own; ERPNext parks it
-					in Temporary Opening to keep the trial balance balanced. Clear it later by completing the opening entries.`
+					`<strong>${fmt(plug.temporary_opening_plug)} ${esc(plug.plug_dr_cr)} is held in Temporary Opening - this is normal, not an error.</strong>${plugShare}
+					It is the part of your Tally opening that does not balance on its own, plus any income/expense opening
+					balances ERPNext cannot carry. Clear it as you finish your opening entries.`
 				),
 				"margin:6px 0;"
 		  );
@@ -531,7 +531,7 @@ function render_reconciliation(frm) {
 		.map((row) => {
 			const stat = !row.has_erpnext ? "" : row.match ? statusIcon("success") : statusIcon("error");
 			const note = row.is_opening_difference
-				? `<div class="text-muted small" style="font-weight:400;">Tally's own "Difference in Opening Balances" - a non-zero value here is faithful, not a gap.</div>`
+				? `<div class="text-muted small" style="font-weight:400;">The opening difference Tally could not balance on its own, plus any income/expense openings ERPNext cannot carry - a non-zero value here is faithful, not a gap.</div>`
 				: "";
 			const erpDr = avail && row.has_erpnext ? dr(row.erpnext) : "";
 			const erpCr = avail && row.has_erpnext ? cr(row.erpnext) : "";

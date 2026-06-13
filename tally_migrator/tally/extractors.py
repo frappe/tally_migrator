@@ -229,11 +229,42 @@ class TallyExtractor:
         return ExtractedMasters(
             customers    = [l for l in ledgers if resolver.kind_of(l["_name"]) == CUSTOMER],
             suppliers    = [l for l in ledgers if resolver.kind_of(l["_name"]) == SUPPLIER],
-            items        = self.client.get_collection("Stock Item", ITEM_FIELDS, ITEM_TAGS),
-            warehouses   = self.client.get_collection("Godown", GODOWN_FIELDS, GODOWN_TAGS),
-            stock_groups = self.client.get_collection("Stock Group", STOCKGROUP_FIELDS),
-            units        = self.client.get_collection("Unit", UNIT_FIELDS),
+            items        = self._dedup_by_name(
+                self.client.get_collection("Stock Item", ITEM_FIELDS, ITEM_TAGS)),
+            warehouses   = self._dedup_by_name(
+                self.client.get_collection("Godown", GODOWN_FIELDS, GODOWN_TAGS)),
+            stock_groups = self._dedup_by_name(
+                self.client.get_collection("Stock Group", STOCKGROUP_FIELDS)),
+            units        = self._dedup_by_name(
+                self.client.get_collection("Unit", UNIT_FIELDS)),
         )
+
+    @staticmethod
+    def _dedup_by_name(records: list[dict]) -> list[dict]:
+        """Collapse Tally's repeated master emissions into one record per name.
+
+        Tally re-emits a master wherever it is referenced, so an export routinely
+        carries the same Unit / Godown / Item several times (e.g. "Nos" twice). A
+        Tally master is keyed by name, so same name = same record - not a collision.
+        Left in, these phantom duplicates fire a false "will merge into one" warning
+        in the preview and cause redundant import skips. Merge fields across emissions
+        (preferring non-empty values) so a bare reference-stub never overwrites the
+        full definition. Case-sensitive and order-stable: genuine case/whitespace
+        variants (a real ERPNext merge) survive and are still flagged downstream."""
+        merged: dict[str, dict] = {}
+        order: list[str] = []
+        for r in records:
+            name = (r.get("_name") or "").strip()
+            if not name:
+                continue
+            if name not in merged:
+                merged[name] = dict(r)
+                order.append(name)
+                continue
+            for k, v in r.items():
+                if v not in (None, "") and not merged[name].get(k):
+                    merged[name][k] = v
+        return [merged[n] for n in order]
 
     def _attach_party_subrecords(self, ledgers: list[dict]) -> None:
         """Attach each ledger's extra addresses + phone contacts in place.
@@ -320,8 +351,8 @@ class TallyExtractor:
             if l["_name"] in TALLY_SYSTEM_LEDGERS:
                 excluded.append({
                     "name": l["_name"],
-                    "reason": "Tally system ledger - ERPNext maintains this account "
-                              "automatically (not imported).",
+                    "reason": "ERPNext maintains this account on its own, so it was not "
+                              "imported. Nothing for you to do.",
                 })
                 continue
             target = resolver.resolve(l["_name"])

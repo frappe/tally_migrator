@@ -74,14 +74,22 @@ class ImportResult:
             self.created_names.append(name)
             self.created_docs.append({"name": name, "doctype": doctype or self.doctype})
 
+    @staticmethod
+    def _sentence(reason) -> str:
+        """Normalise an issue message to sentence case (capital first letter) so every
+        row in the log's issues table reads consistently, no matter how its call site
+        phrased it. Enforced here, once, rather than policed across ~40 call sites."""
+        s = str(reason).strip()
+        return s[:1].upper() + s[1:] if s else s
+
     def add_error(self, name: str, reason) -> None:
-        self.errors.append({"name": name, "reason": str(reason)})
+        self.errors.append({"name": name, "reason": self._sentence(reason)})
 
     def add_warning(self, name: str, reason) -> None:
         """Record a *non-fatal* partial drop - the main record imported, but a
         dependent piece (e.g. its address) was lost. Surfaced in the log so the
         loss is visible/auditable, but it does not mark the record as failed."""
-        self.warnings.append({"name": name, "reason": str(reason)})
+        self.warnings.append({"name": name, "reason": self._sentence(reason)})
 
     @property
     def failed(self) -> int:
@@ -1616,6 +1624,22 @@ class OpeningBalanceImporter:
         for node in accounts:
             if not node.opening_balance or node.is_group:
                 continue
+            # ERPNext forbids a Profit & Loss (Income/Expense) account from carrying an
+            # opening balance - GL Entry.check_pl_account throws "'Profit and Loss' type
+            # account ... not allowed in Opening Entry" on submit, failing the whole
+            # batch. This happens in a mid-year migration where a Tally income/expense
+            # ledger carried a year-to-date balance. We cannot post it, so skip the line
+            # with a clear note. The amount is not lost: every other batch plugs against
+            # Temporary Opening, so it stays inside that difference, to be cleared when
+            # the user completes their opening entries. (reconciliation.source_totals
+            # folds these into Temporary Opening too, so the trial balance reconciles.)
+            if node.root_type in ("Income", "Expense"):
+                result.add_warning(
+                    node.name,
+                    "This is an income or expense account, which ERPNext does not allow "
+                    f"to carry an opening balance, so {abs(node.opening_balance):,.2f} was "
+                    "not posted. It is included in the Temporary Opening total instead.")
+                continue
             account = company_scoped(node.name, self.abbr)
             if not frappe.db.exists("Account", account):
                 result.add_warning(
@@ -1623,32 +1647,8 @@ class OpeningBalanceImporter:
                     f"opening balance skipped - account '{account}' was not created "
                     "(its import failed earlier). Fix the account and re-run.")
                 continue
-            line = self._line(account, node.opening_balance, node.opening_dr_cr)
-            # ERPNext requires a cost center on every journal line that posts to a
-            # P&L (Income/Expense) account - without it the whole Opening Entry batch
-            # fails on submit. Balance-sheet lines need none. P&L openings only occur
-            # in a mid-year migration; attach the company default so the figure posts
-            # rather than dropping it. Skip with a warning if no default is set.
-            if node.root_type in ("Income", "Expense"):
-                cost_center = self._default_cost_center()
-                if not cost_center:
-                    result.add_warning(
-                        node.name,
-                        "opening balance skipped - it posts to a P&L account, which "
-                        "needs a cost center, but the company has no default cost "
-                        "center set. Set it on the Company and re-run.")
-                    continue
-                line["cost_center"] = cost_center
-            lines.append(line)
+            lines.append(self._line(account, node.opening_balance, node.opening_dr_cr))
         return lines
-
-    def _default_cost_center(self) -> str:
-        """The company's default cost center (required on P&L opening lines).
-        Resolved once per run."""
-        if not hasattr(self, "_cost_center"):
-            self._cost_center = frappe.get_cached_value(
-                "Company", self.company, "cost_center") or ""
-        return self._cost_center
 
     # Tally party name → the field ERPNext stores it under; the document's own
     # ``name`` can differ (e.g. a naming series), so we resolve it rather than
@@ -1729,12 +1729,12 @@ class OpeningBalanceImporter:
                      - sum(l["credit_in_account_currency"] for l in lines), 2)
         if abs(diff) < self.PLUG_NOISE_THRESHOLD:
             return
-        side = "credit" if diff > 0 else "debit"
         result.add_warning(
             "Opening Entry",
-            f"opening balances did not net to zero; {abs(diff):,.2f} was {side}ed "
-            f"to 'Temporary Opening - {self.abbr}' to balance the entry - review "
-            "whether the full trial balance was migrated.")
+            f"{abs(diff):,.2f} is held in 'Temporary Opening - {self.abbr}' to keep your "
+            "books balanced. It is the part of your Tally opening that does not balance "
+            "on its own, plus any income/expense opening balances ERPNext cannot carry. "
+            "This is normal - clear it as you finish your opening entries.")
 
 
 # ── Party opening balances (invoice-wise) ────────────────────────────────────
