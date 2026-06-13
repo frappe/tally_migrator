@@ -19,8 +19,8 @@ from tally_migrator.migration.master_migrator import MasterMigrator
 ALLOWED_ROLES = ["System Manager", "Tally Migration Manager"]
 
 
-@frappe.whitelist()
-def preview_masters_file(file_url):
+@frappe.whitelist(methods=["GET", "POST"])
+def preview_masters_file(file_url: str):
     """Parse an uploaded Tally Masters XML and report what it contains.
 
     Read-only: imports nothing. Lets the user confirm the file is valid and see
@@ -33,8 +33,8 @@ def preview_masters_file(file_url):
     return {**extractor.extract_all().summary, **extractor.extract_coa().summary}
 
 
-@frappe.whitelist()
-def validate_masters_file(file_url):
+@frappe.whitelist(methods=["GET", "POST"])
+def validate_masters_file(file_url: str):
     """Pre-flight check: find UOMs used in the file that don't exist in ERPNext.
 
     Returns a list of issues (one per unique Tally UOM that maps to a missing
@@ -53,8 +53,8 @@ def validate_masters_file(file_url):
     }
 
 
-@frappe.whitelist()
-def company_readiness(erpnext_company="", posting_date=""):
+@frappe.whitelist(methods=["GET", "POST"])
+def company_readiness(erpnext_company: str = "", posting_date: str = ""):
     """Pre-flight: is the target ERPNext company set up to receive masters?
 
     Read-only. Returns blockers (an entire entity would fail) and warnings
@@ -65,8 +65,9 @@ def company_readiness(erpnext_company="", posting_date=""):
     return check_readiness(erpnext_company, posting_date)
 
 
-@frappe.whitelist()
-def validate_masters_data(file_url, record_overrides="", erpnext_company="", posting_date=""):
+@frappe.whitelist(methods=["GET", "POST"])
+def validate_masters_data(file_url: str, record_overrides: str = "", erpnext_company: str = "",
+                          posting_date: str = ""):
     """Pre-flight data-quality scan of an uploaded Tally Masters XML.
 
     Read-only - extracts and inspects, writes nothing. Returns a grouped,
@@ -96,8 +97,8 @@ def validate_masters_data(file_url, record_overrides="", erpnext_company="", pos
     return payload
 
 
-@frappe.whitelist()
-def create_uoms(uom_names):
+@frappe.whitelist(methods=["POST"])
+def create_uoms(uom_names: str):
     """Batch-create UOM records that don't already exist.
 
     Called from the pre-flight check screen when the user opts to create one or
@@ -134,8 +135,8 @@ def create_uoms(uom_names):
 _DRAFT_DOCTYPE = "Tally Migration Draft"
 
 
-@frappe.whitelist()
-def save_draft(payload):
+@frappe.whitelist(methods=["POST"])
+def save_draft(payload: str):
     """Upsert the current user's in-progress wizard state (one draft per user).
 
     The wizard autosaves here after every inline fix / step change so an accidental
@@ -165,7 +166,7 @@ def save_draft(payload):
     return {"saved": True}
 
 
-@frappe.whitelist()
+@frappe.whitelist(methods=["GET", "POST"])
 def get_draft():
     """Return the current user's saved wizard draft, or ``None`` if there is none."""
     frappe.only_for(ALLOWED_ROLES)
@@ -190,7 +191,7 @@ def get_draft():
     }
 
 
-@frappe.whitelist()
+@frappe.whitelist(methods=["POST"])
 def clear_draft():
     """Delete the current user's wizard draft (on 'start over' or after a run)."""
     frappe.only_for(ALLOWED_ROLES)
@@ -201,10 +202,10 @@ def clear_draft():
     return {"cleared": True}
 
 
-@frappe.whitelist()
-def run_masters_migration_from_file(file_url, erpnext_company="", uom_overrides="",
-                                    validation_report="", record_overrides="", coa_mode="reuse",
-                                    posting_date=""):
+@frappe.whitelist(methods=["POST"])
+def run_masters_migration_from_file(file_url: str, erpnext_company: str = "", uom_overrides: str = "",
+                                    validation_report: str = "", record_overrides: str = "",
+                                    coa_mode: str = "reuse", posting_date: str = ""):
     """Run the masters migration from an uploaded Tally masters XML export.
 
     ``file_url``        - URL of the File uploaded via the standard Frappe uploader.
@@ -239,8 +240,8 @@ def run_masters_migration_from_file(file_url, erpnext_company="", uom_overrides=
     return _run_and_summarize(config, source, uom, records)
 
 
-@frappe.whitelist()
-def rerun_from_log(log_name):
+@frappe.whitelist(methods=["POST"])
+def rerun_from_log(log_name: str):
     """Re-run a migration from the source file stored on an existing log.
 
     The import is idempotent - records that already exist are skipped - so a full
