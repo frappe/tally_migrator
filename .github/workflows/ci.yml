@@ -71,8 +71,10 @@ jobs:
       - name: Set up Node
         uses: actions/setup-node@v4
         with:
-          # Frappe v16 requires Node 20+.
-          node-version: "20"
+          # Frappe version-16 declares engines.node ">=24" in package.json, so
+          # `yarn install` aborts on anything older ("engine node incompatible").
+          # Keep this in step with the FRAPPE_BRANCH above.
+          node-version: "24"
 
       - name: System dependencies
         run: |
@@ -128,16 +130,25 @@ jobs:
             --admin-password admin \
             --no-mariadb-socket
           bench --site test_site install-app erpnext
-          # Install India Compliance before the app under test so the GST custom
-          # fields (gst_category, GSTIN, …) exist when tally_migrator's importers
-          # and GST tests run - mirroring the India Frappe Cloud production config.
-          bench --site test_site install-app india_compliance
 
-      - name: Install the app under test
+      - name: Install apps and complete the ERPNext setup wizard
         working-directory: frappe-bench
+        # install-app erpnext installs the app but does NOT run the setup wizard, so
+        # a fresh site lacks the default masters the integration tests rely on
+        # (Customer Group "Commercial", Territory "All Territories", the root
+        # Item/Supplier groups, base UOMs). The bootstrap below runs the same
+        # setup_complete the wizard would.
+        #
+        # Both apps are installed first: `bench execute` resolves a dotted path only
+        # for apps INSTALLED on the site (not merely importable), so the app under
+        # test must be installed before its bootstrap can be called. India Compliance
+        # is installed before the company is created so its GST setup attaches to it -
+        # mirroring the India Frappe Cloud production config.
         run: |
           bench get-app tally_migrator "${GITHUB_WORKSPACE}/tally_migrator"
           bench --site test_site install-app tally_migrator
+          bench --site test_site install-app india_compliance
+          bench --site test_site execute tally_migrator.tests.bootstrap.complete_erpnext_setup
 
       - name: Report the versions under test
         working-directory: frappe-bench
