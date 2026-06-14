@@ -398,9 +398,15 @@ def _source_from_file(file_url):
     migration run also reads ``file_doc.file_name`` for the log label. Access is
     checked (see ``_assert_file_access``) and the parse is cached per file version.
     """
+    # Frappe stores byte-identical uploads at one path, so a single file_url can map
+    # to several File rows owned by different users (e.g. the same export uploaded by
+    # two people). Prefer the row owned by the current user; otherwise fall back to any
+    # match (access is still enforced by _assert_file_access below).
+    name = frappe.db.exists(
+        "File", {"file_url": file_url, "owner": frappe.session.user}
+    ) or frappe.db.exists("File", {"file_url": file_url})
     # A stale draft (or a re-run from a log) can point at a File that has since been
     # deleted; surface that as a clear, actionable message instead of a raw 500.
-    name = frappe.db.exists("File", {"file_url": file_url})
     if not name:
         frappe.throw(
             frappe._(
