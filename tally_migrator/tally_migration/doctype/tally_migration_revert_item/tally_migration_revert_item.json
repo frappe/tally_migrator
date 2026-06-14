@@ -1,0 +1,61 @@
+{
+ "name": "Tally Migration Revert Item",
+ "doctype": "DocType",
+ "module": "Tally Migration",
+ "custom": 0,
+ "istable": 1,
+ "editable_grid": 1,
+ "engine": "InnoDB",
+ "field_order": [
+  "reference_doctype",
+  "reference_name",
+  "entity",
+  "reason",
+  "deleted"
+ ],
+ "fields": [
+  {
+   "fieldname": "reference_doctype",
+   "fieldtype": "Link",
+   "label": "DocType",
+   "options": "DocType",
+   "in_list_view": 1,
+   "columns": 2,
+   "read_only": 1
+  },
+  {
+   "fieldname": "reference_name",
+   "fieldtype": "Data",
+   "label": "Document",
+   "in_list_view": 1,
+   "columns": 3,
+   "read_only": 1,
+   "description": "The document name. Deleted records no longer exist, so this is plain text rather than a link."
+  },
+  {
+   "fieldname": "entity",
+   "fieldtype": "Data",
+   "label": "Entity",
+   "in_list_view": 1,
+   "columns": 2,
+   "read_only": 1
+  },
+  {
+   "fieldname": "reason",
+   "fieldtype": "Small Text",
+   "label": "Why Kept",
+   "in_list_view": 1,
+   "columns": 3,
+   "read_only": 1
+  },
+  {
+   "default": "0",
+   "fieldname": "deleted",
+   "fieldtype": "Check",
+   "label": "Deleted",
+   "in_list_view": 1,
+   "read_only": 1
+  }
+ ],
+ "permissions": []
+}
