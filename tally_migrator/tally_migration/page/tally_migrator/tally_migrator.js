@@ -590,8 +590,7 @@ class TallyMigratorPage {
 
 	loadERPNextCompanies() {
 		frappe.call({
-			method: "frappe.client.get_list",
-			args: { doctype: "Company", fields: ["name"], limit_page_length: 0 },
+			method: "tally_migrator.api.get_companies",
 			callback: (r) => {
 				const companies = r.message || [];
 				const $select = $("#erpnext-company").empty();

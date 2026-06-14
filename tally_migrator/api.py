@@ -55,6 +55,22 @@ def validate_masters_file(file_url: str):
 
 
 @frappe.whitelist(methods=["GET", "POST"])
+def get_companies():
+    """List ERPNext companies for the wizard's target-company picker.
+
+    The wizard runs under the Tally Migration Manager role, which deliberately
+    holds no Company read permission (it only needs to migrate, not browse the
+    Company master). A plain ``frappe.client.get_list`` would therefore return
+    nothing. This gated endpoint returns the names with ``ignore_permissions`` so
+    the picker works without widening the role.
+    """
+    frappe.only_for(ALLOWED_ROLES)
+    return frappe.get_all(
+        "Company", fields=["name"], order_by="name", ignore_permissions=True
+    )
+
+
+@frappe.whitelist(methods=["GET", "POST"])
 def company_readiness(erpnext_company: str = "", posting_date: str = ""):
     """Pre-flight: is the target ERPNext company set up to receive masters?
 
