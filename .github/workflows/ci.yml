@@ -71,8 +71,10 @@ jobs:
       - name: Set up Node
         uses: actions/setup-node@v4
         with:
-          # Frappe v16 requires Node 20+.
-          node-version: "20"
+          # Frappe version-16 declares engines.node ">=24" in package.json, so
+          # `yarn install` aborts on anything older ("engine node incompatible").
+          # Keep this in step with the FRAPPE_BRANCH above.
+          node-version: "24"
 
       - name: System dependencies
         run: |
