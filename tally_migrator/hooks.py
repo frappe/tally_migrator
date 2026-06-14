@@ -2,7 +2,7 @@ app_name        = "tally_migrator"
 app_title       = "Tally Migrator"
 app_publisher   = "Parth Garachh"
 app_description = "Migrate masters and opening balances from Tally to ERPNext"
-app_email       = "parth1garachh@gmail.com"
+app_email       = "parth@frappe.io"
 app_license     = "MIT"
 app_version     = "1.0.0"
 

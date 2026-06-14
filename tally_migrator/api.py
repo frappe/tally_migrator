@@ -315,28 +315,51 @@ RUN_ASYNC_THRESHOLD = 5000
 _ACTIVE_RUN_STALE_SECONDS = 2 * 60 * 60
 
 
+def _is_job_alive(job_id: str) -> bool:
+    """Is the RQ job for an enqueued run still queued or running?
+
+    Wraps Frappe's ``is_job_enqueued`` defensively: if RQ/Redis can't be reached we
+    return True (assume alive) so a transient lookup failure can't wave through a
+    genuine concurrent run - the duplicate-start guard fails closed."""
+    try:
+        from frappe.utils.background_jobs import is_job_enqueued
+        return is_job_enqueued(job_id)
+    except Exception:
+        return True
+
+
 def _assert_no_active_run(company: str) -> None:
     """Refuse to start a second migration while one is already running for the
-    same company. Only a *recent* 'Running' log blocks; a stale one (crashed
-    worker) is ignored so re-runs aren't locked out. Best-effort UX guard - the
-    opening lock in the importer is what actually protects the books."""
+    same company. A stale run (crashed worker) is ignored so re-runs aren't locked
+    out. For an async run we ask RQ whether the worker is genuinely still alive; for
+    a sync run (no job id, request-bound) we fall back to an age cap. Best-effort UX
+    guard - the opening lock in the importer is what actually protects the books."""
     if not company:
         return
     rows = frappe.get_all(
         "Tally Migration Log",
         filters={"company": company, "status": "Running"},
-        fields=["name", "modified"], order_by="modified desc", limit=1,
+        fields=["name", "modified", "job_id"], order_by="modified desc", limit=1,
     )
     if not rows:
         return
     modified = rows[0].modified
-    if frappe.utils.time_diff_in_seconds(frappe.utils.now(), modified) < _ACTIVE_RUN_STALE_SECONDS:
-        frappe.throw(
-            frappe._(
-                "A migration for '{0}' is already running (started {1}). Please wait "
-                "for it to finish, or open the migration log to check its status."
-            ).format(company, frappe.utils.pretty_date(modified))
-        )
+    job_id = rows[0].get("job_id")
+    if job_id:
+        # Liveness, not age: an enqueued run blocks only while its RQ job is actually
+        # queued or running. A crashed/finished/missing job leaves a 'Running' log
+        # behind, but is_job_enqueued() returns False, so it never locks out a re-run -
+        # and a legitimately long (>2h) job keeps blocking, which the age cap couldn't.
+        if not _is_job_alive(job_id):
+            return
+    elif frappe.utils.time_diff_in_seconds(frappe.utils.now(), modified) >= _ACTIVE_RUN_STALE_SECONDS:
+        return
+    frappe.throw(
+        frappe._(
+            "A migration for '{0}' is already running (started {1}). Please wait "
+            "for it to finish, or open the migration log to check its status."
+        ).format(company, frappe.utils.pretty_date(modified))
+    )
 
 
 def _assert_file_access(file_doc) -> None:
@@ -476,11 +499,16 @@ def _enqueue_masters_run(config: TallyConfig, file_url, erpnext_company, uom_ove
     """
     migrator = MasterMigrator(config, source=None)
     log = migrator._create_log()
+    # Stamp the log with the RQ job id so the active-run guard can ask RQ whether the
+    # worker is genuinely still alive (vs crashed), instead of relying only on age.
+    job_id = f"tally-masters-{log.name}"
+    log.db_set("job_id", job_id, commit=True)
     frappe.enqueue(
         "tally_migrator.api._run_masters_job",
         queue="long",
         timeout=4 * 60 * 60,
         enqueue_after_commit=True,
+        job_id=job_id,
         file_url=file_url,
         erpnext_company=erpnext_company,
         uom_overrides=uom_overrides,
