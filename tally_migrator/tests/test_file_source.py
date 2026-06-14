@@ -3,7 +3,9 @@
 No Tally connection and no Frappe site required - exercises the parser and its
 interop with TallyExtractor directly.
 """
+import types
 import unittest
+from unittest import mock
 
 from tally_migrator.tally.file_source import (
     FileTallySource, decode_tally_bytes, sanitize_tally_xml,
@@ -278,6 +280,70 @@ class TestCacheIsolation(unittest.TestCase):
         self.assertEqual(len(log2), 1, "cached parse was poisoned - second apply lost the edit")
         self.assertEqual(log2[0]["old"], "Maharashtra")
         self.assertEqual(log2[0]["new"], "Gujarat")
+
+
+class TestSourceCacheLRU(unittest.TestCase):
+    """api._SOURCE_CACHE is a bounded LRU. A single slot used to make two managers
+    migrating at once (or one user re-checking two files) evict each other and
+    re-parse a large file on every call; the LRU keeps a handful of parses alive and
+    only drops the least-recently-used past the cap."""
+
+    def setUp(self):
+        from tally_migrator import api
+        self.api = api
+        api._SOURCE_CACHE.clear()
+        self.addCleanup(api._SOURCE_CACHE.clear)
+
+    def _fetch(self, fname, parses):
+        """Drive api._source_from_file for a file, recording each real (cache-miss)
+        parse in ``parses``. Returns the source so identity (cache hit) can be checked."""
+        api = self.api
+        file_doc = types.SimpleNamespace(name=fname, modified="m", file_name=fname)
+
+        def make(_decoded):
+            parses.append(fname)
+            return object()                      # a unique sentinel per parse
+
+        with mock.patch.object(api.frappe.db, "exists", return_value=fname), \
+                mock.patch.object(api.frappe, "get_doc", return_value=file_doc), \
+                mock.patch.object(api, "_assert_file_access"), \
+                mock.patch.object(api, "_raw_file_bytes", return_value=b""), \
+                mock.patch.object(api, "_decode", return_value=""), \
+                mock.patch.object(api, "FileTallySource", side_effect=make), \
+                mock.patch.object(api.frappe, "session",
+                                  types.SimpleNamespace(user="u@example.com")):
+            _, source = api._source_from_file("/files/" + fname)
+        return source
+
+    def test_two_files_coexist_and_hit_skips_reparse(self):
+        parses = []
+        s_a = self._fetch("A", parses)
+        self._fetch("B", parses)
+        s_a_again = self._fetch("A", parses)
+        self.assertIs(s_a, s_a_again)            # cache hit returns the same parse
+        self.assertEqual(parses, ["A", "B"])     # A was NOT re-parsed (no thrash)
+
+    def test_evicts_least_recently_used(self):
+        parses = []
+        with mock.patch.object(self.api, "_SOURCE_CACHE_MAX", 2):
+            self._fetch("A", parses)
+            self._fetch("B", parses)
+            self._fetch("C", parses)             # over cap -> evicts A (LRU)
+            self.assertEqual(len(self.api._SOURCE_CACHE), 2)
+            self._fetch("A", parses)             # A was evicted, so re-parsed
+        self.assertEqual(parses, ["A", "B", "C", "A"])
+
+    def test_hit_refreshes_recency(self):
+        parses = []
+        with mock.patch.object(self.api, "_SOURCE_CACHE_MAX", 2):
+            a = self._fetch("A", parses)
+            self._fetch("B", parses)
+            a2 = self._fetch("A", parses)        # hit -> A becomes most-recent
+            self.assertIs(a, a2)
+            self._fetch("C", parses)             # evicts B (now LRU), keeps A
+            a3 = self._fetch("A", parses)        # A still cached
+            self.assertIs(a, a3)
+        self.assertEqual(parses, ["A", "B", "C"])  # A parsed once despite 4 fetches
 
 
 class TestDecode(unittest.TestCase):
