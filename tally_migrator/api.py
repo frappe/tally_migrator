@@ -1,5 +1,6 @@
 import json
 import threading
+from collections import OrderedDict
 
 import frappe
 
@@ -282,19 +283,26 @@ def rerun_from_log(log_name: str):
 
 # ── Internal helpers ──────────────────────────────────────────────────────────
 
-# Most-recently-parsed source, keyed by (user, File name, modified timestamp). The
+# LRU of recently-parsed sources, keyed by (user, File name, modified timestamp). The
 # wizard re-calls validate/preview on every inline fix ("Re-check"), each of which
 # would otherwise re-read, re-decode, re-sanitize and re-parse the whole file. The
 # File's bytes are immutable for a given (name, modified), so a cached parse is
 # always valid; a new upload (new name) or an edit (new modified) misses and
-# re-parses. Bounded to one entry so a large file can't pin memory across uploads.
+# re-parses. The key includes the user so one person's upload can never hand another
+# person's request a different file's parse.
+#
+# Bounded to ``_SOURCE_CACHE_MAX`` entries (least-recently-used evicted): a single
+# slot meant two managers migrating at once - or one user re-checking two files -
+# kept evicting each other and re-parsing a large file on every call. A handful of
+# entries removes that thrash; the cap still limits how much parsed data can pin
+# memory (worst case ~_SOURCE_CACHE_MAX large files), so it stays a small number.
 #
 # The cache is a process global shared by every worker thread, so all access goes
-# through ``_SOURCE_CACHE_LOCK``: without it two concurrent requests could clear /
-# repopulate it mid-read, and the key includes the user so one person's upload can
-# never hand another person's request a different file's parse.
-_SOURCE_CACHE: dict = {}
+# through ``_SOURCE_CACHE_LOCK``: without it two concurrent requests could mutate the
+# ordering / evict mid-read.
+_SOURCE_CACHE: "OrderedDict" = OrderedDict()
 _SOURCE_CACHE_LOCK = threading.Lock()
+_SOURCE_CACHE_MAX = 4
 
 # Reject uploads above this size before parsing, with an actionable message,
 # rather than letting a multi-gigabyte file exhaust the worker. UTF-16 exports
@@ -383,10 +391,13 @@ def _source_from_file(file_url):
     cache_key = (frappe.session.user, file_doc.name, str(file_doc.modified))
     with _SOURCE_CACHE_LOCK:
         source = _SOURCE_CACHE.get(cache_key)
-        if source is None:
-            source = FileTallySource(_decode(_raw_file_bytes(file_doc)))
-            _SOURCE_CACHE.clear()        # keep only the most-recent file's parse
-            _SOURCE_CACHE[cache_key] = source
+        if source is not None:
+            _SOURCE_CACHE.move_to_end(cache_key)     # mark most-recently used
+            return file_doc, source
+        source = FileTallySource(_decode(_raw_file_bytes(file_doc)))
+        _SOURCE_CACHE[cache_key] = source            # inserts as most-recently used
+        while len(_SOURCE_CACHE) > _SOURCE_CACHE_MAX:
+            _SOURCE_CACHE.popitem(last=False)        # evict least-recently used
     return file_doc, source
 
 
