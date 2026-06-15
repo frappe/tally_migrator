@@ -232,7 +232,7 @@ class TallyExtractor:
         # (repeating child lists a real export carries beyond the single primary
         # mailing address / mobile). No-op for a live client without child lists.
         self._attach_party_subrecords(ledgers)
-        return ExtractedMasters(
+        masters = ExtractedMasters(
             customers    = [l for l in ledgers if resolver.kind_of(l["_name"]) == CUSTOMER],
             suppliers    = [l for l in ledgers if resolver.kind_of(l["_name"]) == SUPPLIER],
             items        = self._dedup_by_name(
@@ -244,6 +244,19 @@ class TallyExtractor:
             units        = self._dedup_by_name(
                 self.client.get_collection("Unit", UNIT_FIELDS, UNIT_TAGS)),
         )
+        # Attach each item's combined GST rate (IGST), read per duty head from the
+        # nested rate list. No-op for a live client that can't supply it.
+        self._attach_item_gst_rates(masters.items)
+        return masters
+
+    def _attach_item_gst_rates(self, items: list[dict]) -> None:
+        """Set ``GstRate`` on each item dict from the source's per-duty-head rate
+        read. Degrades to a no-op when the source can't supply it (live client)."""
+        if not hasattr(self.client, "item_gst_rates"):
+            return
+        rates = self.client.item_gst_rates()
+        for it in items:
+            it.setdefault("GstRate", rates.get(it.get("_name", ""), ""))
 
     @staticmethod
     def _dedup_by_name(records: list[dict]) -> list[dict]:

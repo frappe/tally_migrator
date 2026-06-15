@@ -255,6 +255,44 @@ class FileTallySource:
         self._collection_cache[cache_key] = rows
         return [dict(r) for r in rows]
 
+    def item_gst_rates(self) -> dict:
+        """``{stock item name: combined GST rate string}`` read per duty head.
+
+        The rate lives nested under GSTDETAILS.LIST/STATEWISEDETAILS.LIST/
+        RATEDETAILS.LIST, one entry per duty head (CGST/SGST-UTGST/IGST/Cess). The
+        combined GST rate is IGST (== CGST + SGST); we read by duty head rather than
+        relying on tag order, so a Cess rate can never be mistaken for the GST rate.
+        Empty string when the item carries no rate (nil/exempt/non-GST)."""
+        out: dict = {}
+        for elem in self._by_tag.get("STOCKITEM", ()):
+            name = (elem.get("NAME") or elem.findtext("NAME") or "").strip()
+            if not name:
+                continue
+            heads: dict = {}
+            for node in elem.iter():
+                if node.tag.split("}")[-1].upper() != "RATEDETAILS.LIST":
+                    continue
+                duty = rate = ""
+                for ch in node:
+                    local = ch.tag.split("}")[-1].upper()
+                    if local == "GSTRATEDUTYHEAD":
+                        duty = (ch.text or "").strip().upper()
+                    elif local == "GSTRATE":
+                        rate = (ch.text or "").strip()
+                if duty and rate:
+                    heads[duty] = rate
+            igst = heads.get("IGST")
+            if not igst:
+                cgst = heads.get("CGST")
+                sgst = heads.get("SGST/UTGST") or heads.get("SGST")
+                if cgst or sgst:
+                    try:
+                        igst = f"{float(cgst or 0) + float(sgst or 0):g}"
+                    except ValueError:
+                        igst = ""
+            out[name] = igst or ""
+        return out
+
     # ── Field resolution (tag overrides + nested .LIST descent) ────────────────
     @classmethod
     def _resolve_field(cls, elem, candidates: list) -> str:
