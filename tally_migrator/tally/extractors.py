@@ -37,8 +37,14 @@ COSTCENTRE_FIELDS = ["Name", "Parent"]
 STOCKGROUP_FIELDS = ["Name", "Parent"]
 UNIT_FIELDS       = [
     "Name", "IsSimpleUnit", "OriginalName", "DecimalPlaces",
-    "BaseUnits", "AdditionalUnits", "Conversion",
+    "BaseUnits", "AdditionalUnits", "Conversion", "ReportingUQC",
 ]
+# The GST Unit Quantity Code lives in a dated revision list
+# (REPORTINGUQCDETAILS.LIST/REPORTINGUQCNAME, e.g. "NOS-NUMBERS"); _resolve_field
+# returns the last/most-recent entry. "Not Applicable" rows are filtered downstream.
+UNIT_TAGS = {
+    "ReportingUQC": ["REPORTINGUQCDETAILS.LIST/REPORTINGUQCNAME"],
+}
 
 
 # ── Tag overrides for fields whose real Tally tag ≠ FIELD.upper() ─────────────
@@ -236,7 +242,7 @@ class TallyExtractor:
             stock_groups = self._dedup_by_name(
                 self.client.get_collection("Stock Group", STOCKGROUP_FIELDS)),
             units        = self._dedup_by_name(
-                self.client.get_collection("Unit", UNIT_FIELDS)),
+                self.client.get_collection("Unit", UNIT_FIELDS, UNIT_TAGS)),
         )
 
     @staticmethod
