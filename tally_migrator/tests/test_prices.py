@@ -64,17 +64,23 @@ class TestPriceImporter(unittest.TestCase):
 
         def fake_get_doc(d):
             created.append(d)
-            return types.SimpleNamespace(
-                name=d.get("title") or d.get("price_list_name") or "IP-1",
-                insert=lambda **k: None)
+            # A Pricing Rule is autonamed by series (PRLE-####), so its `name` is NOT
+            # its title - mimic that here so the test would catch logging the title as
+            # the (dead) hyperlink target, or keying idempotency on name==title.
+            name = ("PRLE-0001" if d["doctype"] == "Pricing Rule"
+                    else d.get("price_list_name") or "8mc65uqma1")
+            return types.SimpleNamespace(name=name, insert=lambda **k: None)
 
         exists_state = {"Price List": False, "Item Price": False, "Pricing Rule": False}
+        pricing_rule_filters = []
 
         def fake_exists(dt, filt=None):
             if dt == "Item":
                 return True
             if dt == "UOM":
                 return True
+            if dt == "Pricing Rule":
+                pricing_rule_filters.append(filt)
             return exists_state.get(dt, False)
 
         with mock.patch("frappe.db.exists", side_effect=fake_exists), \
@@ -98,6 +104,13 @@ class TestPriceImporter(unittest.TestCase):
         self.assertNotIn("apply_discount_on_rate", pr)       # would force a Priority
         self.assertEqual(pr["max_qty"], 100.0)               # ENDINGAT bound carried
         self.assertEqual(pr["items"], [{"item_code": "A4 Paper Ream"}])
+        # Idempotency must key on the title FIELD, not name (Pricing Rule autonames
+        # by series, so name != title; a bare-title exists() never matches -> dupes).
+        self.assertEqual(pricing_rule_filters, [{"title": "Tally Retail discount - A4 Paper Ream"}])
+        # The logged hyperlink target is the real autonamed doc, not the title, so
+        # the migration-log link resolves (the title is no document's name).
+        self.assertIn("PRLE-0001", res.created_names)
+        self.assertNotIn("Tally Retail discount - A4 Paper Ream", res.created_names)
 
     def test_idempotent_skips_existing(self):
         imp = self._imp()

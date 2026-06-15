@@ -106,7 +106,11 @@ class PriceImporter:
         # Deterministic title is the idempotency key (Pricing Rule has no natural
         # one), so a re-run finds and skips the rule rather than duplicating it.
         title = f"Tally {price_list} discount - {item_code}"[:140]
-        if frappe.db.exists("Pricing Rule", title):
+        # Pricing Rule is autonamed by series (PRLE-####), so its document `name` is
+        # NOT the title - the idempotency key must query the title FIELD, not name
+        # (frappe.db.exists("Pricing Rule", title) tests name==title, never matches,
+        # so a re-run would duplicate the rule).
+        if frappe.db.exists("Pricing Rule", {"title": title}):
             return
         # for_price_list scopes the rule to this price list, so the discount applies
         # only when selling at that level, on its Item Price rate (Retail 398 - 10%
@@ -125,9 +129,13 @@ class PriceImporter:
         max_qty = self._parse_qty(ending)
         if max_qty:
             rule["max_qty"] = max_qty
-        frappe.get_doc(rule).insert(ignore_permissions=True)
+        # Log the autonamed document `name` (PRLE-####), not the title, so the
+        # migration-log hyperlink resolves to a real Pricing Rule. Logging the title
+        # produced a dead link (no doc is named after the title).
+        doc = frappe.get_doc(rule)
+        doc.insert(ignore_permissions=True)
         frappe.db.commit()
-        result.add_created(title, "Pricing Rule")
+        result.add_created(doc.name, "Pricing Rule")
 
     # ── parsing ─────────────────────────────────────────────────────────────────
     @staticmethod
