@@ -127,5 +127,28 @@ class TestEmitForexGuards(unittest.TestCase):
         self.assertTrue(any("advance" in w["reason"] for w in res.warnings))
 
 
+class TestReconciliationIncludesForexAccounts(unittest.TestCase):
+    """The reconciliation receivables/payables figure must sum opening postings across
+    ALL receivable/payable accounts, so the per-currency forex control accounts
+    (Debtors USD / Creditors USD) are not missed - otherwise forex migrations show a
+    false variance."""
+
+    def test_opening_account_balance_accepts_account_list(self):
+        from tally_migrator.migration import reconciliation as R
+        captured = {}
+
+        import frappe
+
+        def fake_get_all(doctype, filters=None, fields=None, **kw):
+            captured.setdefault("filters", []).append(filters)
+            # one opening row of 705500 Dr on the (forex) account
+            return [frappe._dict(debit=705500.0, credit=0.0)] if filters.get("is_opening") else []
+        with mock.patch("frappe.get_all", side_effect=fake_get_all):
+            out = R._opening_account_balance("FT", ["Debtors - FT", "Debtors USD - FT"])
+        self.assertEqual(out, {"amount": 705500.0, "dr_cr": "Dr"})
+        # the account filter is an 'in' over the full list, not a single account
+        self.assertEqual(captured["filters"][0]["account"], ["in", ["Debtors - FT", "Debtors USD - FT"]])
+
+
 if __name__ == "__main__":
     unittest.main()

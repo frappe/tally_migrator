@@ -1,7 +1,6 @@
 """Opening balances: the per-company lock and the three opening importers."""
 
 import contextlib
-from collections import Counter
 from dataclasses import dataclass, field
 
 import frappe
@@ -417,21 +416,11 @@ class PartyOpeningImporter:
         self.company = company
         self.abbr = abbr
         self.posting_date = posting_date
-        # Set for real in run() from the parties' ledger currencies; default blank so
-        # _process()/_tally_currency_foreign() stay valid (and treat the book as
-        # single-currency) even if _process is exercised before run() populates it.
-        self._tally_base_ccy = ""
 
     # ── Orchestration ─────────────────────────────────────────────────────────
     def run(self, bills: list, customers: list[dict],
             suppliers: list[dict]) -> ImportResult:
         result = ImportResult("Opening Invoice")
-        # The Tally base currency, derived as the most common ledger CurrencyName
-        # across all parties (a forex party carries a different one). Used to skip a
-        # party whose ledger currency differs from the base - the in-file signal the
-        # ERPNext default_currency guard can't give us, since freshly imported parties
-        # carry no currency yet. Equality only, never an ISO-code mapping.
-        self._tally_base_ccy = self._base_currency(customers, suppliers)
         by_party: dict[str, list] = {}
         for b in bills or []:
             by_party.setdefault(b.party, []).append(b)
@@ -796,26 +785,6 @@ class PartyOpeningImporter:
                  else "default_payable_account")
         return frappe.get_cached_value("Company", self.company, field)
 
-    @staticmethod
-    def _base_currency(customers: list[dict], suppliers: list[dict]) -> str:
-        """The Tally base currency: the most common non-empty ledger CurrencyName
-        across every party. A book is overwhelmingly single-currency, so the modal
-        value is the base; a party whose CurrencyName differs is forex. Returns ""
-        when the file carries no currency name (older exports) - the ERPNext-side
-        guard then remains the only check."""
-        counts = Counter(
-            (r.get("CurrencyName") or "").strip()
-            for r in (*customers, *suppliers)
-            if (r.get("CurrencyName") or "").strip()
-        )
-        return counts.most_common(1)[0][0] if counts else ""
-
-    def _tally_currency_foreign(self, record: dict) -> bool:
-        """True when this party ledger's own CurrencyName differs from the Tally base
-        currency. Blank base or blank ledger currency means 'unknown' -> not foreign,
-        so a single-currency book (or an export without the field) is never skipped."""
-        ccy = (record.get("CurrencyName") or "").strip()
-        return bool(self._tally_base_ccy and ccy and ccy != self._tally_base_ccy)
 
     def _is_foreign_currency_party(self, party_type: str, party: str) -> bool:
         """True when the party's own default currency is set and differs from the
