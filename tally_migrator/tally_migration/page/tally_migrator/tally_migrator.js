@@ -152,7 +152,7 @@ class TallyMigratorPage {
 					</p>
 
 					<div id="check-loading" class="text-muted" style="margin:18px 0;">
-						<i class="fa fa-spinner fa-spin"></i> &nbsp;Checking your file against ERPNext…
+						<i class="fa fa-spinner fa-spin"></i> &nbsp;Checking your file against ERPNext...
 					</div>
 
 					<div id="check-clean" style="display:none; margin-bottom:18px;">
@@ -227,7 +227,7 @@ class TallyMigratorPage {
 						<div class="progress" style="margin-bottom:6px;">
 							<div id="progress-bar" class="progress-bar progress-bar-striped active" style="width:0%; min-width:2em;">0%</div>
 						</div>
-						<p id="progress-desc" class="text-muted" style="font-size:12px; margin:0;">Starting…</p>
+						<p id="progress-desc" class="text-muted" style="font-size:12px; margin:0;">Starting...</p>
 					</div>
 
 					<div id="results-section" style="display:none;"></div>
@@ -384,7 +384,7 @@ class TallyMigratorPage {
 	loadPreview() {
 		$("#preview-box")
 			.show()
-			.html(`<span class="text-muted"><i class="fa fa-spinner fa-spin"></i> &nbsp;Reading your file…</span>`);
+			.html(`<span class="text-muted"><i class="fa fa-spinner fa-spin"></i> &nbsp;Reading your file...</span>`);
 		$("#btn-next-upload").prop("disabled", true);
 
 		frappe.call({
@@ -601,7 +601,7 @@ class TallyMigratorPage {
 				}
 				$("#company-empty").hide();
 				$("#btn-next-2").prop("disabled", false);
-				$select.append('<option value="">Select company…</option>');
+				$select.append('<option value="">Select company...</option>');
 				companies.forEach((c) => {
 					const name = frappe.utils.escape_html(c.name);
 					$select.append(`<option value="${name}">${name}</option>`);
@@ -1243,7 +1243,7 @@ class TallyMigratorPage {
 	// Re-validate with the in-memory edits applied - fixes are confirmed by the same
 	// engine, so resolved issues drop off and any remaining ones stay visible.
 	recheck() {
-		frappe.dom.freeze(__("Re-checking…"));
+		frappe.dom.freeze(__("Re-checking..."));
 		frappe.call({
 			method: "tally_migrator.api.validate_masters_data",
 			args: {
@@ -1390,7 +1390,7 @@ class TallyMigratorPage {
 			return;
 		}
 
-		frappe.dom.freeze(__("Creating units…"));
+		frappe.dom.freeze(__("Creating units..."));
 		frappe.call({
 			method: "tally_migrator.api.create_uoms",
 			args: { uom_names: JSON.stringify([...toCreate]) },
@@ -1791,7 +1791,7 @@ class TallyMigratorPage {
 			if (Date.now() - this._lastProgress < 8000) return;
 			const secs = Math.round((Date.now() - this._runStart) / 1000);
 			$("#progress-desc").text(
-				`Still working… ${secs}s elapsed. Live updates may have paused; the ` +
+				`Still working... ${secs}s elapsed. Live updates may have paused; the ` +
 				`result will appear here when the migration finishes.`
 			);
 		}, 5000);
@@ -2005,7 +2005,7 @@ class TallyMigratorPage {
 			<div class="text-muted small" style="margin-top:6px; line-height:1.6;">
 				<strong>Imported</strong> = newly created in ERPNext &nbsp;·&nbsp;
 				<strong>Already there</strong> = skipped because it already existed (safe, nothing changed) &nbsp;·&nbsp;
-				<strong>Warnings</strong> = imported, but a dependent piece (address, contact, opening balance…) was dropped${totalWarnings ? " - see the log" : ""} &nbsp;·&nbsp;
+				<strong>Warnings</strong> = imported, but a dependent piece (address, contact, opening balance...) was dropped${totalWarnings ? " - see the log" : ""} &nbsp;·&nbsp;
 				<strong>Failed</strong> = couldn't be imported${hasErrors ? " - see the log for the reason" : ""}.
 			</div>`;
 

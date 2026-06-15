@@ -896,7 +896,7 @@ function render_summary(frm) {
 			section(
 				`<div class="text-muted" style="padding:6px 0;">
 					${frm.doc.status === "Running"
-						? "Migration is still running…"
+						? "Migration is still running..."
 						: "No import summary recorded for this run."}
 				</div>`
 			)
@@ -1009,7 +1009,7 @@ function add_buttons(frm) {
 }
 
 function rerun(frm) {
-	frappe.dom.freeze(__("Re-running migration…"));
+	frappe.dom.freeze(__("Re-running migration..."));
 	frappe.call({
 		method: "tally_migrator.api.rerun_from_log",
 		args: { log_name: frm.doc.name },
