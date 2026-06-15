@@ -29,6 +29,7 @@ from .party import PartyImporter, CustomerImporter, SupplierImporter
 from .items import ItemImporter
 from .warehouses import WarehouseImporter, StockGroupImporter
 from .units import UnitImporter
+from .prices import PriceImporter
 from .accounts import AccountImporter, CostCentreImporter
 from .hsn import _restore_hsn_validation, _hsn_validation_suspended
 from .openings import (
@@ -115,6 +116,9 @@ class ERPNextImporter:
 
     def import_units(self, units: list[dict]) -> ImportResult:
         return UnitImporter(self.company, self.abbr).run(units)
+
+    def import_prices(self, items: list[dict]) -> ImportResult:
+        return PriceImporter(self.company, self.abbr).run(items)
 
     def import_warehouses(self, warehouses: list[dict]) -> ImportResult:
         return WarehouseImporter(self.company, self.abbr).run(warehouses)

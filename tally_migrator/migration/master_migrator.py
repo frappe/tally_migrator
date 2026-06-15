@@ -281,6 +281,10 @@ class MasterMigrator:
             PipelineStep("Suppliers", 65, self.importer.import_suppliers, masters.suppliers),
             PipelineStep("Items", 80, self.importer.import_items, masters.items),
         ]
+        # Price levels (Retail/Wholesale) -> Price List + Item Price (+ discount
+        # Pricing Rule). After Items so item_code/UOM links resolve.
+        if any(i.get("PriceLevels") for i in masters.items):
+            steps.append(PipelineStep("Prices", 82, self.importer.import_prices, masters.items))
         # Ledger account opening balances (cash, assets, P&L) - one balanced,
         # submitted Opening Entry (JE) once every account exists. Party balances
         # NO LONGER go through this path: they post invoice-wise below, so the JE

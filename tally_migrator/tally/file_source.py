@@ -293,6 +293,53 @@ class FileTallySource:
             out[name] = igst or ""
         return out
 
+    def item_price_levels(self) -> dict:
+        """``{stock item name: [{level, date, rate, discount, ending}, ...]}``.
+
+        Reads Tally price levels from FULLPRICELIST.LIST (one per price level +
+        effective DATE), each carrying PRICELEVELLIST.LIST slabs (ENDINGAT / RATE /
+        DISCOUNT). Per price level we keep the latest DATE only (price revisions
+        collapse to the current price) and the first slab (single-slab is the norm).
+        Raw strings are returned; the importer parses rate/uom/qty."""
+        out: dict = {}
+        for elem in self._by_tag.get("STOCKITEM", ()):
+            name = (elem.get("NAME") or elem.findtext("NAME") or "").strip()
+            if not name:
+                continue
+            by_level: dict = {}     # level -> (date, slab dict)
+            for fp in elem.iter():
+                if fp.tag.split("}")[-1].upper() != "FULLPRICELIST.LIST":
+                    continue
+                date = level = ""
+                slabs = []
+                for ch in fp:
+                    t = ch.tag.split("}")[-1].upper()
+                    if t == "DATE":
+                        date = (ch.text or "").strip()
+                    elif t == "PRICELEVEL":
+                        level = (ch.text or "").strip()
+                    elif t == "PRICELEVELLIST.LIST":
+                        row = {}
+                        for c in ch:
+                            ct = c.tag.split("}")[-1].upper()
+                            if ct in ("ENDINGAT", "RATE", "DISCOUNT"):
+                                row[ct.lower()] = (c.text or "").strip()
+                        if row:
+                            slabs.append(row)
+                if not level or not slabs:
+                    continue
+                prev = by_level.get(level)
+                # YYYYMMDD strings sort chronologically; keep the latest revision.
+                if prev is None or date > prev[0]:
+                    by_level[level] = (date, slabs[0])
+            if by_level:
+                out[name] = [
+                    {"level": lvl, "date": d, "rate": s.get("rate", ""),
+                     "discount": s.get("discount", ""), "ending": s.get("endingat", "")}
+                    for lvl, (d, s) in by_level.items()
+                ]
+        return out
+
     # ── Field resolution (tag overrides + nested .LIST descent) ────────────────
     @classmethod
     def _resolve_field(cls, elem, candidates: list) -> str:
