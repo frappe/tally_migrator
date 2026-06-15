@@ -249,6 +249,8 @@ class TallyExtractor:
         self._attach_item_gst_rates(masters.items)
         # Attach each item's price levels (Retail/Wholesale rates + discounts).
         self._attach_item_price_levels(masters.items)
+        # Attach each item's bills of materials (component lists).
+        self._attach_item_boms(masters.items)
         return masters
 
     def _attach_item_gst_rates(self, items: list[dict]) -> None:
@@ -268,6 +270,15 @@ class TallyExtractor:
         levels = self.client.item_price_levels()
         for it in items:
             it.setdefault("PriceLevels", levels.get(it.get("_name", ""), []))
+
+    def _attach_item_boms(self, items: list[dict]) -> None:
+        """Set ``Boms`` (list of {name, basic_qty, components}) on each item dict.
+        No-op when the source can't supply it (live client)."""
+        if not hasattr(self.client, "item_boms"):
+            return
+        boms = self.client.item_boms()
+        for it in items:
+            it.setdefault("Boms", boms.get(it.get("_name", ""), []))
 
     @staticmethod
     def _dedup_by_name(records: list[dict]) -> list[dict]:
