@@ -418,6 +418,19 @@ class TestStep2Classification(unittest.TestCase):
         self.assertEqual(c["shape"], "freetext")
         self.assertEqual(c["fill_rate"], 0.0)
 
+    def test_dedicated_importer_tags_count_as_imported(self):
+        # Price levels (FULLPRICELIST.LIST) and the BoM component list
+        # (MULTICOMPONENTLIST.LIST) are migrated by dedicated importers (Price /
+        # BOM), so they must read as imported, not as dropped data, in the no-loss
+        # report - otherwise the tool under-reports what it actually migrates.
+        tags = {
+            "FULLPRICELIST.LIST": _rich(5, 2, ["Retail", "Wholesale"]),
+            "MULTICOMPONENTLIST.LIST": _rich(3, 1, ["Kit"]),
+        }
+        report = coverage_report(_Src({"Stock Item": tags}))
+        self.assertEqual(report["unmapped_field_count"], 0)
+        self.assertGreaterEqual(report["imported_field_count"], 2)
+
 
 if __name__ == "__main__":
     unittest.main()

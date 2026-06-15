@@ -45,6 +45,15 @@ _TAGS_BY_TYPE: dict[str, dict] = {
 }
 
 
+# Stock Item child structures migrated by purpose-built importers (not via the
+# ITEM_FIELDS FETCH list): price levels -> Price List + Item Price (PriceImporter),
+# and the multiple-BoM component list -> ERPNext BOM (BomImporter). Counted as
+# imported in the coverage report so they don't read as dropped data.
+_DEDICATED_IMPORTER_TAGS: dict[str, tuple] = {
+    "Stock Item": ("FULLPRICELIST.LIST", "MULTICOMPONENTLIST.LIST"),
+}
+
+
 def _read_tags(obj_type: str, fields: list) -> set[str]:
     """The set of top-level tags the parser actually reads for these fields -
     exactly mirroring ``FileTallySource.get_collection``: a field's tag override
@@ -480,8 +489,13 @@ def coverage_report(source) -> dict:
     recognized_prefixes: set = set()   # current taxes we saw but deliberately skip
     hr_fields_seen: set = set()        # employee/HR Cost-Centre tags, deliberately skip
     for obj_type, fields in MAPPED_FIELDS.items():
-        mapped = _read_tags(obj_type, fields) | {"NAME"}
-        written = _read_tags(obj_type, WRITTEN_FIELDS.get(obj_type, fields)) | {"NAME"}
+        # Tags handled by a dedicated importer rather than a FETCH-list field (their
+        # nested structure is read by a purpose-built extractor method), so they count
+        # as imported, not as dropped data.
+        extra = {_norm(t) for t in _DEDICATED_IMPORTER_TAGS.get(obj_type, ())}
+        mapped = _read_tags(obj_type, fields) | {"NAME"} | extra
+        written = (_read_tags(obj_type, WRITTEN_FIELDS.get(obj_type, fields))
+                   | {"NAME"} | extra)
         read_not_written = mapped - written
         read_leaves = _read_leaf_tags(obj_type, fields)
         tags = source.raw_tags(obj_type)
