@@ -209,7 +209,7 @@ class TestOpeningConcurrencyLock(unittest.TestCase):
         from tally_migrator.erpnext.importers import ERPNextImporter
         with mock.patch("frappe.get_value", return_value="TC"):
             imp = ERPNextImporter("_T Co")
-        with mock.patch.object(importers, "_company_opening_lock") as lock:
+        with mock.patch.object(importers.orchestrator, "_company_opening_lock") as lock:
             lock.return_value.__enter__ = mock.Mock(return_value=False)
             lock.return_value.__exit__ = mock.Mock(return_value=False)
             result = imp.import_opening_balances([], [], [], "2026-01-01")
@@ -308,17 +308,17 @@ class TestHsnValidationToggle(unittest.TestCase):
     restores it, self-healing via a cache marker if a worker is hard-killed."""
 
     def test_noop_when_india_compliance_absent(self):
-        with mock.patch.object(importers, "_hsn_validation_field_present",
+        with mock.patch.object(importers.hsn, "_hsn_validation_field_present",
                                return_value=False):
             with importers._hsn_validation_suspended() as suspended:
                 self.assertFalse(suspended)
 
     def test_disables_on_entry_and_restores_on_exit(self):
         calls = []
-        with mock.patch.object(importers, "_hsn_validation_field_present",
+        with mock.patch.object(importers.hsn, "_hsn_validation_field_present",
                                return_value=True), \
                 mock.patch("frappe.db.get_single_value", return_value=1), \
-                mock.patch.object(importers, "_set_hsn_validation",
+                mock.patch.object(importers.hsn, "_set_hsn_validation",
                                   side_effect=lambda v: calls.append(v)), \
                 mock.patch("frappe.cache") as cache:
             with importers._hsn_validation_suspended() as suspended:
@@ -330,10 +330,10 @@ class TestHsnValidationToggle(unittest.TestCase):
 
     def test_noop_when_setting_already_off(self):
         calls = []
-        with mock.patch.object(importers, "_hsn_validation_field_present",
+        with mock.patch.object(importers.hsn, "_hsn_validation_field_present",
                                return_value=True), \
                 mock.patch("frappe.db.get_single_value", return_value=0), \
-                mock.patch.object(importers, "_set_hsn_validation",
+                mock.patch.object(importers.hsn, "_set_hsn_validation",
                                   side_effect=lambda v: calls.append(v)):
             with importers._hsn_validation_suspended() as suspended:
                 self.assertFalse(suspended)
@@ -341,9 +341,9 @@ class TestHsnValidationToggle(unittest.TestCase):
 
     def test_restore_guard_reenables_when_marker_present(self):
         with mock.patch("frappe.cache") as cache, \
-                mock.patch.object(importers, "_hsn_validation_field_present",
+                mock.patch.object(importers.hsn, "_hsn_validation_field_present",
                                   return_value=True), \
-                mock.patch.object(importers, "_set_hsn_validation") as setter:
+                mock.patch.object(importers.hsn, "_set_hsn_validation") as setter:
             cache.return_value.get_value.return_value = "1"
             importers._restore_hsn_validation()
             setter.assert_called_once_with(1)    # fail-safe: validation back ON
@@ -351,7 +351,7 @@ class TestHsnValidationToggle(unittest.TestCase):
 
     def test_restore_guard_noop_without_marker(self):
         with mock.patch("frappe.cache") as cache, \
-                mock.patch.object(importers, "_set_hsn_validation") as setter:
+                mock.patch.object(importers.hsn, "_set_hsn_validation") as setter:
             cache.return_value.get_value.return_value = None
             importers._restore_hsn_validation()
             setter.assert_not_called()
