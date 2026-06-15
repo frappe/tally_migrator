@@ -2022,7 +2022,7 @@ class TallyMigratorPage {
 				totalCreated === 1 ? "" : "s"
 			} imported, but <strong>${totalWarnings}</strong> warning${
 				totalWarnings === 1 ? "" : "s"
-			} need a look - some dependent data (e.g. an address, contact, or opening balance) was dropped. See Warnings below and the migration log.`;
+			} need a look. See Warnings below and the migration log.`;
 		}
 		let html = TallyMigratorPage.callout(headlineKind, TallyMigratorPage.iconRow(headlineKind, `${headlineMsg}`));
 
