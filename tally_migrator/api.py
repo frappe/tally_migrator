@@ -470,8 +470,23 @@ def _raw_file_bytes(file_doc) -> bytes:
     except frappe.ValidationError:
         raise                       # the size-limit rejection must propagate
     except Exception:
-        # Last resort: re-encode the str we were given. Lossless only if it was a
-        # latin-1 round-trip, but better than failing outright.
+        frappe.log_error(
+            title="tally_migrator: could not read original file bytes",
+            message=frappe.get_traceback(),
+        )
+        # The disk re-read failed, so all we have is the already-decoded str. Re-encoding
+        # it as latin-1 is lossless only if the original was a latin-1 round-trip; for a
+        # genuine UTF-16 Tally export it silently corrupts the data and the migration
+        # then imports wrong masters with no error. Fail loud by default so the user
+        # never gets silently-wrong books. Operators who knowingly handle latin-1 exports
+        # can opt back into the legacy best-effort path via site config.
+        if frappe.conf.get("tally_migrator_strict_decode", True):
+            frappe.throw(
+                frappe._(
+                    "Could not read the original bytes of this file, so it can't be "
+                    "imported safely. Please upload your Tally Masters XML again."
+                )
+            )
         encoded = content.encode("latin-1", errors="ignore")
         _assert_within_size_limit(len(encoded))
         return encoded

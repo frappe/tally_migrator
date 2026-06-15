@@ -496,7 +496,26 @@ class TallyMigratorPage {
 			frappe.call({
 				method: "tally_migrator.api.save_draft",
 				args: { payload: JSON.stringify(payload) },
-				callback: () => {},
+				callback: () => {
+					this._draftSaveFailed = false;
+				},
+				error: () => {
+					// Autosave failed (e.g. network drop). Re-queue this payload so the
+					// next change - or the unload beacon - retries it, and warn the user
+					// once so they know their progress is not being saved. Without this
+					// the wizard would silently stop persisting and an accidental reload
+					// would lose every fix.
+					if (!this._draftPending) this._draftPending = payload;
+					if (!this._draftSaveFailed) {
+						this._draftSaveFailed = true;
+						frappe.show_alert({
+							message: __(
+								"Couldn't save your progress just now. Your work is still on screen; we'll keep retrying."
+							),
+							indicator: "orange",
+						}, 7);
+					}
+				},
 			});
 		}, 600);
 	}
@@ -539,6 +558,11 @@ class TallyMigratorPage {
 				$("#btn-resume").on("click", () => this.resumeDraft(d));
 				$("#btn-discard").on("click", () => this.confirmStartOver());
 			},
+			// Intentionally silent on error: a failed draft lookup is non-destructive
+			// (the draft, if any, is safe server-side). We simply don't offer a resume
+			// banner this load rather than alarming the user on page open; the next load
+			// retries. The wizard is fully usable without it.
+			error: () => {},
 		});
 	}
 
@@ -585,7 +609,21 @@ class TallyMigratorPage {
 		clearTimeout(this._draftTimer);
 		this._draftPending = null;   // don't let the unload beacon re-save a cleared draft
 		$("#resume-banner").hide().empty();
-		frappe.call({ method: "tally_migrator.api.clear_draft", callback: () => {} });
+		frappe.call({
+			method: "tally_migrator.api.clear_draft",
+			callback: () => {},
+			error: () => {
+				// The draft was not deleted server-side, so it would be offered again on
+				// the next load. Warn the user rather than letting a stale resume banner
+				// reappear unexplained.
+				frappe.show_alert({
+					message: __(
+						"Couldn't discard the saved draft. It may reappear next time; reload and choose Start over again if so."
+					),
+					indicator: "orange",
+				}, 7);
+			},
+		});
 	}
 
 	loadERPNextCompanies() {
@@ -624,6 +662,26 @@ class TallyMigratorPage {
 				} else if (companies.length === 1) {
 					$select.val(companies[0].name);
 				}
+			},
+			error: () => {
+				// A failed load leaves the picker empty, which looks identical to "no
+				// companies exist" and silently strands the user on this step. Tell them
+				// what actually happened and offer a retry instead.
+				$("#erpnext-company").empty();
+				$("#btn-next-2").prop("disabled", true);
+				$("#company-empty")
+					.html(
+						__("Couldn't load the company list.") +
+							' <a href="#" id="btn-retry-companies">' +
+							__("Try again") +
+							"</a>"
+					)
+					.show();
+				$("#btn-retry-companies").on("click", (e) => {
+					e.preventDefault();
+					$("#company-empty").text("").hide();
+					this.loadERPNextCompanies();
+				});
 			},
 		});
 	}
