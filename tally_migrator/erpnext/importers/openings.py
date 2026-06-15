@@ -460,24 +460,19 @@ class PartyOpeningImporter:
                     "created (its import failed earlier). Fix it and re-run.")
                 continue
 
-            # Multi-currency guard (v1): an opening document posted in the company
-            # currency for a party that bills in another currency would silently
-            # misstate the balance (the exchange rate is unknown). Two independent
-            # signals, either of which marks a party foreign: the ledger's own
-            # CurrencyName differs from the Tally base currency (read from the file),
-            # or the already-created ERPNext party carries a non-company currency. The
-            # file signal is what actually fires here, since a freshly imported party
-            # has no currency set yet. Skip with a clear warning rather than post a
-            # wrong figure - the user enters that party's opening manually.
-            if (self._tally_currency_foreign(record)
+            # Forex party: post in its own currency (Option B - true multi-currency
+            # AR/AP). CurrencyISO is set in extraction only when the opening balance
+            # carried a foreign currency symbol that resolved to an ISO (Tally exports
+            # no CurrencyName tag on the party ledger), so its presence is the forex
+            # signal. We also honour an already-created party that carries a
+            # non-company default currency. Routed to a dedicated path that posts one
+            # opening invoice in the foreign currency against a currency-denominated
+            # receivable/payable account, so the outstanding tracks the foreign amount
+            # and the base reconciles.
+            if (record.get("CurrencyISO")
                     or self._is_foreign_currency_party(party_type, party)):
-                result.add_warning(
-                    tally_name,
-                    f"opening balance skipped - {party_type} '{tally_name}' uses a "
-                    "currency other than the company currency, and invoice-wise "
-                    "opening balances are single-currency in this version. Enter this "
-                    "party's opening invoices/payments manually so the exchange rate "
-                    "is correct.")
+                self._emit_forex(party_type, party, tally_name, record,
+                                 party_bills, seen, result)
                 continue
 
             ledger_signed = self._signed(ledger_amt, ledger_drcr)
@@ -542,6 +537,109 @@ class PartyOpeningImporter:
         except Exception as exc:
             frappe.db.rollback()
             result.add_error(f"{tally_name} | {bill_no}", exc)
+
+    # ── Foreign-currency openings (Option B: true multi-currency AR/AP) ────────
+    def _emit_forex(self, party_type: str, party: str, tally_name: str, record: dict,
+                    party_bills: list, seen: set, result: ImportResult) -> None:
+        """Post a forex party's opening as one foreign-currency opening invoice
+        against a currency-denominated receivable/payable account."""
+        iso = (record.get("CurrencyISO") or "").strip()
+        if not iso or iso == self._company_currency():
+            result.add_warning(
+                tally_name,
+                f"opening balance skipped - couldn't resolve the foreign currency for "
+                f"'{tally_name}'; enter its opening manually so the rate is correct.")
+            return
+        foreign, _sym, base, drcr = TallyExtractor._parse_forex_opening(
+            record.get("OpeningBalance", ""))
+        if not foreign or not base:
+            result.add_warning(
+                tally_name,
+                f"opening balance skipped - couldn't read the {iso} opening for "
+                f"'{tally_name}'.")
+            return
+        if party_bills:
+            result.add_warning(
+                tally_name,
+                f"'{tally_name}' carries bill-wise detail in {iso}; posted as a single "
+                "opening invoice (per-bill foreign-currency openings are not split in "
+                "this version).")
+        signed = self._signed(base, drcr)
+        if self._classify(party_type, signed, is_advance=False) != "invoice":
+            result.add_warning(
+                tally_name,
+                f"opening balance skipped - '{tally_name}' is a {iso} advance (credit "
+                "side); enter it manually (foreign-currency advances are not migrated "
+                "in this version).")
+            return
+        marker = f"{self._MARKER}: {tally_name} | Opening"
+        if marker in seen:
+            result.skipped += 1
+            return
+        try:
+            account = self._ensure_currency_account(party_type, iso)
+            frappe.db.set_value(party_type, party, "default_currency", iso,
+                                update_modified=False)
+            # Derive the rate from Tally's stated base, not the '@ rate' clause, so
+            # the ERPNext base equals Tally's base exactly (the books reconcile even
+            # when the stated base and foreign x clause-rate disagree by rounding).
+            rate = base / foreign
+            data = self._forex_invoice_dict(party_type, party, foreign, iso, rate,
+                                            account, marker)
+            doc = frappe.get_doc(data)
+            doc.insert(ignore_permissions=True)
+            doc.submit()
+            frappe.db.commit()
+            seen.add(marker)
+            result.add_created(doc.name, doc.doctype)
+        except Exception as exc:
+            frappe.db.rollback()
+            result.add_error(f"{tally_name} | Opening ({iso})", exc)
+
+    def _ensure_currency_account(self, party_type: str, iso: str) -> str:
+        """The company's receivable/payable account in ``iso`` (e.g. 'Debtors USD'),
+        created once under the default control account's parent. ERPNext requires the
+        party account currency to match a foreign invoice currency, so each foreign
+        currency gets its own leaf account."""
+        label = "Debtors" if party_type == "Customer" else "Creditors"
+        name = company_scoped(f"{label} {iso}", self.abbr)
+        if frappe.db.exists("Account", name):
+            return name
+        parent = frappe.db.get_value("Account", self._party_account(party_type),
+                                     "parent_account")
+        acc = frappe.get_doc({
+            "doctype": "Account", "account_name": f"{label} {iso}",
+            "parent_account": parent, "company": self.company,
+            "account_type": "Receivable" if party_type == "Customer" else "Payable",
+            "account_currency": iso, "is_group": 0,
+        })
+        acc.insert(ignore_permissions=True)
+        frappe.db.commit()
+        return acc.name
+
+    def _forex_invoice_dict(self, party_type: str, party: str, amount: float,
+                            iso: str, rate: float, account: str, marker: str) -> dict:
+        is_sales = party_type == "Customer"
+        item = {
+            "item_name": "Opening", "description": "Opening balance",
+            "uom": self._stock_uom(), "conversion_factor": 1.0, "qty": 1,
+            "rate": amount,
+            ("income_account" if is_sales else "expense_account"): self._temp_account(),
+            "cost_center": self._cost_center(),
+        }
+        data = {
+            "doctype": "Sales Invoice" if is_sales else "Purchase Invoice",
+            "company": self.company, "is_opening": "Yes", "set_posting_time": 1,
+            "posting_date": self.posting_date, "due_date": self.posting_date,
+            frappe.scrub(party_type): party, "items": [item],
+            "currency": iso, "conversion_rate": rate,
+            ("debit_to" if is_sales else "credit_to"): account,
+            "update_stock": 0, "disable_rounded_total": 1, "remarks": marker,
+        }
+        if not is_sales:
+            data["bill_no"] = "Opening"
+            data["bill_date"] = self.posting_date
+        return data
 
     def _insert_invoice(self, data: dict, set_name, tally_name: str, bill_no: str,
                         result: ImportResult):
