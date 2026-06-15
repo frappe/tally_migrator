@@ -114,6 +114,35 @@ class TestPriceImporter(unittest.TestCase):
         self.assertEqual(created, [])
         self.assertEqual(res.skipped, 1)
 
+    def test_falls_back_to_stock_uom_when_price_uom_invalid_for_item(self):
+        imp = self._imp()
+        res = ImportResult("Item Price")
+        created = []
+
+        def fake_get_doc(d):
+            created.append(d)
+            return types.SimpleNamespace(name="IP", insert=lambda **k: None)
+
+        def fake_exists(dt, filt=None):
+            if dt == "Item":
+                return True
+            if dt == "UOM Conversion Detail":
+                return False          # 'Ream' is NOT an additional uom of the item
+            if dt in ("Price List", "Item Price"):
+                return False
+            return False
+        with mock.patch("frappe.db.exists", side_effect=fake_exists), \
+                mock.patch("frappe.db.get_value", return_value="Nos"), \
+                mock.patch("frappe.get_doc", side_effect=fake_get_doc), \
+                mock.patch("frappe.db.commit"):
+            imp._import_level(res, "A4 Paper Ream", {
+                "level": "Retail", "date": "20260401",
+                "rate": "398.00/Ream", "discount": "", "ending": ""})
+
+        ip = next(d for d in created if d["doctype"] == "Item Price")
+        self.assertEqual(ip["uom"], "Nos")               # fell back to stock uom, no hard fail
+        self.assertTrue(any("not a unit of item" in w["reason"] for w in res.warnings))
+
     def test_no_rate_creates_nothing(self):
         imp = self._imp()
         res = ImportResult("Item Price")

@@ -109,5 +109,21 @@ class TestTaxTemplateResolution(unittest.TestCase):
         self.assertNotIn("taxes", doc)
 
 
+class TestItemUomResolution(unittest.TestCase):
+    """An item must adopt its Tally base unit when a UOM by that name exists (the
+    unit importer created it) - matching the pre-flight resolver - instead of
+    silently defaulting to 'Nos', which would mismatch its price levels / BOM."""
+
+    def test_resolve_uom_order(self):
+        from tally_migrator.tally.mappings import DEFAULT_UOM
+        imp = ItemImporter(company="X", abbr="X", uom_overrides={"Dz": "Dozen"})
+        self.assertEqual(imp._resolve_uom("Dz"), "Dozen")            # override wins
+        with mock.patch("frappe.db.exists", return_value=True):
+            self.assertEqual(imp._resolve_uom("Ream"), "Ream")      # UOM exists -> its name
+        with mock.patch("frappe.db.exists", return_value=False):
+            self.assertEqual(imp._resolve_uom("Zzz"), DEFAULT_UOM)  # unknown -> default
+        self.assertEqual(imp._resolve_uom(""), DEFAULT_UOM)
+
+
 if __name__ == "__main__":
     unittest.main()
