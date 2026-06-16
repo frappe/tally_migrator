@@ -26,9 +26,24 @@ Supplier, UOM, Item Group) a migration creates. We reuse its safety helpers
 
 import frappe
 from frappe import _
-from frappe.utils import get_link_to_form
+from frappe.utils import get_link_to_form, now_datetime, time_diff_in_seconds
 
 from tally_migrator.api import ALLOWED_ROLES
+
+# The background job's own timeout (see ``enqueue`` below). A revert still flagged
+# Queued/In Progress for longer than this, plus a margin, cannot still be running -
+# the worker was killed, timed out, or OOM'd before its ``except`` could mark it
+# Failed - so a fresh revert is allowed to supersede it (see ``revert_migration``).
+_JOB_TIMEOUT = 3600
+_STALE_AFTER = _JOB_TIMEOUT + 600
+
+# Commit completed deletions in batches rather than holding the whole revert in one
+# transaction (ERPNext's Transaction Deletion Record does the same): a large
+# migration would otherwise hold row locks for the entire run and risk lock-wait
+# timeouts, and a crash near the end would roll back everything. Each record is
+# atomic via its own savepoint, so committing between records is safe; a crash mid-run
+# leaves a prefix deleted, and a re-run is idempotent (already-gone records are skipped).
+_COMMIT_BATCH = 50
 
 # Maps a legacy log's bare-string entries (older runs stored just a name per
 # pipeline label) to a doctype. New runs store ``{name, doctype}`` and don't need
@@ -131,6 +146,23 @@ def _deletion_order(created: dict) -> list[dict]:
 # can be deleted. They are scoped by voucher_no, so only this voucher's entries go.
 _LEDGER_DOCTYPES = ("GL Entry", "Payment Ledger Entry", "Stock Ledger Entry")
 
+# Derived records ERPNext auto-generates around a master - recompute queues and
+# unit-conversion rows - that link the master but are NOT business data and never
+# enter our manifest. They block an unforced delete (e.g. a Repost Item Valuation
+# queued when the opening Stock Reconciliation is cancelled keeps every item alive;
+# a UOM Conversion Factor for an imported compound unit keeps its UOMs alive). We
+# clear only the rows tied to the master being removed - the same records ERPNext's
+# Transaction Deletion Record purges - so deletion is not blocked by our own
+# import's side effects. Maps master doctype -> (side-effect doctype, field) pairs.
+_SIDE_EFFECTS = {
+    "Item": (("Repost Item Valuation", "item_code"),),
+    "UOM": (("UOM Conversion Factor", "from_uom"),
+            ("UOM Conversion Factor", "to_uom"),
+            # India Compliance's GST Settings child rows the UQC step writes; absent
+            # on a site without india_compliance, so the purge is table-guarded.
+            ("GST UOM Map", "uom")),
+}
+
 
 def _drop_queued_messages(mark: int) -> None:
     """Discard framework messages queued since ``mark``.
@@ -143,6 +175,81 @@ def _drop_queued_messages(mark: int) -> None:
     log = getattr(frappe.local, "message_log", None)
     if isinstance(log, list) and len(log) > mark:
         del log[mark:]
+
+
+def _safe_savepoint_rollback(savepoint: str) -> None:
+    """Roll back this record's savepoint; fall back to a full rollback if it's gone.
+
+    The per-record safety guarantee rests on this savepoint. It is normally present,
+    but a doctype's ``on_cancel`` handler *could* commit mid-record (some stock/repost
+    paths do), which silently discards the savepoint and makes ``ROLLBACK TO SAVEPOINT``
+    raise. Rather than let that abort the whole revert, fall back to rolling back the
+    open transaction - safe because the loop batch-commits completed records, so this
+    discards at most the current partial record and any others since the last commit,
+    all of which a re-run will simply redo (deletion is idempotent)."""
+    try:
+        frappe.db.rollback(save_point=savepoint)
+    except Exception:
+        frappe.db.rollback()
+
+
+def _purge_party_links(party_type: str, party: str) -> list[dict]:
+    """Release the Address/Contact/Bank Account records that keep a party undeletable.
+
+    A party's contact info is created alongside it (from Tally party data), is not
+    in the manifest, and is linked by a Dynamic Link row (a child of the Address /
+    Contact) that keeps the party undeletable - ERPNext does not cascade it.
+
+    Critical safety rule: an Address/Contact can be linked to *several* parties, and
+    because the link lives on the address side, ``delete_doc`` would NOT refuse to
+    delete a shared one - it would succeed and silently strip the record from a
+    party this migration never touched. So we only delete a record that links to no
+    party other than this one; if it is shared, we drop just this party's own link
+    row, leaving the record intact for the others. Either way the party can then be
+    removed. Deleting an unshared record stays unforced, so if some *other* document
+    (e.g. a later user invoice's ``customer_address``) still references it, the
+    delete raises, propagates to the caller, and the party is kept and reported
+    rather than the record being force-removed.
+
+    Returns the business records it deleted (``[{doctype, name}]``) so the caller can
+    list them in the revert report - these are real Tally data (a party's addresses,
+    contacts, bank accounts), not silent plumbing, so the audit must show them.
+    """
+    purged: list[dict] = []
+    for linked_dt in ("Contact", "Address"):
+        names = frappe.get_all(
+            "Dynamic Link",
+            filters={"link_doctype": party_type, "link_name": party,
+                     "parenttype": linked_dt},
+            pluck="parent")
+        for nm in set(names):
+            if not frappe.db.exists(linked_dt, nm):
+                continue
+            links = frappe.get_all(
+                "Dynamic Link",
+                filters={"parent": nm, "parenttype": linked_dt},
+                fields=["link_doctype", "link_name"])
+            shared = any((l.link_doctype, l.link_name) != (party_type, party)
+                         for l in links)
+            if shared:
+                # Keep the record for the other party; remove only our own link so
+                # this party stops being referenced and can be deleted.
+                frappe.db.delete("Dynamic Link",
+                                 {"parent": nm, "parenttype": linked_dt,
+                                  "link_doctype": party_type, "link_name": party})
+            else:
+                frappe.delete_doc(linked_dt, nm, ignore_permissions=True)
+                purged.append({"doctype": linked_dt, "name": nm})
+    # A Bank Account created for the party (from Tally bank details) links it via its
+    # own party_type/party fields and blocks the delete too. It belongs to exactly one
+    # party (not a shared child-link record), so there is no shared-record case here.
+    for nm in frappe.get_all("Bank Account",
+                             filters={"party_type": party_type, "party": party},
+                             pluck="name"):
+        if frappe.db.exists("Bank Account", nm):
+            frappe.delete_doc("Bank Account", nm, ignore_permissions=True)
+            purged.append({"doctype": "Bank Account", "name": nm})
+    return purged
 
 
 def _delete_one(row: dict, protected: set) -> str | None:
@@ -171,6 +278,21 @@ def _delete_one(row: dict, protected: set) -> str | None:
             doc.cancel()
             for ledger in _LEDGER_DOCTYPES:
                 frappe.db.delete(ledger, {"voucher_no": name})
+        # Clear ERPNext's derived side-effect rows for this master (Repost Item
+        # Valuation, UOM Conversion Factor, GST UOM Map) before the delete, so they
+        # don't block it. Scoped to this master's name, inside the savepoint, so a
+        # failure here rolls back with the rest of this record's attempt. Guarded by
+        # table_exists so a doctype an optional app owns (GST UOM Map) is simply
+        # skipped when that app is not installed.
+        for se_doctype, field in _SIDE_EFFECTS.get(doctype, ()):
+            if frappe.db.table_exists(se_doctype):
+                frappe.db.delete(se_doctype, {field: name})
+        # A party's Address/Contact (created from Tally party data) is dynamically
+        # linked and blocks its delete; ERPNext never cascades them. Remove them so
+        # the party can go - unforced, so one shared with another party stays and the
+        # party is reported kept rather than corrupting the shared record.
+        if doctype in ("Customer", "Supplier"):
+            row["_purged"] = _purge_party_links(doctype, name)
         # force=False is deliberate: it keeps frappe's link-existence check, which is
         # the ONLY thing protecting a master (Item/Customer/Supplier/Cost Center -
         # whose on_trash does NOT guard against linked transactions) from being deleted
@@ -183,7 +305,7 @@ def _delete_one(row: dict, protected: set) -> str | None:
         frappe.delete_doc(doctype, name, ignore_permissions=True)
         return None
     except Exception as exc:
-        frappe.db.rollback(save_point=savepoint)
+        _safe_savepoint_rollback(savepoint)
         # Almost always a link from activity created *after* the migration (a later
         # invoice/payment, stock still in a warehouse). Keep the record and tell the
         # user why, rather than forcing the delete and corrupting their books.
@@ -215,14 +337,27 @@ def revert_migration(log_name: str, company_confirmation: str):
         frappe.throw(_("This migration has already been reverted."))
 
     # One revert at a time per log - block a double-click, pointing at the run
-    # already in flight (the same guard ERPNext's TDR uses).
+    # already in flight (the same guard ERPNext's TDR uses). But a revert flagged
+    # Queued/In Progress past the job timeout cannot still be running (the worker was
+    # killed/timed out before its except could mark it Failed); mark such a corpse
+    # Failed and let this new revert proceed, so a crash never wedges the feature.
     in_flight = frappe.get_all(
         "Tally Migration Revert",
         filters={"migration_log": log.name, "status": ("in", ["Queued", "In Progress"])},
-        pluck="name")
-    if in_flight:
+        fields=["name", "modified"])
+    live = []
+    for r in in_flight:
+        if time_diff_in_seconds(now_datetime(), r.modified) > _STALE_AFTER:
+            frappe.db.set_value("Tally Migration Revert", r.name, {
+                "status": "Failed",
+                "error_log": _("Marked Failed: the background job exceeded its timeout "
+                               "without completing (worker killed, timed out, or OOM)."),
+            })
+        else:
+            live.append(r.name)
+    if live:
         frappe.throw(_("An undo is already in progress for this migration: {0}.").format(
-            get_link_to_form("Tally Migration Revert", in_flight[0])))
+            get_link_to_form("Tally Migration Revert", live[0])))
 
     created = frappe.parse_json(log.created_records or "{}")
     if not _deletion_order(created):
@@ -238,10 +373,34 @@ def revert_migration(log_name: str, company_confirmation: str):
     frappe.enqueue(
         "tally_migrator.migration.rollback.run_revert",
         queue="long",
-        timeout=3600,
+        timeout=_JOB_TIMEOUT,
         revert_name=revert.name,
     )
     return {"revert": revert.name}
+
+
+@frappe.whitelist()
+def preview_revert(log_name: str) -> dict:
+    """Read-only dry summary of what an undo *would* delete, for the confirm dialog.
+
+    Reads the manifest and breaks the would-delete documents down by doctype, so the
+    user sees ``12 Item, 5 Customer, 3 Journal Entry...`` before arming the action,
+    not just a bare total. Deletes nothing and writes nothing - the heavy cancel/delete
+    work only happens in the enqueued run after confirmation.
+    """
+    frappe.only_for(ALLOWED_ROLES)
+    log = frappe.get_doc("Tally Migration Log", log_name)
+    rows = _deletion_order(frappe.parse_json(log.created_records or "{}"))
+    by_doctype: dict[str, int] = {}
+    for r in rows:
+        by_doctype[r["doctype"]] = by_doctype.get(r["doctype"], 0) + 1
+    return {
+        "total": len(rows),
+        "company": log.company,
+        "already_reverted": log.status == "Reverted",
+        # Most-numerous doctype first, so the dialog leads with the bulk of the work.
+        "by_doctype": dict(sorted(by_doctype.items(), key=lambda kv: -kv[1])),
+    }
 
 
 def run_revert(revert_name: str) -> None:
@@ -259,20 +418,75 @@ def run_revert(revert_name: str) -> None:
         rows = _deletion_order(frappe.parse_json(log.created_records or "{}"))
         protected = _protected_doctypes()
 
+        # Records absent before we start (manifest entries this run never actually
+        # created, or ones a user removed earlier) are reported honestly as "already
+        # absent" rather than counted among this undo's deletions. Snapshot now,
+        # before the loop, so a record that genuinely cascades with a parent we delete
+        # this run is NOT mistaken for one that was already gone.
+        pre_absent = {id(r) for r in rows
+                      if not frappe.db.exists(r["doctype"], r["name"])}
+
+        # Delete in dependency order, then retry whatever was kept. A record can be
+        # blocked on the first pass by a sibling removed later in the same run (a UOM
+        # still held by an Item deleted afterwards; a party still linked by a voucher
+        # processed later). Repeat until a pass deletes nothing new, so only records
+        # genuinely re-linked by post-migration activity are left kept. Completed
+        # deletions are committed in batches (see _COMMIT_BATCH) to release locks and
+        # bound how much a crash can roll back.
+        done_ids: set[int] = set()
+        since_commit = 0
+        pending = list(rows)
+        while pending:
+            still, progressed = [], False
+            for row in pending:
+                reason = _delete_one(row, protected)
+                if reason:
+                    row["_reason"] = reason
+                    still.append(row)
+                else:
+                    progressed = True
+                    done_ids.add(id(row))
+                    since_commit += 1
+                    if since_commit >= _COMMIT_BATCH:
+                        frappe.db.commit()
+                        since_commit = 0
+            pending = still
+            if not progressed:
+                break
+        frappe.db.commit()  # flush the final, partial batch of deletions
+
         deleted = kept = 0
         for row in rows:
-            reason = _delete_one(row, protected)
-            revert.append("records", {
-                "deleted": 0 if reason else 1,
-                "reference_doctype": row["doctype"],
-                "reference_name": row["name"],
-                "entity": row["label"],
-                "reason": reason or "",
-            })
-            if reason:
-                kept += 1
-            else:
+            rid = id(row)
+            # Checked before done_ids: a record absent at the start also returns "no
+            # reason" from _delete_one (nothing to delete), so it lands in done_ids too -
+            # but it must be reported as already-absent, not counted as a deletion.
+            if rid in pre_absent:
+                revert.append("records", {
+                    "deleted": 0, "reference_doctype": row["doctype"],
+                    "reference_name": row["name"], "entity": row["label"],
+                    "reason": _("Already absent before this undo - not created by this "
+                                "run, or removed earlier.")})
+            elif rid in done_ids:
+                revert.append("records", {
+                    "deleted": 1, "reference_doctype": row["doctype"],
+                    "reference_name": row["name"], "entity": row["label"], "reason": ""})
                 deleted += 1
+                # Party-attached business data (addresses, contacts, bank accounts)
+                # removed alongside the party - listed so the audit shows them too.
+                for p in row.get("_purged", []):
+                    revert.append("records", {
+                        "deleted": 1, "reference_doctype": p["doctype"],
+                        "reference_name": p["name"],
+                        "entity": _("{0} (linked to {1})").format(row["label"], row["name"]),
+                        "reason": ""})
+                    deleted += 1
+            else:
+                revert.append("records", {
+                    "deleted": 0, "reference_doctype": row["doctype"],
+                    "reference_name": row["name"], "entity": row["label"],
+                    "reason": row.get("_reason", "")})
+                kept += 1
 
         revert.deleted_count = deleted
         revert.kept_count = kept
@@ -280,8 +494,11 @@ def run_revert(revert_name: str) -> None:
         revert.save(ignore_permissions=True)
 
         # The one honest edit to the log: its status must tell the truth everywhere
-        # (list view, form, filters). The import path never sets this value.
-        log.db_set("status", "Reverted")
+        # (list view, form, filters). The import path never sets this value. A clean
+        # undo is the terminal "Reverted" (the action is then withdrawn); one that kept
+        # records becomes "Reverted with Errors", which deliberately stays re-runnable
+        # so the user can retry after fixing the cause (a re-run is idempotent).
+        log.db_set("status", "Reverted with Errors" if kept else "Reverted")
         frappe.db.commit()
     except Exception:
         frappe.db.rollback()
@@ -291,6 +508,9 @@ def run_revert(revert_name: str) -> None:
         frappe.db.commit()
         raise
     finally:
+        # Notify the user who launched the undo (the revert's owner) - in a background
+        # job frappe.session.user is the worker's, not theirs, so it would not reach
+        # the form they are watching.
         frappe.publish_realtime(
             "tally_revert_updated", {"revert": revert_name},
-            user=frappe.session.user)
+            user=frappe.db.get_value("Tally Migration Revert", revert_name, "owner"))

@@ -1049,12 +1049,16 @@ function tally_rollback_attach(frm) {
 		created = {};
 	}
 	const total = Object.values(created).reduce((n, names) => n + (names || []).length, 0);
+	// A clean undo flips the log to "Reverted" and the action is withdrawn. One that
+	// kept records becomes "Reverted with Errors" and stays offered, relabelled, so the
+	// user can retry after fixing the cause (the re-run is idempotent server-side).
 	if (!total || frm.doc.status === "Reverted") return;
+	const retry = frm.doc.status === "Reverted with Errors";
 
 	// Tucked inside the standard "Actions" menu rather than a loud standalone
 	// button - it's a rare, destructive operation.
 	frm.add_custom_button(
-		__("Undo This Migration"),
+		retry ? __("Retry Undo (records remained)") : __("Undo This Migration"),
 		() => tally_rollback_confirm(frm, total),
 		__("Actions")
 	);
@@ -1062,6 +1066,26 @@ function tally_rollback_attach(frm) {
 
 function tally_rollback_confirm(frm, total) {
 	const company = frm.doc.company || "";
+	// Pull a server-authoritative breakdown of what will be deleted, so the dialog
+	// shows "12 Item, 5 Customer, 3 Journal Entry..." rather than a bare count. Purely
+	// read-only; nothing is deleted until the user confirms below.
+	frappe.call({
+		method: "tally_migrator.migration.rollback.preview_revert",
+		args: { log_name: frm.doc.name },
+		callback: (r) => tally_rollback_dialog(frm, company, r.message || { total }),
+	});
+}
+
+function tally_rollback_dialog(frm, company, preview) {
+	const total = preview.total || 0;
+	const breakdown = Object.entries(preview.by_doctype || {})
+		.map(
+			([dt, n]) =>
+				`<li><strong>${n}</strong> ${frappe.utils.escape_html(
+					__(dt)
+				)}${n === 1 ? "" : "s"}</li>`
+		)
+		.join("");
 	const d = new frappe.ui.Dialog({
 		title: __("Undo This Migration"),
 		fields: [
@@ -1072,6 +1096,11 @@ function tally_rollback_confirm(frm, total) {
 						<p>This will <strong>permanently delete</strong> the
 						<strong>${total}</strong> ERPNext document(s) this import created -
 						including any opening entries, invoices and stock reconciliations.</p>
+						${
+							breakdown
+								? `<ul style="padding-left:18px; columns:2; color:var(--text-muted); margin-bottom:8px;">${breakdown}</ul>`
+								: ""
+						}
 						<ul style="padding-left:18px; color:var(--text-muted);">
 							<li>Submitted entries are cancelled first, then deleted.</li>
 							<li>Anything now linked to activity created <em>after</em> this

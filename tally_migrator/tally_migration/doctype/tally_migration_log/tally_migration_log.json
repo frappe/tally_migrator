@@ -97,7 +97,7 @@
    "fieldname": "status",
    "fieldtype": "Select",
    "label": "Status",
-   "options": "\nRunning\nCompleted\nCompleted with Errors\nFailed\nReverted",
+   "options": "\nRunning\nCompleted\nCompleted with Errors\nFailed\nReverted\nReverted with Errors",
    "default": "Running",
    "in_list_view": 1,
    "in_standard_filter": 1,
