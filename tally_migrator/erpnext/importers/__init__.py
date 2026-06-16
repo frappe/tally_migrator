@@ -31,6 +31,7 @@ from .items import ItemImporter
 from .warehouses import WarehouseImporter, StockGroupImporter
 from .units import UnitImporter
 from .prices import PriceImporter
+from .bom import BomImporter
 from .accounts import AccountImporter, CostCentreImporter
 from .hsn import (
     _HSN_GUARD_KEY,

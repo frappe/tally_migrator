@@ -340,6 +340,46 @@ class FileTallySource:
                 ]
         return out
 
+    def item_boms(self) -> dict:
+        """``{stock item name: [{name, basic_qty, components:[...]}]}``.
+
+        Reads Tally bills of materials from MULTICOMPONENTLIST.LIST (Tally supports
+        multiple BOMs per item), each carrying COMPONENTLISTNAME, COMPONENTBASICQTY
+        ("1 Nos" = qty the BOM makes) and MULTICOMPONENTITEMLIST.LIST components
+        (NATUREOFITEM / STOCKITEMNAME / GODOWNNAME / ACTUALQTY "1 Ream"). The legacy
+        empty COMPONENTLIST.LIST is ignored. Raw strings; the importer parses qty/uom."""
+        out: dict = {}
+        for elem in self._by_tag.get("STOCKITEM", ()):
+            name = (elem.get("NAME") or elem.findtext("NAME") or "").strip()
+            if not name:
+                continue
+            boms = []
+            for mc in elem.iter():
+                if mc.tag.split("}")[-1].upper() != "MULTICOMPONENTLIST.LIST":
+                    continue
+                bom_name = basic_qty = ""
+                comps = []
+                for ch in mc:
+                    t = ch.tag.split("}")[-1].upper()
+                    if t == "COMPONENTLISTNAME":
+                        bom_name = (ch.text or "").strip()
+                    elif t == "COMPONENTBASICQTY":
+                        basic_qty = (ch.text or "").strip()
+                    elif t == "MULTICOMPONENTITEMLIST.LIST":
+                        row = {}
+                        for c in ch:
+                            ct = c.tag.split("}")[-1].upper()
+                            if ct in ("NATUREOFITEM", "STOCKITEMNAME", "GODOWNNAME", "ACTUALQTY"):
+                                row[ct.lower()] = (c.text or "").strip()
+                        if row.get("stockitemname"):
+                            comps.append(row)
+                if comps:
+                    boms.append({"name": bom_name or name, "basic_qty": basic_qty,
+                                 "components": comps})
+            if boms:
+                out[name] = boms
+        return out
+
     # ── Field resolution (tag overrides + nested .LIST descent) ────────────────
     @classmethod
     def _resolve_field(cls, elem, candidates: list) -> str:

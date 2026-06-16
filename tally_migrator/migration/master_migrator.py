@@ -285,6 +285,10 @@ class MasterMigrator:
         # Pricing Rule). After Items so item_code/UOM links resolve.
         if any(i.get("PriceLevels") for i in masters.items):
             steps.append(PipelineStep("Prices", 82, self.importer.import_prices, masters.items))
+        # Bills of materials -> ERPNext BOM (submitted). After Items so the finished
+        # item and every component exist.
+        if any(i.get("Boms") for i in masters.items):
+            steps.append(PipelineStep("BOMs", 84, self.importer.import_boms, masters.items))
         # Ledger account opening balances (cash, assets, P&L) - one balanced,
         # submitted Opening Entry (JE) once every account exists. Party balances
         # NO LONGER go through this path: they post invoice-wise below, so the JE
