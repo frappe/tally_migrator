@@ -95,14 +95,17 @@ class TestEnsureCurrencyAccount(unittest.TestCase):
         def fake_get_doc(d):
             captured.update(d)
             return types.SimpleNamespace(name="Debtors USD - FT", insert=lambda **k: None)
+        res = ImportResult("Opening Invoice")
         with mock.patch("frappe.db.exists", return_value=False), \
                 mock.patch("frappe.db.get_value", return_value="Accounts Receivable - FT"), \
                 mock.patch("frappe.get_doc", side_effect=fake_get_doc), \
                 mock.patch("frappe.db.commit"):
-            self._imp()._ensure_currency_account("Customer", "USD")
+            self._imp()._ensure_currency_account("Customer", "USD", res)
         self.assertEqual(captured["account_currency"], "USD")
         self.assertEqual(captured["account_type"], "Receivable")
         self.assertEqual(captured["parent_account"], "Accounts Receivable - FT")
+        # The created control account is logged to the manifest so an undo removes it.
+        self.assertIn("Debtors USD - FT", res.created_names)
 
 
 class TestEmitForexGuards(unittest.TestCase):

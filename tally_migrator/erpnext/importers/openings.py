@@ -566,7 +566,7 @@ class PartyOpeningImporter:
             result.skipped += 1
             return
         try:
-            account = self._ensure_currency_account(party_type, iso)
+            account = self._ensure_currency_account(party_type, iso, result)
             frappe.db.set_value(party_type, party, "default_currency", iso,
                                 update_modified=False)
             # Derive the rate from Tally's stated base, not the '@ rate' clause, so
@@ -585,7 +585,8 @@ class PartyOpeningImporter:
             frappe.db.rollback()
             result.add_error(f"{tally_name} | Opening ({iso})", exc)
 
-    def _ensure_currency_account(self, party_type: str, iso: str) -> str:
+    def _ensure_currency_account(self, party_type: str, iso: str,
+                                 result: "ImportResult | None" = None) -> str:
         """The company's receivable/payable account in ``iso`` (e.g. 'Debtors USD'),
         created once under the default control account's parent. ERPNext requires the
         party account currency to match a foreign invoice currency, so each foreign
@@ -604,6 +605,11 @@ class PartyOpeningImporter:
         })
         acc.insert(ignore_permissions=True)
         frappe.db.commit()
+        # Record the account this run creates in the migration manifest, so an undo
+        # can remove it too. Created before the forex invoice that uses it, so within
+        # the Party Openings batch it is deleted after that invoice (reverse order).
+        if result is not None:
+            result.add_created(acc.name, "Account")
         return acc.name
 
     def _forex_invoice_dict(self, party_type: str, party: str, amount: float,
