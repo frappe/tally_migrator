@@ -47,6 +47,36 @@ class TestCurrencyIsoExtraction(unittest.TestCase):
         self.assertIsNone(by_name["Local Co"].get("CurrencyISO"))   # domestic untouched
 
 
+class TestBillForeignAmount(unittest.TestCase):
+    """A forex-shaped bill carries its foreign amount (base in ``amount``), so the
+    importer can split a forex party bill-by-bill; a plain bill carries foreign 0."""
+
+    def test_forex_and_plain_bills(self):
+        def _bill(nm, ob):
+            return (f'<BILLALLOCATIONS.LIST><NAME>{nm}</NAME><BILLDATE>20260401</BILLDATE>'
+                    f'<ISADVANCE>No</ISADVANCE><OPENINGBALANCE>{ob}</OPENINGBALANCE>'
+                    '</BILLALLOCATIONS.LIST>')
+        xml = (
+            '<ENVELOPE><BODY><IMPORTDATA><REQUESTDATA>'
+            '<TALLYMESSAGE><LEDGER NAME="FX Co"><NAME>FX Co</NAME>'
+            '<PARENT>Sundry Debtors</PARENT>'
+            '<OPENINGBALANCE>-$1000.00 @ ₹ 83/$ = -₹ 83000.00</OPENINGBALANCE>'
+            + _bill("USD-1", "-$600.00 @ ₹ 83/$ = -₹ 49800.00")
+            + '</LEDGER></TALLYMESSAGE>'
+            '<TALLYMESSAGE><LEDGER NAME="Local Co"><NAME>Local Co</NAME>'
+            '<PARENT>Sundry Debtors</PARENT><OPENINGBALANCE>-5000.00</OPENINGBALANCE>'
+            + _bill("INR-1", "-5000.00")
+            + '</LEDGER></TALLYMESSAGE>'
+            '</REQUESTDATA></IMPORTDATA></BODY></ENVELOPE>'
+        )
+        bills = {b.bill_no: b for b in
+                 TallyExtractor(FileTallySource(xml)).extract_bill_allocations()}
+        self.assertEqual(bills["USD-1"].foreign_amount, 600.0)
+        self.assertEqual(bills["USD-1"].amount, 49800.0)          # base after '='
+        self.assertEqual(bills["INR-1"].foreign_amount, 0.0)      # plain bill, no forex
+        self.assertEqual(bills["INR-1"].amount, 5000.0)
+
+
 class TestForexInvoiceDict(unittest.TestCase):
     def _imp(self):
         imp = PartyOpeningImporter.__new__(PartyOpeningImporter)
@@ -95,14 +125,17 @@ class TestEnsureCurrencyAccount(unittest.TestCase):
         def fake_get_doc(d):
             captured.update(d)
             return types.SimpleNamespace(name="Debtors USD - FT", insert=lambda **k: None)
+        res = ImportResult("Opening Invoice")
         with mock.patch("frappe.db.exists", return_value=False), \
                 mock.patch("frappe.db.get_value", return_value="Accounts Receivable - FT"), \
                 mock.patch("frappe.get_doc", side_effect=fake_get_doc), \
                 mock.patch("frappe.db.commit"):
-            self._imp()._ensure_currency_account("Customer", "USD")
+            self._imp()._ensure_currency_account("Customer", "USD", res)
         self.assertEqual(captured["account_currency"], "USD")
         self.assertEqual(captured["account_type"], "Receivable")
         self.assertEqual(captured["parent_account"], "Accounts Receivable - FT")
+        # The created control account is logged to the manifest so an undo removes it.
+        self.assertIn("Debtors USD - FT", res.created_names)
 
 
 class TestEmitForexGuards(unittest.TestCase):

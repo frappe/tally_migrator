@@ -39,8 +39,18 @@ class PriceImporter:
         item_code = safe_item_code(item_name)
         if not frappe.db.exists("Item", item_code):
             return                              # item didn't import (warned by ItemImporter)
-        if not (uom and frappe.db.exists("UOM", uom)):
-            uom = frappe.db.get_value("Item", item_code, "stock_uom")
+        # The price-level UOM must be valid FOR THE ITEM - its stock UOM or one of its
+        # additional UOMs - or ERPNext rejects the Item Price ("UOM X not found in
+        # Item"). Fall back to the item's stock UOM (and warn) rather than hard-fail.
+        stock_uom = frappe.db.get_value("Item", item_code, "stock_uom")
+        if not self._uom_valid_for_item(item_code, uom, stock_uom):
+            level = (lv.get("level") or "").strip()
+            if uom and uom != stock_uom:
+                result.add_warning(
+                    f"{item_name} ({level})",
+                    f"price-level unit '{uom}' is not a unit of item '{item_code}'; "
+                    f"used its stock unit '{stock_uom}' instead - verify the price.")
+            uom = stock_uom
         level = (lv.get("level") or "").strip()
         if not level:
             return
@@ -55,6 +65,17 @@ class PriceImporter:
         except Exception as exc:
             result.add_error(f"{item_name} ({level})", exc)
             frappe.db.rollback()
+
+    @staticmethod
+    def _uom_valid_for_item(item_code: str, uom: str, stock_uom: str) -> bool:
+        """True when ``uom`` may be used on an Item Price for this item - its stock
+        UOM or one of its additional UOMs (UOM Conversion Detail rows)."""
+        if not uom:
+            return False
+        if uom == stock_uom:
+            return True
+        return bool(frappe.db.exists(
+            "UOM Conversion Detail", {"parent": item_code, "uom": uom}))
 
     # ── upserts ────────────────────────────────────────────────────────────────
     def _ensure_price_list(self, level: str) -> str:
@@ -85,7 +106,11 @@ class PriceImporter:
         # Deterministic title is the idempotency key (Pricing Rule has no natural
         # one), so a re-run finds and skips the rule rather than duplicating it.
         title = f"Tally {price_list} discount - {item_code}"[:140]
-        if frappe.db.exists("Pricing Rule", title):
+        # Pricing Rule is autonamed by series (PRLE-####), so its document `name` is
+        # NOT the title - the idempotency key must query the title FIELD, not name
+        # (frappe.db.exists("Pricing Rule", title) tests name==title, never matches,
+        # so a re-run would duplicate the rule).
+        if frappe.db.exists("Pricing Rule", {"title": title}):
             return
         # for_price_list scopes the rule to this price list, so the discount applies
         # only when selling at that level, on its Item Price rate (Retail 398 - 10%
@@ -104,9 +129,13 @@ class PriceImporter:
         max_qty = self._parse_qty(ending)
         if max_qty:
             rule["max_qty"] = max_qty
-        frappe.get_doc(rule).insert(ignore_permissions=True)
+        # Log the autonamed document `name` (PRLE-####), not the title, so the
+        # migration-log hyperlink resolves to a real Pricing Rule. Logging the title
+        # produced a dead link (no doc is named after the title).
+        doc = frappe.get_doc(rule)
+        doc.insert(ignore_permissions=True)
         frappe.db.commit()
-        result.add_created(title, "Pricing Rule")
+        result.add_created(doc.name, "Pricing Rule")
 
     # ── parsing ─────────────────────────────────────────────────────────────────
     @staticmethod

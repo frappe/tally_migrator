@@ -126,24 +126,17 @@ def _party_openings(masters, bills) -> dict:
         the gap posts as one 'On Account' opening (a mismatch worth reviewing).
       * **lump**       - parties with an opening but no bill detail -> a single
         opening document for the whole balance.
+
+    Foreign-currency parties are posted in their own currency (one invoice per
+    foreign-amount bill, else a single invoice) and counted here too, mirroring
+    ``PartyOpeningImporter._emit_forex``; ``foreign`` reports how many there were.
     """
     by_party: dict[str, list] = {}
     for b in bills or []:
         by_party.setdefault(b.party, []).append(b)
 
-    # Tally base currency (modal ledger CurrencyName). A forex party is skipped by
-    # PartyOpeningImporter, so the preview skips it too and the doc counts match what
-    # actually posts. Equality only, never an ISO-code mapping.
-    from collections import Counter
-    _ccy = Counter(
-        (r.get("CurrencyName") or "").strip()
-        for r in (*masters.customers, *masters.suppliers)
-        if (r.get("CurrencyName") or "").strip()
-    )
-    base_ccy = _ccy.most_common(1)[0][0] if _ccy else ""
-
     invoices = advances = on_account = lump = 0
-    party_count = foreign_skipped = 0
+    party_count = foreign = 0
     mismatches: list[dict] = []
     parties_list: list[dict] = []
     for party_type, records in (("Customer", masters.customers),
@@ -155,15 +148,42 @@ def _party_openings(masters, bills) -> dict:
             party_bills = by_party.get(name, [])
             if not ledger_amt and not party_bills:
                 continue
-            # Forex party: skipped at import (currency unknown), so don't count its
-            # documents here either. Surfaced as a count so the screen can say so.
-            ccy = (record.get("CurrencyName") or "").strip()
-            if base_ccy and ccy and ccy != base_ccy:
-                foreign_skipped += 1
-                continue
             party_count += 1
-
             ledger_signed = _signed(ledger_amt, ledger_drcr)
+
+            # Forex party: posted in its own currency by PartyOpeningImporter._emit_forex
+            # (detected by CurrencyISO, resolved from the opening-string symbol - the same
+            # signal the importer uses, NOT CurrencyName, which a real export omits on a
+            # forex party). Mirror its document count: one invoice per bill that carries a
+            # foreign amount (+ a remainder), else a single consolidated invoice.
+            if (record.get("CurrencyISO") or "").strip():
+                foreign += 1
+                p_invoices = p_lump = 0
+                if _classify_party(party_type, ledger_signed, False) == "invoice":
+                    fbills = [
+                        b for b in party_bills
+                        if b.foreign_amount and _classify_party(
+                            party_type, _signed(b.amount, b.dr_cr), b.is_advance) == "invoice"]
+                    if fbills:
+                        p_invoices = len(fbills)
+                        posted = sum(_signed(b.amount, b.dr_cr) for b in fbills)
+                        residual = round(ledger_signed - posted, 2)
+                        if (abs(residual) >= _PARTY_PLUG_THRESHOLD
+                                and _classify_party(party_type, residual, False) == "invoice"):
+                            p_invoices += 1     # remainder 'Opening' invoice
+                    else:
+                        p_lump = 1              # consolidated single invoice
+                invoices += p_invoices
+                lump += p_lump
+                parties_list.append({
+                    "name": name, "party_type": party_type,
+                    "amount": round(ledger_amt, 2), "dr_cr": ledger_drcr,
+                    "invoices": p_invoices, "advances": 0, "on_account": 0,
+                    "documents": p_invoices + p_lump, "foreign": True,
+                })
+                continue
+
+            bills_signed = 0.0
             bills_signed = 0.0
             p_invoices = p_advances = 0
             for b in party_bills:
@@ -221,7 +241,10 @@ def _party_openings(masters, bills) -> dict:
         "on_account": on_account,
         "lump": lump,
         "documents": invoices + advances + on_account + lump,
-        "foreign_skipped": foreign_skipped,
+        # Foreign-currency parties (posted in their own currency, see _emit_forex).
+        # Their documents are already included in the counts above; this is just how
+        # many of the parties were foreign, so the screen can call it out.
+        "foreign": foreign,
         "mismatches": mismatches,
         "parties_list": parties_list,
     }

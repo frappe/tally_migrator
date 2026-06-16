@@ -64,17 +64,23 @@ class TestPriceImporter(unittest.TestCase):
 
         def fake_get_doc(d):
             created.append(d)
-            return types.SimpleNamespace(
-                name=d.get("title") or d.get("price_list_name") or "IP-1",
-                insert=lambda **k: None)
+            # A Pricing Rule is autonamed by series (PRLE-####), so its `name` is NOT
+            # its title - mimic that here so the test would catch logging the title as
+            # the (dead) hyperlink target, or keying idempotency on name==title.
+            name = ("PRLE-0001" if d["doctype"] == "Pricing Rule"
+                    else d.get("price_list_name") or "8mc65uqma1")
+            return types.SimpleNamespace(name=name, insert=lambda **k: None)
 
         exists_state = {"Price List": False, "Item Price": False, "Pricing Rule": False}
+        pricing_rule_filters = []
 
         def fake_exists(dt, filt=None):
             if dt == "Item":
                 return True
             if dt == "UOM":
                 return True
+            if dt == "Pricing Rule":
+                pricing_rule_filters.append(filt)
             return exists_state.get(dt, False)
 
         with mock.patch("frappe.db.exists", side_effect=fake_exists), \
@@ -98,6 +104,13 @@ class TestPriceImporter(unittest.TestCase):
         self.assertNotIn("apply_discount_on_rate", pr)       # would force a Priority
         self.assertEqual(pr["max_qty"], 100.0)               # ENDINGAT bound carried
         self.assertEqual(pr["items"], [{"item_code": "A4 Paper Ream"}])
+        # Idempotency must key on the title FIELD, not name (Pricing Rule autonames
+        # by series, so name != title; a bare-title exists() never matches -> dupes).
+        self.assertEqual(pricing_rule_filters, [{"title": "Tally Retail discount - A4 Paper Ream"}])
+        # The logged hyperlink target is the real autonamed doc, not the title, so
+        # the migration-log link resolves (the title is no document's name).
+        self.assertIn("PRLE-0001", res.created_names)
+        self.assertNotIn("Tally Retail discount - A4 Paper Ream", res.created_names)
 
     def test_idempotent_skips_existing(self):
         imp = self._imp()
@@ -113,6 +126,35 @@ class TestPriceImporter(unittest.TestCase):
         # Price List exists (reused), Item Price exists (skipped), Pricing Rule exists (skipped)
         self.assertEqual(created, [])
         self.assertEqual(res.skipped, 1)
+
+    def test_falls_back_to_stock_uom_when_price_uom_invalid_for_item(self):
+        imp = self._imp()
+        res = ImportResult("Item Price")
+        created = []
+
+        def fake_get_doc(d):
+            created.append(d)
+            return types.SimpleNamespace(name="IP", insert=lambda **k: None)
+
+        def fake_exists(dt, filt=None):
+            if dt == "Item":
+                return True
+            if dt == "UOM Conversion Detail":
+                return False          # 'Ream' is NOT an additional uom of the item
+            if dt in ("Price List", "Item Price"):
+                return False
+            return False
+        with mock.patch("frappe.db.exists", side_effect=fake_exists), \
+                mock.patch("frappe.db.get_value", return_value="Nos"), \
+                mock.patch("frappe.get_doc", side_effect=fake_get_doc), \
+                mock.patch("frappe.db.commit"):
+            imp._import_level(res, "A4 Paper Ream", {
+                "level": "Retail", "date": "20260401",
+                "rate": "398.00/Ream", "discount": "", "ending": ""})
+
+        ip = next(d for d in created if d["doctype"] == "Item Price")
+        self.assertEqual(ip["uom"], "Nos")               # fell back to stock uom, no hard fail
+        self.assertTrue(any("not a unit of item" in w["reason"] for w in res.warnings))
 
     def test_no_rate_creates_nothing(self):
         imp = self._imp()

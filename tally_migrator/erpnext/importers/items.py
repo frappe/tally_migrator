@@ -97,10 +97,29 @@ class ItemImporter(BaseImporter):
                 by_code[safe_item_code(name)].append(name)
         return {code: names for code, names in by_code.items() if len(names) > 1}
 
+    def _resolve_uom(self, tally_uom: str) -> str:
+        """Resolve a Tally base unit to an ERPNext UOM, matching what the pre-flight
+        Check step tells the user: a user override, then the built-in UOM_MAP, then
+        the Tally unit's OWN name when a UOM by that name exists (the Unit importer
+        creates it earlier in the same run), and only DEFAULT_UOM as a last resort.
+
+        Previously this skipped straight to DEFAULT_UOM for any unit not in UOM_MAP,
+        which contradicted the resolver (uom_resolver: ``UOM_MAP.get(u, u)``) - so an
+        item whose unit (e.g. 'Ream') existed but wasn't in UOM_MAP silently became
+        'Nos', and its price levels / BOM components then mismatched the item."""
+        if not tally_uom:
+            return DEFAULT_UOM
+        override = self._uom_overrides.get(tally_uom)
+        if override:
+            return override
+        if tally_uom in UOM_MAP:
+            return UOM_MAP[tally_uom]
+        if frappe.db.exists("UOM", tally_uom):
+            return tally_uom
+        return DEFAULT_UOM
+
     def build_doc(self, record: dict) -> dict:
-        tally_uom = (record.get("BaseUnits") or "").strip()
-        # User-supplied overrides (from pre-flight check) take precedence
-        uom = self._uom_overrides.get(tally_uom) or UOM_MAP.get(tally_uom, DEFAULT_UOM)
+        uom = self._resolve_uom((record.get("BaseUnits") or "").strip())
         doc = {
             "doctype": "Item",
             "item_code": safe_item_code(record["_name"]),

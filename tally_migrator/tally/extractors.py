@@ -181,9 +181,15 @@ class BillAllocation:
     party: str             # owning ledger (the Tally party name)
     bill_no: str           # the bill reference (Tally bill NAME)
     bill_date: str         # ISO date "YYYY-MM-DD" ("" when absent/unparseable)
-    amount: float          # absolute amount
+    amount: float          # absolute amount in COMPANY (base) currency
     dr_cr: str             # "Dr" | "Cr" | ""
     is_advance: bool       # Tally's ISADVANCE flag
+    # Absolute amount in the bill's FOREIGN currency, parsed from a forex-shaped bill
+    # opening ("$600 @ 83/$ = ₹49800"); 0.0 for a plain base-currency bill. Lets the
+    # importer split a foreign-currency party's opening bill-by-bill (mirroring the
+    # base-currency path) only when the export actually carries per-bill foreign
+    # amounts - never guessed.
+    foreign_amount: float = 0.0
 
 
 @dataclass
@@ -596,9 +602,14 @@ class TallyExtractor:
             ["BillDate", "Name", "IsAdvance", "OpeningBalance"])
         bills: list[BillAllocation] = []
         for r in rows:
-            amount, drcr = self._parse_opening(r.get("OpeningBalance", ""))
+            raw = r.get("OpeningBalance", "")
+            amount, drcr = self._parse_opening(raw)
             if not amount:
                 continue
+            # A forex-shaped bill ("$600 @ 83/$ = ₹49800") yields a foreign amount too;
+            # ``amount`` above is already the base (the part after '='), so the two are
+            # consistent. A plain base-currency bill has no '='/symbol → foreign 0.
+            foreign, _sym, _base, _fdrcr = self._parse_forex_opening(raw)
             bills.append(BillAllocation(
                 party=(r.get("_parent") or "").strip(),
                 bill_no=(r.get("Name") or "").strip(),
@@ -606,6 +617,7 @@ class TallyExtractor:
                 amount=amount,
                 dr_cr=drcr,
                 is_advance=(r.get("IsAdvance") or "").strip().lower() == "yes",
+                foreign_amount=foreign,
             ))
         return bills
 
