@@ -95,6 +95,11 @@ class TestDeleteOneSafety(unittest.TestCase):
             mock.patch.object(rollback.frappe.db, "exists", return_value=True),
             mock.patch.object(rollback.frappe.db, "savepoint", lambda *a, **k: None),
             mock.patch.object(rollback.frappe.db, "rollback", lambda *a, **k: None),
+            # Neutralise the pre-delete steps so the test isolates the link-check:
+            # no side-effect tables, no party links to purge.
+            mock.patch.object(rollback.frappe.db, "table_exists", return_value=False),
+            mock.patch.object(rollback.frappe.db, "delete", lambda *a, **k: None),
+            mock.patch.object(rollback.frappe, "get_all", return_value=[]),
             mock.patch.object(rollback.frappe, "get_doc",
                               return_value=mock.Mock(docstatus=0)),
             mock.patch.object(rollback.frappe, "delete_doc", side_effect=fake_delete_doc),
@@ -122,6 +127,78 @@ class TestDeleteOneSafety(unittest.TestCase):
         self.assertIn("SI-9", reason)                          # kept + reported, not deleted
 
 
+class TestPurgePartyLinks(unittest.TestCase):
+    """_purge_party_links must never strip a record shared with another party, and
+    must report the business records it does delete so the audit can list them."""
+
+    def _run(self, dynamic_links, link_rows_by_parent, bank_accounts):
+        """Drive _purge_party_links against a fake Dynamic Link / Bank Account store.
+
+        ``dynamic_links`` -> the parents linked to OUR party per linked_dt query;
+        ``link_rows_by_parent`` -> every link row on a given parent (to detect sharing);
+        ``bank_accounts`` -> names returned for the Bank Account query.
+        """
+        deleted, dl_deletes = [], []
+
+        def fake_get_all(doctype, filters=None, pluck=None, fields=None):
+            if doctype == "Dynamic Link" and "link_name" in (filters or {}):
+                return list(dynamic_links.get(filters["parenttype"], []))
+            if doctype == "Dynamic Link":  # all links on a parent (share check)
+                return [frappe._dict(r) for r in link_rows_by_parent.get(filters["parent"], [])]
+            if doctype == "Bank Account":
+                return list(bank_accounts)
+            return []
+
+        def fake_db_delete(doctype, filters):
+            dl_deletes.append((doctype, filters))
+
+        patches = [
+            mock.patch.object(rollback.frappe, "get_all", side_effect=fake_get_all),
+            mock.patch.object(rollback.frappe.db, "exists", return_value=True),
+            mock.patch.object(rollback.frappe.db, "delete", side_effect=fake_db_delete),
+            mock.patch.object(rollback.frappe, "delete_doc",
+                              side_effect=lambda dt, nm, **k: deleted.append((dt, nm))),
+        ]
+        for p in patches:
+            p.start()
+        self.addCleanup(lambda: [p.stop() for p in patches])
+        purged = rollback._purge_party_links("Customer", "ACME")
+        return purged, deleted, dl_deletes
+
+    def test_unshared_records_deleted_and_reported(self):
+        purged, deleted, dl_deletes = self._run(
+            dynamic_links={"Address": ["ADDR-1"], "Contact": ["CON-1"]},
+            link_rows_by_parent={
+                "ADDR-1": [{"link_doctype": "Customer", "link_name": "ACME"}],
+                "CON-1": [{"link_doctype": "Customer", "link_name": "ACME"}],
+            },
+            bank_accounts=["ACME - HDFC"],
+        )
+        self.assertIn(("Address", "ADDR-1"), deleted)
+        self.assertIn(("Contact", "CON-1"), deleted)
+        self.assertIn(("Bank Account", "ACME - HDFC"), deleted)
+        self.assertEqual(dl_deletes, [])  # nothing shared -> no link-row surgery
+        # All three reported so the revert audit can list them.
+        self.assertEqual(len(purged), 3)
+
+    def test_shared_address_is_not_deleted_only_unlinked(self):
+        purged, deleted, dl_deletes = self._run(
+            dynamic_links={"Address": ["SHARED"], "Contact": []},
+            link_rows_by_parent={
+                "SHARED": [
+                    {"link_doctype": "Customer", "link_name": "ACME"},
+                    {"link_doctype": "Customer", "link_name": "OTHER"},  # another party!
+                ],
+            },
+            bank_accounts=[],
+        )
+        # The shared address must survive; only OUR link row is removed.
+        self.assertNotIn(("Address", "SHARED"), deleted)
+        self.assertEqual(len(dl_deletes), 1)
+        self.assertEqual(dl_deletes[0][1]["link_name"], "ACME")
+        self.assertEqual(purged, [])  # nothing actually deleted -> nothing to report
+
+
 class TestRevertGuards(unittest.TestCase):
     """revert_migration must refuse before deleting anything."""
 
@@ -142,6 +219,50 @@ class TestRevertGuards(unittest.TestCase):
         with mock.patch.object(rollback.frappe, "get_doc", return_value=log):
             with self.assertRaises(frappe.exceptions.ValidationError):
                 rollback.revert_migration("TML-0001", "Frappe Tech")
+
+    @staticmethod
+    def _log_get_doc(log):
+        """get_doc that returns our fake log for the migration log, but delegates
+        everything else (e.g. the internal System Settings read in now_datetime) to
+        the real implementation - patching it globally would cache a Mock and crash."""
+        real = rollback.frappe.get_doc
+
+        def _gd(doctype, *a, **k):
+            return log if doctype == "Tally Migration Log" else real(doctype, *a, **k)
+
+        return _gd
+
+    def test_reverted_with_errors_is_rerunnable(self):
+        # A partial revert ("Reverted with Errors") must NOT be treated as already
+        # reverted - the user has to be able to retry after fixing the cause.
+        log = mock.Mock(company="Frappe Tech", status="Reverted with Errors",
+                        name="TML-1", created_records='{"Items": [{"name": "W", "doctype": "Item"}]}')
+        new_revert = mock.Mock()
+        with mock.patch.object(rollback.frappe, "get_doc", side_effect=self._log_get_doc(log)), \
+             mock.patch.object(rollback.frappe, "get_all", return_value=[]), \
+             mock.patch.object(rollback.frappe, "new_doc", return_value=new_revert), \
+             mock.patch.object(rollback.frappe.db, "commit", lambda *a, **k: None), \
+             mock.patch.object(rollback.frappe, "enqueue", lambda *a, **k: None):
+            rollback.revert_migration("TML-1", "Frappe Tech")
+            self.assertTrue(new_revert.insert.called)   # proceeded to queue a revert
+
+    def test_stale_in_flight_is_superseded(self):
+        # An In Progress revert older than the job timeout is a corpse: mark it Failed
+        # and allow a new one, so a killed worker never wedges the feature forever.
+        log = mock.Mock(company="Frappe Tech", status="Reverted with Errors",
+                        name="TML-1", created_records='{"Items": [{"name": "W", "doctype": "Item"}]}')
+        stale = frappe._dict(name="REV-OLD", modified="2000-01-01 00:00:00")
+        set_calls = {}
+        with mock.patch.object(rollback.frappe, "get_doc", side_effect=self._log_get_doc(log)), \
+             mock.patch.object(rollback.frappe, "get_all", return_value=[stale]), \
+             mock.patch.object(rollback.frappe, "new_doc", return_value=mock.Mock()), \
+             mock.patch.object(rollback.frappe.db, "commit", lambda *a, **k: None), \
+             mock.patch.object(rollback.frappe, "enqueue", lambda *a, **k: None), \
+             mock.patch.object(rollback.frappe.db, "set_value",
+                               side_effect=lambda dt, nm, vals: set_calls.update({nm: vals})):
+            rollback.revert_migration("TML-1", "Frappe Tech")
+        # The corpse was flagged Failed rather than blocking the new revert.
+        self.assertEqual(set_calls.get("REV-OLD", {}).get("status"), "Failed")
 
 
 if __name__ == "__main__":
