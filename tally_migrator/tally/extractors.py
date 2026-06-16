@@ -247,6 +247,8 @@ class TallyExtractor:
         # Attach each item's combined GST rate (IGST), read per duty head from the
         # nested rate list. No-op for a live client that can't supply it.
         self._attach_item_gst_rates(masters.items)
+        # Attach each item's price levels (Retail/Wholesale rates + discounts).
+        self._attach_item_price_levels(masters.items)
         return masters
 
     def _attach_item_gst_rates(self, items: list[dict]) -> None:
@@ -257,6 +259,15 @@ class TallyExtractor:
         rates = self.client.item_gst_rates()
         for it in items:
             it.setdefault("GstRate", rates.get(it.get("_name", ""), ""))
+
+    def _attach_item_price_levels(self, items: list[dict]) -> None:
+        """Set ``PriceLevels`` (list of {level, date, rate, discount, ending}) on
+        each item dict. No-op when the source can't supply it (live client)."""
+        if not hasattr(self.client, "item_price_levels"):
+            return
+        levels = self.client.item_price_levels()
+        for it in items:
+            it.setdefault("PriceLevels", levels.get(it.get("_name", ""), []))
 
     @staticmethod
     def _dedup_by_name(records: list[dict]) -> list[dict]:
