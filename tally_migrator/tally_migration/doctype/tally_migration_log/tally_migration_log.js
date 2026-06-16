@@ -1035,9 +1035,8 @@ function rerun(frm) {
  * ---------------------------------------------------------------------------
  * Self-contained: this whole block plus the single tally_rollback_attach(frm)
  * call in refresh() is the entire client footprint. Delete both to remove the
- * feature's UI. The button only appears when the server flag
- * tally_migrator_enable_rollback is on (checked via rollback_enabled), so the
- * code is inert on sites that haven't opted in.
+ * feature's UI. The button appears on any saved migration that created records
+ * and has not already been reverted.
  * ========================================================================== */
 function tally_rollback_attach(frm) {
 	if (frm.is_new()) return;
@@ -1052,20 +1051,13 @@ function tally_rollback_attach(frm) {
 	const total = Object.values(created).reduce((n, names) => n + (names || []).length, 0);
 	if (!total || frm.doc.status === "Reverted") return;
 
-	// Server-authoritative gate: render the button only when the site opts in.
-	frappe.call({
-		method: "tally_migrator.migration.rollback.rollback_enabled",
-		callback: (r) => {
-			if (!r.message) return;
-			// Tucked inside the standard "Actions" menu rather than a loud
-			// standalone button - it's a rare, destructive operation.
-			frm.add_custom_button(
-				__("Undo This Migration"),
-				() => tally_rollback_confirm(frm, total),
-				__("Actions")
-			);
-		},
-	});
+	// Tucked inside the standard "Actions" menu rather than a loud standalone
+	// button - it's a rare, destructive operation.
+	frm.add_custom_button(
+		__("Undo This Migration"),
+		() => tally_rollback_confirm(frm, total),
+		__("Actions")
+	);
 }
 
 function tally_rollback_confirm(frm, total) {
