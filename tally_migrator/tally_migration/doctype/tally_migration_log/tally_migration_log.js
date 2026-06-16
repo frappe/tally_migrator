@@ -9,6 +9,8 @@ frappe.ui.form.on("Tally Migration Log", {
 		render_coverage(frm);
 		render_mapping(frm);
 		add_buttons(frm);
+		/* ===== ROLLBACK FEATURE - remove this line + the fenced block below to delete ===== */
+		tally_rollback_attach(frm);
 	},
 });
 
@@ -1027,3 +1029,112 @@ function rerun(frm) {
 		error: () => frappe.dom.unfreeze(),
 	});
 }
+
+/* ============================================================================
+ * ROLLBACK FEATURE (optional - "Undo This Migration")
+ * ---------------------------------------------------------------------------
+ * Self-contained: this whole block plus the single tally_rollback_attach(frm)
+ * call in refresh() is the entire client footprint. Delete both to remove the
+ * feature's UI. The button only appears when the server flag
+ * tally_migrator_enable_rollback is on (checked via rollback_enabled), so the
+ * code is inert on sites that haven't opted in.
+ * ========================================================================== */
+function tally_rollback_attach(frm) {
+	if (frm.is_new()) return;
+	// Nothing to undo unless the run recorded created documents and hasn't
+	// already been reverted.
+	let created = {};
+	try {
+		created = JSON.parse(frm.doc.created_records || "{}");
+	} catch (e) {
+		created = {};
+	}
+	const total = Object.values(created).reduce((n, names) => n + (names || []).length, 0);
+	if (!total || frm.doc.status === "Reverted") return;
+
+	// Server-authoritative gate: render the button only when the site opts in.
+	frappe.call({
+		method: "tally_migrator.migration.rollback.rollback_enabled",
+		callback: (r) => {
+			if (!r.message) return;
+			// Tucked inside the standard "Actions" menu rather than a loud
+			// standalone button - it's a rare, destructive operation.
+			frm.add_custom_button(
+				__("Undo This Migration"),
+				() => tally_rollback_confirm(frm, total),
+				__("Actions")
+			);
+		},
+	});
+}
+
+function tally_rollback_confirm(frm, total) {
+	const company = frm.doc.company || "";
+	const d = new frappe.ui.Dialog({
+		title: __("Undo This Migration"),
+		fields: [
+			{
+				fieldtype: "HTML",
+				options: `
+					<div style="font-size:13px; line-height:1.6;">
+						<p>This will <strong>permanently delete</strong> the
+						<strong>${total}</strong> ERPNext document(s) this import created -
+						including any opening entries, invoices and stock reconciliations.</p>
+						<ul style="padding-left:18px; color:var(--text-muted);">
+							<li>Submitted entries are cancelled first, then deleted.</li>
+							<li>Anything now linked to activity created <em>after</em> this
+								migration is <strong>kept</strong> and listed for you.</li>
+							<li>Only this migration's records are touched - nothing else in
+								the company.</li>
+						</ul>
+						<p>To confirm, type the company name
+						<strong>${frappe.utils.escape_html(company)}</strong> below.</p>
+					</div>`,
+			},
+			{
+				fieldname: "company_confirmation",
+				fieldtype: "Data",
+				label: __("Company name"),
+				reqd: 1,
+			},
+		],
+		primary_action_label: __("Delete migrated records"),
+		primary_action: (values) => {
+			if ((values.company_confirmation || "").trim() !== company.trim()) {
+				frappe.msgprint(__("The company name does not match. Nothing was deleted."));
+				return;
+			}
+			d.hide();
+			tally_rollback_run(frm, values.company_confirmation);
+		},
+	});
+	d.show();
+	// Make the confirm button read as destructive.
+	d.get_primary_btn().removeClass("btn-primary").addClass("btn-danger");
+}
+
+function tally_rollback_run(frm, company_confirmation) {
+	frappe.dom.freeze(__("Queueing undo…"));
+	frappe.call({
+		method: "tally_migrator.migration.rollback.revert_migration",
+		args: { log_name: frm.doc.name, company_confirmation },
+		callback: (r) => {
+			frappe.dom.unfreeze();
+			const res = r.message || {};
+			if (!res.revert) return;
+			// The deletion runs in a background job. Hand the user a link to the
+			// Revert record where they can watch status and see the per-document
+			// result table (mirrors ERPNext's Transaction Deletion Record).
+			const link = frappe.utils.get_form_link(
+				"Tally Migration Revert", res.revert, true, res.revert
+			);
+			frappe.msgprint({
+				title: __("Undo started"),
+				indicator: "blue",
+				message: __("The undo is running in the background. Track its progress and see what was deleted or kept here: {0}.", [link]),
+			});
+		},
+		error: () => frappe.dom.unfreeze(),
+	});
+}
+/* ===== END ROLLBACK FEATURE ===== */

@@ -1,0 +1,100 @@
+{
+ "name": "Tally Migration Revert",
+ "doctype": "DocType",
+ "module": "Tally Migration",
+ "custom": 0,
+ "is_submittable": 0,
+ "naming_rule": "Expression",
+ "autoname": "TMR-.YYYY.-.#####",
+ "track_changes": 1,
+ "title_field": "company",
+ "fields": [
+  {
+   "fieldname": "migration_log",
+   "fieldtype": "Link",
+   "label": "Migration Log",
+   "options": "Tally Migration Log",
+   "reqd": 1,
+   "in_list_view": 1,
+   "read_only": 1
+  },
+  {
+   "fieldname": "company",
+   "fieldtype": "Link",
+   "label": "ERPNext Company",
+   "options": "Company",
+   "in_list_view": 1,
+   "read_only": 1
+  },
+  {
+   "fieldname": "col_break_1",
+   "fieldtype": "Column Break"
+  },
+  {
+   "fieldname": "status",
+   "fieldtype": "Select",
+   "label": "Status",
+   "options": "Queued\nIn Progress\nCompleted\nCompleted with Errors\nFailed",
+   "default": "Queued",
+   "in_list_view": 1,
+   "in_standard_filter": 1,
+   "read_only": 1
+  },
+  {
+   "fieldname": "deleted_count",
+   "fieldtype": "Int",
+   "label": "Records Deleted",
+   "in_list_view": 1,
+   "read_only": 1
+  },
+  {
+   "fieldname": "kept_count",
+   "fieldtype": "Int",
+   "label": "Records Kept",
+   "in_list_view": 1,
+   "read_only": 1,
+   "description": "Documents that could not be deleted because something created outside this migration still links to them."
+  },
+  {
+   "fieldname": "section_records",
+   "fieldtype": "Section Break",
+   "label": "Records"
+  },
+  {
+   "fieldname": "records",
+   "fieldtype": "Table",
+   "label": "Records",
+   "options": "Tally Migration Revert Item",
+   "read_only": 1
+  },
+  {
+   "fieldname": "section_error",
+   "fieldtype": "Section Break",
+   "label": "Error",
+   "depends_on": "eval:doc.error_log"
+  },
+  {
+   "fieldname": "error_log",
+   "fieldtype": "Long Text",
+   "label": "Error Log",
+   "read_only": 1
+  }
+ ],
+ "permissions": [
+  {
+   "role": "System Manager",
+   "read": 1,
+   "write": 0,
+   "create": 0,
+   "delete": 1,
+   "export": 1
+  },
+  {
+   "role": "Tally Migration Manager",
+   "read": 1,
+   "write": 0,
+   "create": 0,
+   "export": 1
+  }
+ ]
+}
