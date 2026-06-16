@@ -122,14 +122,6 @@ class TestDeleteOneSafety(unittest.TestCase):
         self.assertIn("SI-9", reason)                          # kept + reported, not deleted
 
 
-class TestFeatureFlag(unittest.TestCase):
-    def test_is_enabled_reads_site_config(self):
-        with mock.patch.object(rollback.frappe, "conf", {"tally_migrator_enable_rollback": 1}):
-            self.assertTrue(rollback.is_enabled())
-        with mock.patch.object(rollback.frappe, "conf", {}):
-            self.assertFalse(rollback.is_enabled())
-
-
 class TestRevertGuards(unittest.TestCase):
     """revert_migration must refuse before deleting anything."""
 
@@ -139,22 +131,15 @@ class TestRevertGuards(unittest.TestCase):
         self._only_for.start()
         self.addCleanup(self._only_for.stop)
 
-    def test_disabled_flag_raises_permission_error(self):
-        with mock.patch.object(rollback, "is_enabled", return_value=False):
-            with self.assertRaises(frappe.PermissionError):
-                rollback.revert_migration("TML-0001", "Frappe Tech")
-
     def test_company_mismatch_aborts(self):
         log = mock.Mock(company="Frappe Tech", status="Completed", created_records="{}")
-        with mock.patch.object(rollback, "is_enabled", return_value=True), \
-             mock.patch.object(rollback.frappe, "get_doc", return_value=log):
+        with mock.patch.object(rollback.frappe, "get_doc", return_value=log):
             with self.assertRaises(frappe.exceptions.ValidationError):
                 rollback.revert_migration("TML-0001", "Wrong Co")
 
     def test_already_reverted_aborts(self):
         log = mock.Mock(company="Frappe Tech", status="Reverted", created_records="{}")
-        with mock.patch.object(rollback, "is_enabled", return_value=True), \
-             mock.patch.object(rollback.frappe, "get_doc", return_value=log):
+        with mock.patch.object(rollback.frappe, "get_doc", return_value=log):
             with self.assertRaises(frappe.exceptions.ValidationError):
                 rollback.revert_migration("TML-0001", "Frappe Tech")
 

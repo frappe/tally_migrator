@@ -6,11 +6,12 @@ This is a self-contained, optional feature. It reads the authoritative
 deletes precisely those documents - nothing scoped by company, so a company's
 manually-entered data and any *other* migration's data are never touched.
 
-Isolation (so the feature can be hidden or removed cleanly)
-----------------------------------------------------------
-* Hidden at runtime by the ``tally_migrator_enable_rollback`` site-config flag -
-  :func:`is_enabled` gates both this endpoint and the form button, so even a
-  crafted API call cannot reach the deletion logic when the flag is off.
+Isolation (so the feature can be removed cleanly)
+-------------------------------------------------
+* The action is always available to a user with a migration role, but it is
+  still safe by construction: it only deletes the documents in a run's
+  ``created_records`` manifest, re-checks the company name server-side, and keeps
+  anything since re-linked by later activity.
 * All server logic lives in this one module; the heavy per-revert detail lives in
   the bolt-on ``Tally Migration Revert`` doctype. The import pipeline
   (``master_migrator.py`` / ``api.py``) is never touched.
@@ -49,23 +50,6 @@ _LABEL_DOCTYPE = {
     "Opening Balances": "Journal Entry",
     "Opening Stock": "Stock Reconciliation",
 }
-
-
-def is_enabled() -> bool:
-    """True only when the site explicitly opts in via site_config.
-
-    Defaults to off: rollback permanently deletes posted documents, so it ships
-    dormant and a site owner turns it on deliberately
-    (``bench set-config tally_migrator_enable_rollback 1``).
-    """
-    return bool(frappe.conf.get("tally_migrator_enable_rollback"))
-
-
-@frappe.whitelist()
-def rollback_enabled() -> bool:
-    """Client-facing read of the feature flag, so the form button renders only
-    when rollback is switched on for this site."""
-    return is_enabled()
 
 
 def _protected_doctypes() -> set:
@@ -221,9 +205,6 @@ def revert_migration(log_name: str, company_confirmation: str):
     watch progress.
     """
     frappe.only_for(ALLOWED_ROLES)
-    if not is_enabled():
-        frappe.throw(_("Migration rollback is not enabled on this site."),
-                     frappe.PermissionError)
 
     log = frappe.get_doc("Tally Migration Log", log_name)
 
