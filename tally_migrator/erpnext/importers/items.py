@@ -65,6 +65,11 @@ class ItemImporter(BaseImporter):
         # app is installed. Without it ERPNext core silently drops those keys, so we
         # say so once instead of pretending the GST data landed.
         self._india_compliance = "india_compliance" in frappe.get_installed_apps()
+        # Resolve each item's GST Item Tax Template once (links the rate to the
+        # India-Compliance-seeded "GST 18%" / "Nil-Rated" templates for this
+        # company). Done here, with access to ``result``, so a missing template
+        # warns exactly once; build_doc just reads the resolved map.
+        self._resolve_tax_templates(records, result)
         if not self._india_compliance and any(
             (r.get("GSTTaxability") or r.get("HSNCode")
              or r.get("GstApplicable") or r.get("TypeOfSupply"))
@@ -112,7 +117,62 @@ class ItemImporter(BaseImporter):
         if vm:
             doc["valuation_method"] = vm
         doc.update(self._gst_fields(record))
+        tpl = getattr(self, "_tax_templates", {}).get(record["_name"])
+        if tpl:
+            doc["taxes"] = [{"item_tax_template": tpl}]
         return doc
+
+    # ── GST rate -> Item Tax Template linking (India Compliance) ───────────────
+    @staticmethod
+    def _gst_treatment_label(record: dict) -> "str | None":
+        """ERPNext/India-Compliance gst_treatment string for an item, or None when
+        the Tally GST type is unrecognised (already warned elsewhere)."""
+        if (record.get("GstApplicable") or "").strip().lower() in ("not applicable", "no"):
+            return "Non-GST"
+        key = (record.get("GSTTaxability") or "").strip().lower().replace("-", " ").replace("_", " ")
+        key = " ".join(key.split())
+        return {
+            "": "Taxable", "taxable": "Taxable", "applicable": "Taxable",
+            "nil rated": "Nil-Rated", "nil": "Nil-Rated",
+            "exempt": "Exempted", "exempted": "Exempted",
+            "non gst": "Non-GST", "not applicable": "Non-GST",
+        }.get(key)
+
+    def _resolve_tax_template(self, treatment: str, rate: float) -> "str | None":
+        """The company's GST Item Tax Template for this treatment/rate, matched by
+        the India-Compliance gst_treatment + gst_rate fields (never by the
+        company-suffixed name), or None when none is seeded."""
+        filters = {"company": self.company, "gst_treatment": treatment}
+        if treatment == "Taxable":
+            if not rate:
+                return None
+            filters["gst_rate"] = rate
+        rows = frappe.get_all(
+            "Item Tax Template", filters=filters, pluck="name", limit=1,
+            ignore_permissions=True)
+        return rows[0] if rows else None
+
+    def _resolve_tax_templates(self, records: list[dict], result: ImportResult) -> None:
+        """Build ``{item name: template}`` for build_doc, warning once per item when
+        a taxable rate has no matching template. No-op without India Compliance
+        (its gst_rate/gst_treatment fields, and the seeded templates, don't exist)."""
+        self._tax_templates: dict = {}
+        if not getattr(self, "_india_compliance", False):
+            return
+        for r in records:
+            treatment = self._gst_treatment_label(r)
+            if not treatment:
+                continue
+            rate = self._to_float(r.get("GstRate"))
+            tpl = self._resolve_tax_template(treatment, rate)
+            if tpl:
+                self._tax_templates[r["_name"]] = tpl
+            elif treatment == "Taxable" and rate:
+                result.add_warning(
+                    r["_name"],
+                    f"no GST Item Tax Template for {rate:g}% on company "
+                    f"'{self.company}' - item imported without a tax rate; create a "
+                    f"'GST {rate:g}%' template or set it on the item manually.")
 
     def recover_insert(self, data: dict, exc: Exception):
         """India Compliance makes ``gst_hsn_code`` a Link to "GST HSN Code" and
