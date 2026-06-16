@@ -34,7 +34,10 @@ ITEM_FIELDS = [
 ]
 
 GODOWN_FIELDS     = ["Name", "Parent", "Address"]
-GROUP_FIELDS      = ["Name", "Parent"]
+# IsRevenue / IsDeemedPositive are Tally's own group nature flags (tags ISREVENUE /
+# ISDEEMEDPOSITIVE); the resolver derives a root_type from them for custom groups
+# with no reserved ancestor (see LedgerResolver.group_nature).
+GROUP_FIELDS      = ["Name", "Parent", "IsRevenue", "IsDeemedPositive"]
 COSTCENTRE_FIELDS = ["Name", "Parent"]
 STOCKGROUP_FIELDS = ["Name", "Parent"]
 UNIT_FIELDS       = [
