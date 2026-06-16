@@ -14,7 +14,7 @@ import frappe
 # (``upper().replace(" ", "")``), so "Stock Item" → STOCKITEM, etc.
 MASTER_RECORD_TAGS = (
     "GROUP", "LEDGER", "STOCKITEM", "GODOWN",
-    "COSTCENTRE", "STOCKGROUP", "UNIT",
+    "COSTCENTRE", "STOCKGROUP", "UNIT", "CURRENCY",
 )
 
 
@@ -338,6 +338,18 @@ class FileTallySource:
                      "discount": s.get("discount", ""), "ending": s.get("endingat", "")}
                     for lvl, (d, s) in by_level.items()
                 ]
+        return out
+
+    def currency_iso_map(self) -> dict:
+        """``{currency NAME (Tally symbol): ISO code}`` from the CURRENCY masters,
+        e.g. ``{"$": "USD"}``. Used to resolve a forex party's CurrencyName to an
+        ERPNext currency. Only entries that carry an ISOCURRENCYCODE are returned."""
+        out: dict = {}
+        for elem in self._by_tag.get("CURRENCY", ()):
+            name = (elem.get("NAME") or elem.findtext("NAME") or "").strip()
+            iso = (elem.findtext("ISOCURRENCYCODE") or "").strip()
+            if name and iso:
+                out[name] = iso
         return out
 
     def item_boms(self) -> dict:

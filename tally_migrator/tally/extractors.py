@@ -1,3 +1,4 @@
+import unicodedata
 import re
 from dataclasses import dataclass, field
 from .mappings import TALLY_ROOT_PARENT, TALLY_SYSTEM_LEDGERS, classify_group
@@ -13,10 +14,11 @@ LEDGER_FIELDS = [
     "CountryName", "LedgerState", "PinCode",
     # P1 standard fields Tally states explicitly on the party ledger.
     "GSTRegistrationType", "CreditLimit", "EmailCC", "LedgerContact", "MailingName",
-    # Ledger currency name. Almost always the company base currency (redundant), but
-    # a forex party ledger carries a different one - the only in-file signal that a
-    # party's opening must NOT be posted in the company currency (see
-    # PartyOpeningImporter). Compared by equality, never mapped to an ISO code.
+    # Ledger currency name. NOTE: a real Tally masters export does NOT emit this tag
+    # on the party ledger - the forex signal is the currency symbol embedded in the
+    # OpeningBalance string ("-$8500 @ ... = ..."), resolved to an ISO in
+    # _attach_currency_iso. Kept in the FETCH list for the live-connector path and
+    # older exports that may carry it.
     "CurrencyName",
     # Bank account details (→ ERPNext Bank Account, linked to the party).
     "BankAccountNo", "BankIFSC", "BankAccountHolder", "BankBranch", "BankName",
@@ -232,6 +234,9 @@ class TallyExtractor:
         # (repeating child lists a real export carries beyond the single primary
         # mailing address / mobile). No-op for a live client without child lists.
         self._attach_party_subrecords(ledgers)
+        # Resolve each ledger's currency symbol to an ISO code (from the CURRENCY
+        # masters), so a forex party opening can post in its real currency.
+        self._attach_currency_iso(ledgers)
         masters = ExtractedMasters(
             customers    = [l for l in ledgers if resolver.kind_of(l["_name"]) == CUSTOMER],
             suppliers    = [l for l in ledgers if resolver.kind_of(l["_name"]) == SUPPLIER],
@@ -270,6 +275,24 @@ class TallyExtractor:
         levels = self.client.item_price_levels()
         for it in items:
             it.setdefault("PriceLevels", levels.get(it.get("_name", ""), []))
+
+    def _attach_currency_iso(self, ledgers: list[dict]) -> None:
+        """Set ``CurrencyISO`` on each forex ledger, resolved from the currency symbol
+        embedded in its OpeningBalance (e.g. the '$' in "-$8500 @ ... = -₹705500")
+        via the CURRENCY masters. Tally does NOT export a CurrencyName tag on the
+        party ledger, so the symbol in the opening string is the only in-file signal.
+        Only set when a foreign symbol resolves to an ISO, so domestic parties (no
+        symbol, or the base ₹ which carries no ISO) are left untouched. No-op when
+        the source can't supply the currency map."""
+        if not hasattr(self.client, "currency_iso_map"):
+            return
+        iso = self.client.currency_iso_map()
+        if not iso:
+            return
+        for r in ledgers:
+            _f, symbol, _b, _d = self._parse_forex_opening(r.get("OpeningBalance", ""))
+            if symbol and symbol in iso:
+                r.setdefault("CurrencyISO", iso[symbol])
 
     def _attach_item_boms(self, items: list[dict]) -> None:
         """Set ``Boms`` (list of {name, basic_qty, components}) on each item dict.
@@ -506,7 +529,14 @@ class TallyExtractor:
             suffix, s = "Dr", s[:-2]
         elif upper.endswith("CR"):
             suffix, s = "Cr", s[:-2]
-        s = s.replace("$", "").replace(",", "").strip()
+        # Strip currency symbols (any Unicode currency glyph, e.g. "$", "₹") plus
+        # thousands commas and spaces, but KEEP letters so a unit-suffixed *quantity*
+        # like "55 Nos" still fails to parse here (quantities are read by
+        # _parse_quantity, not as amounts). A forex cell like
+        # "-$8500.00 @ ₹ 83/$ = -₹ 705500.00" reduces (after the '=' split above) to
+        # its base "-705500.00" instead of failing on the ₹ symbol.
+        s = "".join(ch for ch in s
+                    if ch not in (",", " ") and unicodedata.category(ch) != "Sc")
         try:
             val = float(s)
         except ValueError:
@@ -516,6 +546,33 @@ class TallyExtractor:
         if suffix:
             return abs(val), suffix
         return abs(val), "Dr" if val < 0 else "Cr"
+
+    @staticmethod
+    def _parse_forex_opening(raw) -> tuple[float, str, float, str]:
+        """Parse a multi-currency opening into (foreign_amount, symbol, base, drcr).
+
+        Handles the rich export form ``-$8500.00 @ ₹ 83/$ = -₹ 705500.00`` and the
+        older ``10.00$ = 800.00``: the foreign amount/symbol come from the part
+        before ``@`` (or before ``=``), the base from after ``=``. Sign convention
+        matches _parse_opening (negative = Dr). Returns zeros when there is no ``=``
+        (not a forex cell) or nothing parses."""
+        s = str(raw or "").strip()
+        if "=" not in s:
+            return 0.0, "", 0.0, ""
+        left, _, right = s.partition("=")
+        foreign_part = left.split("@")[0]
+        symbol = "".join(ch for ch in foreign_part
+                         if not (ch.isdigit() or ch in " .,-")).strip()
+
+        def _num(x):
+            x = re.sub(r"[^\d.\-]", "", x)
+            try:
+                return float(x)
+            except ValueError:
+                return 0.0
+        foreign, base = _num(foreign_part), _num(right)
+        drcr = "Dr" if (foreign < 0 or base < 0) else "Cr"
+        return abs(foreign), symbol, abs(base), drcr
 
     # ── Bill-wise opening balances ─────────────────────────────────────────────
     def extract_bill_allocations(self) -> list[BillAllocation]:

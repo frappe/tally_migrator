@@ -153,13 +153,23 @@ def erpnext_totals(company: str, abbr: str) -> dict:
         pay_acc = frappe.get_cached_value("Company", company, "default_payable_account")
         temp_acc = f"Temporary Opening - {abbr}"
         classes = _gl_by_class(company, {rec_acc, pay_acc, temp_acc})
+        # Sum opening postings across ALL receivable / payable accounts, not just the
+        # company defaults: forex party openings post to per-currency control accounts
+        # ('Debtors USD', 'Creditors USD') created during the run, and those must be
+        # included or the receivables/payables figure reads short by the forex total.
+        rec_accs = frappe.get_all(
+            "Account", filters={"company": company, "account_type": "Receivable",
+                                "is_group": 0}, pluck="name") or ([rec_acc] if rec_acc else [])
+        pay_accs = frappe.get_all(
+            "Account", filters={"company": company, "account_type": "Payable",
+                                "is_group": 0}, pluck="name") or ([pay_acc] if pay_acc else [])
         # Scope the control accounts to opening postings ONLY (this migration's opening
         # invoices + advance Payment Entries), never the account's full balance. The
         # tool supports re-runs and migrating into a company that may already hold
         # activity on Receivable/Payable/Stock; a full-balance read would fold that
         # pre-existing activity into the "ERPNext" column and show a false mismatch.
-        receivables = _opening_account_balance(company, rec_acc) if rec_acc else None
-        payables = _opening_account_balance(company, pay_acc) if pay_acc else None
+        receivables = _opening_account_balance(company, rec_accs) if rec_accs else None
+        payables = _opening_account_balance(company, pay_accs) if pay_accs else None
         stock = {"amount": _opening_stock_value(company), "dr_cr": "Dr"}
         # Temporary Opening is the contra for every opening posting, so derive it as
         # the balancing residual of the scoped figures rather than reading the GL.
@@ -206,9 +216,13 @@ def _gl_by_class(company: str, exclude: set) -> dict:
     return {cls: _side(net) for cls, net in nets.items()}
 
 
-def _opening_account_balance(company: str, account: str) -> dict:
+def _opening_account_balance(company: str, accounts) -> dict:
     """{amount, dr_cr} net (Dr-positive) of just this migration's OPENING postings on
-    an account - never the account's full balance.
+    one or more accounts - never the accounts' full balance.
+
+    Accepts a single account name or a list (forex openings post to per-currency
+    control accounts like 'Debtors USD' alongside the default, so all of them must
+    be summed for the receivables/payables figure to reconcile).
 
     Two sources, matching what the importers post against a control account:
       * opening invoices - their GL is flagged ``is_opening='Yes'``;
@@ -218,16 +232,17 @@ def _opening_account_balance(company: str, account: str) -> dict:
     activity on the account, from polluting the reconciliation figure."""
     import frappe
 
+    account_filter = ["in", accounts] if isinstance(accounts, (list, tuple, set)) else accounts
     net = 0.0
     opening_rows = frappe.get_all(
         "GL Entry",
-        filters={"company": company, "account": account, "is_cancelled": 0,
+        filters={"company": company, "account": account_filter, "is_cancelled": 0,
                  "is_opening": "Yes"},
         fields=["debit", "credit"])
     net += sum((r.debit or 0) - (r.credit or 0) for r in opening_rows)
     advance_rows = frappe.get_all(
         "GL Entry",
-        filters={"company": company, "account": account, "is_cancelled": 0,
+        filters={"company": company, "account": account_filter, "is_cancelled": 0,
                  "voucher_type": "Payment Entry",
                  "remarks": ["like", "Tally opening:%"]},
         fields=["debit", "credit"])
