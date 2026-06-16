@@ -5,10 +5,11 @@ COA extraction already computes (root_type / account_type / parent / opening
 balance) plus two derived signals the user actually cares about before they
 commit:
 
-  * **inferred** - the ledger's group had no reserved Tally ancestor, so its
-    nature was *defaulted* (``FALLBACK_NATURE``) rather than read from Tally's
-    own group spec. These are the rows worth eyeballing; everything else mapped
-    by Tally's documented groups and is high-confidence.
+  * **inferred** - the ledger's group is not a named standard Tally group, so its
+    type was either *derived* from the group's own nature flags (ISREVENUE /
+    ISDEEMEDPOSITIVE) or, failing that, left *unknown* (shown as "--"). These are
+    the rows worth eyeballing; everything else mapped by Tally's documented groups
+    and is high-confidence.
   * **the Temporary Opening plug** - the residual across the *whole* opening
     trial balance (accounts + customers + suppliers). ERPNext absorbs any
     imbalance into 'Temporary Opening', so a large plug is the single most
@@ -25,7 +26,7 @@ from __future__ import annotations
 from tally_migrator.tally.extractors import (
     TallyExtractor, GROUP_FIELDS, LEDGER_FIELDS, LEDGER_TAGS,
 )
-from tally_migrator.tally.resolver import LedgerResolver, FALLBACK_NATURE
+from tally_migrator.tally.resolver import LedgerResolver
 
 # ERPNext's canonical root-type order - how an accountant reads a trial balance.
 _ROOT_ORDER = ["Asset", "Liability", "Equity", "Income", "Expense"]
@@ -54,10 +55,11 @@ def account_mapping(source) -> dict:
     by_root: dict[str, list[dict]] = {r: [] for r in _ROOT_ORDER}
     inferred: list[dict] = []
     for a in ledger_accounts:
-        # The resolver returns the module-level FALLBACK_NATURE object *by
-        # identity* when no reserved ancestor was found - a clean, derived
-        # "we had to guess" signal with no hand-maintained list behind it.
-        is_inferred = resolver.group_nature(a.parent) is FALLBACK_NATURE
+        # source: "reserved" = mapped by a named standard group (high confidence);
+        # "derived" = inferred from the group's own Tally nature flags; "unknown" =
+        # neither, so the type is unresolved and shown as "--" for the user to set.
+        source = resolver.group_nature(a.parent).get("source")
+        is_inferred = source != "reserved"
         row = {
             "name": a.name,
             "root_type": a.root_type,
@@ -66,6 +68,7 @@ def account_mapping(source) -> dict:
             "amount": round(a.opening_balance, 2),
             "dr_cr": a.opening_dr_cr,
             "inferred": is_inferred,
+            "uncertain": source == "unknown",
         }
         by_root.setdefault(a.root_type, []).append(row)
         if is_inferred:

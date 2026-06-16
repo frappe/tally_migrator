@@ -79,6 +79,65 @@ class TestResolver(unittest.TestCase):
         self.assertEqual(self.r.kind_of("Acme Corp"), CUSTOMER)
 
 
+def _gf(name, parent, is_revenue, is_deemed_positive):
+    """A group carrying Tally's own nature flags (ISREVENUE / ISDEEMEDPOSITIVE)."""
+    return {"_name": name, "Parent": parent,
+            "IsRevenue": is_revenue, "IsDeemedPositive": is_deemed_positive}
+
+
+class TestDerivedNature(unittest.TestCase):
+    """A custom group with no reserved ancestor must derive its root_type from its
+    own ISREVENUE/ISDEEMEDPOSITIVE flags, not blindly default to Asset."""
+
+    # Top-level custom groups (empty parent) renamed away from Tally's reserved
+    # names, exactly like the Bbb.xml fixture - so only their flags reveal the nature.
+    GROUPS = [
+        _gf("Trade Debtors", "", "No", "Yes"),       # balance-sheet, debit  → Asset
+        _gf("Trade Creditors", "", "No", "No"),      # balance-sheet, credit → Liability
+        _gf("Operating Income", "", "Yes", "No"),    # P&L, credit           → Income
+        _gf("Office Expenses", "", "Yes", "Yes"),    # P&L, debit            → Expense
+        _gf("Branch Office", "Office Expenses", "", ""),  # no own flags → inherit parent
+        _g("Mystery Group", ""),                     # no flags, no ancestor → unknown
+    ]
+
+    def setUp(self):
+        self.r = LedgerResolver(self.GROUPS, [])
+
+    def test_credit_balance_sheet_is_liability(self):
+        n = self.r.group_nature("Trade Creditors")
+        self.assertEqual(n["root"], "Liability")
+        self.assertEqual(n["source"], "derived")
+
+    def test_debit_balance_sheet_is_asset(self):
+        self.assertEqual(self.r.group_nature("Trade Debtors")["root"], "Asset")
+
+    def test_credit_pnl_is_income(self):
+        n = self.r.group_nature("Operating Income")
+        self.assertEqual(n["root"], "Income")
+        self.assertEqual(n["account_type"], "Income Account")
+
+    def test_debit_pnl_is_expense(self):
+        n = self.r.group_nature("Office Expenses")
+        self.assertEqual(n["root"], "Expense")
+        self.assertEqual(n["account_type"], "Expense Account")
+
+    def test_flags_inherited_from_parent(self):
+        # "Branch Office" carries no flags of its own; it must walk up to its parent.
+        self.assertEqual(self.r.group_nature("Branch Office")["root"], "Expense")
+
+    def test_unresolvable_is_unknown_defaulting_to_asset(self):
+        n = self.r.group_nature("Mystery Group")
+        self.assertEqual(n["source"], "unknown")
+        self.assertEqual(n["root"], "Asset")  # still creatable, but flagged "--" in UI
+
+    def test_reserved_still_wins_over_flags(self):
+        # A reserved group must classify as reserved even though it also has flags.
+        r = LedgerResolver([_gf("Bank Accounts", "Primary", "No", "Yes")], [])
+        n = r.group_nature("Bank Accounts")
+        self.assertEqual(n["source"], "reserved")
+        self.assertEqual(n["account_type"], "Bank")
+
+
 class TestBuildCOA(unittest.TestCase):
     def setUp(self):
         self.coa = TallyExtractor(_Src(GROUPS, LEDGERS, CENTRES)).extract_coa()

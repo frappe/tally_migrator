@@ -1505,8 +1505,12 @@ class TallyMigratorPage {
 			r.amount
 				? `<span style="white-space:nowrap;">${fmt(r.amount)} <span class="text-muted">${esc(r.dr_cr)}</span></span>`
 				: `<span class="text-muted">0</span>`;
+		// "--" when the type is genuinely unresolved (no standard group and no Tally
+		// nature flags); otherwise the derived/standard root type (+ account type).
 		const classifiedAs = (r) =>
-			esc(r.root_type) + (r.account_type ? ` · ${esc(r.account_type)}` : "");
+			r.uncertain
+				? `<span class="text-muted">--</span>`
+				: esc(r.root_type) + (r.account_type ? ` · ${esc(r.account_type)}` : "");
 
 		// ── Summary cards ──────────────────────────────────────────────────────
 		// Same card language as Step 3: regular-black number, status carried by a
@@ -1542,7 +1546,7 @@ class TallyMigratorPage {
 					inferred ? "please check" : "none",
 					inferred ? BLUE_BG : GRAY_BG,
 					inferred
-						? "These ledgers sit under a custom Tally group with no standard ancestor, so we defaulted their account type. Open the list below to confirm each one is right."
+						? "These ledgers sit under a custom Tally group, so we inferred each type from the group's own nature. Open the list below to confirm - any shown as \"--\" we couldn't determine."
 						: ""
 				)}
 				${plugCard}
@@ -1566,7 +1570,7 @@ class TallyMigratorPage {
 				.join("");
 			$("#review-exceptions").html(`
 				<div style="margin:0; background:var(--blue-100, #edf6fd); border:1px solid var(--blue-200, #e3f1fd); border-radius:8px; padding:12px 14px;">
-					${TallyMigratorPage.iconRow("info", `<strong>${fmt(inferred)} account${inferred === 1 ? "" : "s"} we inferred - please confirm.</strong> These ledgers sit under a custom Tally group with no standard ancestor, so we defaulted their type. Only you know if that's right - it's easy to fix the group in Tally and re-upload.`)}
+					${TallyMigratorPage.iconRow("info", `<strong>${fmt(inferred)} account${inferred === 1 ? "" : "s"} we inferred - please confirm.</strong> These ledgers sit under a custom Tally group, so we inferred each type from the group's own nature (income/expense/asset/liability). A type shown as "--" is one we couldn't determine. Confirm these, or fix the group in Tally and re-upload.`)}
 					<div style="margin-top:10px; border:1px solid var(--border-color, #e0e6ed); border-radius:6px; background:var(--card-bg, #fff);">
 						<table class="table table-condensed" style="margin:0; font-size:13px; table-layout:fixed;">
 							${REVIEW_COLGROUP}

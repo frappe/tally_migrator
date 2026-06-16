@@ -16,15 +16,45 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
-from .mappings import ASSET, CREDITOR_ROOTS, DEBTOR_ROOTS, classify_group
+from .mappings import (
+    ASSET,
+    CREDITOR_ROOTS,
+    DEBTOR_ROOTS,
+    EXPENSE,
+    INCOME,
+    LIABILITY,
+    classify_group,
+)
 
 CUSTOMER = "customer"
 SUPPLIER = "supplier"
 ACCOUNT = "account"
 
-# Used when a ledger's group chain has no reserved ancestor (shouldn't happen in
-# real Tally, where every group descends from a primary group).
+# Last resort when a ledger's group has neither a reserved ancestor nor its own
+# nature flags. We still create the account (ERPNext needs *some* root_type), but
+# default it to Asset and mark the nature "unknown" so the preview shows it as
+# unresolved ("--") rather than asserting a type we don't actually know.
 FALLBACK_NATURE = {"root": ASSET, "account_type": "", "erpnext_group": "Current Assets"}
+
+# Tally stamps every group - reserved or custom - with two booleans that together
+# *are* its nature, and which Tally itself uses to place the group on the balance
+# sheet vs the P&L and to set its debit/credit side:
+#   ISREVENUE        - Yes = P&L (Income/Expense), No = Balance Sheet (Asset/Liability)
+#   ISDEEMEDPOSITIVE - Yes = debit-nature (Asset/Expense), No = credit-nature
+# This 2x2 recovers the ERPNext root_type with no name list - the derive-don't-
+# enumerate path - for any custom group with no reserved ancestor. Equity is not
+# distinguishable from Liability by these flags (Capital is credit-nature balance
+# sheet too), but equity lives under the reserved "Capital Account" group, which the
+# reserved map already classifies, so a *custom* group resolving here is a liability.
+# Income/Expense leaves carry the matching ERPNext account_type; Asset/Liability
+# leaves stay ordinary ("").
+_DERIVED_NATURE = {
+    #  (is_revenue, is_deemed_positive)
+    (False, True):  {"root": ASSET,     "account_type": "",                "erpnext_group": "Current Assets"},
+    (False, False): {"root": LIABILITY, "account_type": "",                "erpnext_group": "Current Liabilities"},
+    (True,  True):  {"root": EXPENSE,   "account_type": "Expense Account", "erpnext_group": "Indirect Expenses"},
+    (True,  False): {"root": INCOME,    "account_type": "Income Account",  "erpnext_group": "Indirect Income"},
+}
 
 
 @dataclass
@@ -38,6 +68,15 @@ class LedgerTarget:
 class LedgerResolver:
     def __init__(self, groups: list[dict], ledgers: list[dict] | None = None):
         self._parent_of = {g["_name"]: g.get("Parent", "").strip() for g in groups}
+        # Each group's own Tally nature flags, normalised to "yes"/"no"/"" - used to
+        # derive a root_type when no reserved ancestor exists (see group_nature).
+        self._flags_of = {
+            g["_name"]: (
+                (g.get("IsRevenue") or "").strip().lower(),
+                (g.get("IsDeemedPositive") or "").strip().lower(),
+            )
+            for g in groups
+        }
         self._debtor_groups = self._descendants(DEBTOR_ROOTS)
         self._creditor_groups = self._descendants(CREDITOR_ROOTS)
         self._by_name: dict[str, LedgerTarget] = {}
@@ -56,16 +95,30 @@ class LedgerResolver:
         return target.kind if target else None
 
     def group_nature(self, group_name: str) -> dict:
-        """Classify a group by walking up to its nearest reserved ancestor."""
+        """Classify a group, most-confident signal first. The returned dict carries a
+        ``source``: ``reserved`` (a named standard Tally group - high confidence),
+        ``derived`` (inferred from the group's own ISREVENUE/ISDEEMEDPOSITIVE flags),
+        or ``unknown`` (neither available - defaults to Asset, flagged for review)."""
+        # 1. nearest reserved ancestor - a named standard group, high confidence.
         seen: set[str] = set()
         cur = group_name
         while cur and cur not in seen:
             seen.add(cur)
             cls = classify_group(cur)
             if cls:
-                return cls
+                return {**cls, "source": "reserved"}
             cur = self._parent_of.get(cur, "")
-        return FALLBACK_NATURE
+        # 2. derive from the nearest ancestor carrying Tally's own nature flags.
+        seen, cur = set(), group_name
+        while cur and cur not in seen:
+            seen.add(cur)
+            rev, pos = self._flags_of.get(cur, ("", ""))
+            if rev in ("yes", "no") and pos in ("yes", "no"):
+                nature = _DERIVED_NATURE[(rev == "yes", pos == "yes")]
+                return {**nature, "source": "derived"}
+            cur = self._parent_of.get(cur, "")
+        # 3. genuinely unresolved.
+        return {**FALLBACK_NATURE, "source": "unknown"}
 
     # ── Internals ────────────────────────────────────────────────────────────
 
