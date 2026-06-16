@@ -41,6 +41,11 @@ _LABEL_DOCTYPE = {
     "Customers": "Customer",
     "Suppliers": "Supplier",
     "Items": "Item",
+    # "Prices" is intentionally omitted: it creates TWO doctypes (Item Price +
+    # Pricing Rule), so a single label->doctype fallback can't represent it. New runs
+    # store {name, doctype} per entry, so they need no fallback; legacy bare-string
+    # runs predate the Prices/BOMs steps, so none exist to resolve.
+    "BOMs": "BOM",
     "Opening Balances": "Journal Entry",
     "Opening Stock": "Stock Reconciliation",
 }
@@ -89,6 +94,10 @@ def _protected_doctypes() -> set:
 _CREATION_ORDER = [
     "Accounts", "Cost Centres", "Warehouses", "Units", "Stock Groups",
     "Customers", "Suppliers", "Items",
+    # Prices (Item Price + Pricing Rule) and BOMs are created after Items (they
+    # reference the item) and before the opening entries - so reversed deletion
+    # removes them before the Items they lean on. Pipeline idx 82/84.
+    "Prices", "BOMs",
     "Opening Balances", "Party Openings", "Opening Stock",
 ]
 
@@ -178,7 +187,16 @@ def _delete_one(row: dict, protected: set) -> str | None:
             doc.cancel()
             for ledger in _LEDGER_DOCTYPES:
                 frappe.db.delete(ledger, {"voucher_no": name})
-        frappe.delete_doc(doctype, name, force=True, ignore_permissions=True)
+        # force=False is deliberate: it keeps frappe's link-existence check, which is
+        # the ONLY thing protecting a master (Item/Customer/Supplier/Cost Center -
+        # whose on_trash does NOT guard against linked transactions) from being deleted
+        # while a document created AFTER the migration still references it. force=True
+        # would silently delete it and leave that later document dangling - the exact
+        # corruption the except-branch below claims to avoid. On a clean undo nothing
+        # links to the record (the run's own invoices/JE/stock recon are deleted
+        # first), so the unforced delete still succeeds; only genuinely re-linked
+        # records raise LinkExistsError, are caught, and are kept + reported.
+        frappe.delete_doc(doctype, name, ignore_permissions=True)
         return None
     except Exception as exc:
         frappe.db.rollback(save_point=savepoint)
