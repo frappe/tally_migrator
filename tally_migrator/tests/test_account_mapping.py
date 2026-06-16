@@ -125,23 +125,63 @@ class TestAccountMapping(unittest.TestCase):
         self.assertTrue(m["opening"]["clean"])
         self.assertEqual(m["opening"]["plug_dr_cr"], "")
 
-    def test_foreign_currency_party_is_skipped_from_preview(self):
-        # The base currency is the modal ledger CurrencyName (INR here); a party in a
-        # different currency is skipped at import, so the preview skips it too and
-        # reports it as foreign_skipped rather than counting its documents.
-        def _c(name, ob, ccy):
-            return {"_name": name, "Parent": "Sundry Debtors",
-                    "OpeningBalance": ob, "CurrencyName": ccy}
-        ledgers = [
-            _c("Acme India", "15000.00 Dr", "INR"),
-            _c("Bharat Traders", "8000.00 Dr", "INR"),
-            _c("Foreign Buyer LLC", "9000.00 Dr", "USD"),
-        ]
-        p = account_mapping(_Src(GROUPS, ledgers))["party_openings"]
-        self.assertEqual(p["foreign_skipped"], 1)
-        self.assertEqual(p["parties"], 2)        # the two INR parties only
-        names = [r["name"] for r in p["parties_list"]]
-        self.assertNotIn("Foreign Buyer LLC", names)
+    def test_foreign_currency_party_is_posted_and_counted(self):
+        # A forex party is detected by the currency SYMBOL in its opening string (which
+        # resolves to CurrencyISO), NOT by CurrencyName (a real export omits it on a
+        # forex party). It is posted in its own currency, so the preview counts it and
+        # reports `foreign`, rather than skipping it. No per-bill detail here → 1 lump.
+        from tally_migrator.tally.file_source import FileTallySource
+
+        xml = (
+            '<ENVELOPE><BODY><IMPORTDATA><REQUESTDATA>'
+            '<TALLYMESSAGE><GROUP NAME="Sundry Debtors"><NAME>Sundry Debtors</NAME>'
+            '<PARENT>Primary</PARENT></GROUP></TALLYMESSAGE>'
+            '<TALLYMESSAGE><CURRENCY NAME="$"><NAME>$</NAME>'
+            '<ISOCURRENCYCODE>USD</ISOCURRENCYCODE></CURRENCY></TALLYMESSAGE>'
+            '<TALLYMESSAGE><LEDGER NAME="Acme India"><NAME>Acme India</NAME>'
+            '<PARENT>Sundry Debtors</PARENT><OPENINGBALANCE>-15000.00</OPENINGBALANCE>'
+            '</LEDGER></TALLYMESSAGE>'
+            '<TALLYMESSAGE><LEDGER NAME="Foreign Buyer LLC"><NAME>Foreign Buyer LLC</NAME>'
+            '<PARENT>Sundry Debtors</PARENT>'
+            '<OPENINGBALANCE>-$9000.00 @ ₹ 83/$ = -₹ 747000.00</OPENINGBALANCE>'
+            '</LEDGER></TALLYMESSAGE>'
+            '</REQUESTDATA></IMPORTDATA></BODY></ENVELOPE>'
+        )
+        p = account_mapping(FileTallySource(xml))["party_openings"]
+        self.assertEqual(p["foreign"], 1)
+        self.assertEqual(p["parties"], 2)              # BOTH parties counted now
+        row = next(r for r in p["parties_list"] if r["name"] == "Foreign Buyer LLC")
+        self.assertTrue(row["foreign"])
+        self.assertEqual(row["documents"], 1)          # no per-bill detail → one invoice
+
+    def test_foreign_party_with_per_bill_amounts_splits_in_preview(self):
+        # When the export carries per-bill foreign amounts, the preview counts one
+        # invoice per bill (mirroring the importer's per-bill forex split).
+        from tally_migrator.tally.file_source import FileTallySource
+
+        def _bill(nm, ob):
+            return (f'<BILLALLOCATIONS.LIST><NAME>{nm}</NAME><BILLDATE>20260401</BILLDATE>'
+                    f'<ISADVANCE>No</ISADVANCE><OPENINGBALANCE>{ob}</OPENINGBALANCE>'
+                    '</BILLALLOCATIONS.LIST>')
+        xml = (
+            '<ENVELOPE><BODY><IMPORTDATA><REQUESTDATA>'
+            '<TALLYMESSAGE><GROUP NAME="Sundry Debtors"><NAME>Sundry Debtors</NAME>'
+            '<PARENT>Primary</PARENT></GROUP></TALLYMESSAGE>'
+            '<TALLYMESSAGE><CURRENCY NAME="$"><NAME>$</NAME>'
+            '<ISOCURRENCYCODE>USD</ISOCURRENCYCODE></CURRENCY></TALLYMESSAGE>'
+            '<TALLYMESSAGE><LEDGER NAME="Globex USD"><NAME>Globex USD</NAME>'
+            '<PARENT>Sundry Debtors</PARENT>'
+            '<OPENINGBALANCE>-$1000.00 @ ₹ 83/$ = -₹ 83000.00</OPENINGBALANCE>'
+            + _bill("USD-1", "-$600.00 @ ₹ 83/$ = -₹ 49800.00")
+            + _bill("USD-2", "-$400.00 @ ₹ 83/$ = -₹ 33200.00")
+            + '</LEDGER></TALLYMESSAGE>'
+            '</REQUESTDATA></IMPORTDATA></BODY></ENVELOPE>'
+        )
+        p = account_mapping(FileTallySource(xml))["party_openings"]
+        self.assertEqual(p["foreign"], 1)
+        row = next(r for r in p["parties_list"] if r["name"] == "Globex USD")
+        self.assertEqual(row["invoices"], 2)           # one per bill, not one lump
+        self.assertEqual(row["documents"], 2)
 
 
 if __name__ == "__main__":

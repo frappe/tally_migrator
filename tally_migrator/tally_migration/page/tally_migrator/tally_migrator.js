@@ -1772,16 +1772,17 @@ class TallyMigratorPage {
 			</div>`
 			: "";
 
-		// Foreign-currency parties are skipped at import (their exchange rate is
-		// unknown), so say so plainly rather than letting the doc count look short.
-		const foreignNote = p.foreign_skipped
+		// Foreign-currency parties are posted in their own currency (against a
+		// per-currency Debtors/Creditors account at Tally's stated rate), so note them
+		// for visibility rather than implying the doc count is short.
+		const foreignNote = p.foreign
 			? `<div style="margin-top:12px;">${TallyMigratorPage.callout(
 					"info",
 					TallyMigratorPage.iconRow(
 						"info",
-						`<strong>${fmt(p.foreign_skipped)} part${
-							p.foreign_skipped === 1 ? "y" : "ies"
-						} use a currency other than the company currency.</strong> Their opening balances are not posted automatically - the exchange rate isn't in the file. Enter these openings manually in ERPNext so the rate is correct.`
+						`<strong>${fmt(p.foreign)} part${
+							p.foreign === 1 ? "y" : "ies"
+						} use a foreign currency.</strong> Their opening balances are posted in that currency at the rate recorded in Tally - bill-by-bill when the file carries per-bill amounts, otherwise as a single opening invoice.`
 					)
 			  )}</div>`
 			: "";

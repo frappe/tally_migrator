@@ -530,8 +530,14 @@ class PartyOpeningImporter:
     # ── Foreign-currency openings (Option B: true multi-currency AR/AP) ────────
     def _emit_forex(self, party_type: str, party: str, tally_name: str, record: dict,
                     party_bills: list, seen: set, result: ImportResult) -> None:
-        """Post a forex party's opening as one foreign-currency opening invoice
-        against a currency-denominated receivable/payable account."""
+        """Post a forex party's opening as foreign-currency opening invoice(s) against
+        a currency-denominated receivable/payable account.
+
+        Bill-wise when the export carries per-bill foreign amounts: one named invoice
+        per Tally bill (mirroring the base-currency path, so the ERPNext invoice id IS
+        the Tally bill id and reconciles individually). Otherwise a single consolidated
+        invoice for the whole ledger opening. Foreign-currency advances/credits are not
+        migrated (flagged for manual entry)."""
         iso = (record.get("CurrencyISO") or "").strip()
         if not iso or iso == self._company_currency():
             result.add_warning(
@@ -547,43 +553,99 @@ class PartyOpeningImporter:
                 f"opening balance skipped - couldn't read the {iso} opening for "
                 f"'{tally_name}'.")
             return
-        if party_bills:
-            result.add_warning(
-                tally_name,
-                f"'{tally_name}' carries bill-wise detail in {iso}; posted as a single "
-                "opening invoice (per-bill foreign-currency openings are not split in "
-                "this version).")
-        signed = self._signed(base, drcr)
-        if self._classify(party_type, signed, is_advance=False) != "invoice":
+        ledger_signed = self._signed(base, drcr)
+        if self._classify(party_type, ledger_signed, is_advance=False) != "invoice":
             result.add_warning(
                 tally_name,
                 f"opening balance skipped - '{tally_name}' is a {iso} advance (credit "
                 "side); enter it manually (foreign-currency advances are not migrated "
                 "in this version).")
             return
-        marker = f"{self._MARKER}: {tally_name} | Opening"
+        account = self._ensure_currency_account(party_type, iso, result)
+        frappe.db.set_value(party_type, party, "default_currency", iso,
+                            update_modified=False)
+        # Ledger rate, derived from Tally's stated base (not the '@ rate' clause) so the
+        # ERPNext base equals Tally's base exactly even if they disagree by rounding.
+        rate = base / foreign
+
+        # Bills that carry a parseable foreign amount and sit on the party's natural
+        # side become per-bill invoices; a forex advance/credit bill is not migrated.
+        invoice_bills: list = []
+        for b in party_bills:
+            if not b.foreign_amount:
+                continue
+            if self._classify(party_type, self._signed(b.amount, b.dr_cr),
+                              b.is_advance) != "invoice":
+                result.add_warning(
+                    tally_name,
+                    f"{iso} advance/credit bill '{b.bill_no}' for '{tally_name}' not "
+                    "migrated (foreign-currency advances are not supported in this "
+                    "version); enter it manually.")
+                continue
+            invoice_bills.append(b)
+
+        if invoice_bills:
+            posted_base = 0.0
+            for b in invoice_bills:
+                # Per-bill rate from its own foreign/base, so each invoice's base ties
+                # to Tally's bill amount exactly; falls back to the ledger rate.
+                b_rate = (b.amount / b.foreign_amount) if b.foreign_amount else rate
+                self._post_forex_invoice(
+                    party_type, party, tally_name, b.foreign_amount, iso, b_rate,
+                    account, f"{self._MARKER}: {tally_name} | {b.bill_no}",
+                    b.bill_no, seen, result)
+                posted_base += self._signed(b.amount, b.dr_cr)
+            # A remainder on the natural side (bills short of the ledger opening) posts
+            # as one 'Opening' invoice, so the party still ties to its ledger figure.
+            residual = round(ledger_signed - posted_base, 2)
+            if (abs(residual) >= self._PLUG_THRESHOLD
+                    and self._classify(party_type, residual, False) == "invoice"):
+                self._post_forex_invoice(
+                    party_type, party, tally_name, round(abs(residual) / rate, 2), iso,
+                    rate, account, f"{self._MARKER}: {tally_name} | Opening", None,
+                    seen, result)
+                result.add_warning(
+                    tally_name,
+                    f"bill-wise {iso} openings for '{tally_name}' did not add up to its "
+                    f"ledger opening; the remainder was posted as one 'Opening' invoice.")
+            return
+
+        # No parseable per-bill foreign detail: one consolidated invoice for the whole
+        # opening (the only faithful option - bill references without amounts can't be
+        # split). Flag the collapse so the loss of bill-level detail is visible.
+        if party_bills:
+            result.add_warning(
+                tally_name,
+                f"'{tally_name}' carries bill references in {iso} without per-bill "
+                "amounts; posted as a single opening invoice.")
+        self._post_forex_invoice(
+            party_type, party, tally_name, foreign, iso, rate, account,
+            f"{self._MARKER}: {tally_name} | Opening", None, seen, result)
+
+    def _post_forex_invoice(self, party_type: str, party: str, tally_name: str,
+                            amount: float, iso: str, rate: float, account: str,
+                            marker: str, set_name, seen: set,
+                            result: ImportResult) -> None:
+        """Insert + submit one foreign-currency opening invoice (one bill, or the lump).
+
+        Routed through ``_insert_invoice`` so a per-bill invoice is named after the
+        Tally bill id (and falls back to auto-naming on an id clash), exactly like the
+        base-currency path. Idempotent on the remarks marker."""
         if marker in seen:
             result.skipped += 1
             return
         try:
-            account = self._ensure_currency_account(party_type, iso, result)
-            frappe.db.set_value(party_type, party, "default_currency", iso,
-                                update_modified=False)
-            # Derive the rate from Tally's stated base, not the '@ rate' clause, so
-            # the ERPNext base equals Tally's base exactly (the books reconcile even
-            # when the stated base and foreign x clause-rate disagree by rounding).
-            rate = base / foreign
-            data = self._forex_invoice_dict(party_type, party, foreign, iso, rate,
-                                            account, marker)
-            doc = frappe.get_doc(data)
-            doc.insert(ignore_permissions=True)
+            data = self._forex_invoice_dict(party_type, party, amount, iso, rate,
+                                            account, marker, bill_no=set_name or "Opening")
+            doc = self._insert_invoice(data, set_name, tally_name,
+                                       set_name or "Opening", result)
             doc.submit()
             frappe.db.commit()
             seen.add(marker)
             result.add_created(doc.name, doc.doctype)
         except Exception as exc:
             frappe.db.rollback()
-            result.add_error(f"{tally_name} | Opening ({iso})", exc)
+            result.add_error(f"{tally_name} | {set_name or 'Opening'} ({iso})", exc)
 
     def _ensure_currency_account(self, party_type: str, iso: str,
                                  result: "ImportResult | None" = None) -> str:
@@ -613,7 +675,8 @@ class PartyOpeningImporter:
         return acc.name
 
     def _forex_invoice_dict(self, party_type: str, party: str, amount: float,
-                            iso: str, rate: float, account: str, marker: str) -> dict:
+                            iso: str, rate: float, account: str, marker: str,
+                            bill_no: str = "Opening") -> dict:
         is_sales = party_type == "Customer"
         item = {
             "item_name": "Opening", "description": "Opening balance",
@@ -632,7 +695,7 @@ class PartyOpeningImporter:
             "update_stock": 0, "disable_rounded_total": 1, "remarks": marker,
         }
         if not is_sales:
-            data["bill_no"] = "Opening"
+            data["bill_no"] = bill_no
             data["bill_date"] = self.posting_date
         return data
 
