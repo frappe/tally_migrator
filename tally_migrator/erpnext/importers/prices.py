@@ -4,6 +4,7 @@ price-list-scoped Pricing Rule for any per-level discount)."""
 import frappe
 
 from tally_migrator.naming import safe_item_code
+from tally_migrator.tally.mappings import UOM_MAP
 from .base import BaseImporter, ImportResult
 
 
@@ -168,8 +169,12 @@ class PriceImporter:
         if not raw:
             return None, ""
         rate_part, _, uom = raw.partition("/")
+        # Normalise the price-level unit the same way the item's stock UOM was resolved
+        # (e.g. "Pcs" -> "Nos"), so a price quoted in the item's own Tally unit matches
+        # it instead of being treated as a foreign unit and falling back with a warning.
+        uom = UOM_MAP.get(uom.strip(), uom.strip())
         try:
-            return float(rate_part.replace(",", "").strip()), uom.strip()
+            return float(rate_part.replace(",", "").strip()), uom
         except ValueError:
             return None, ""
 

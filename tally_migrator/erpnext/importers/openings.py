@@ -935,6 +935,14 @@ class StockOpeningImporter:
         if not rows:
             return result  # no opening stock to post
 
+        # Batch-tracked rows post through a Serial and Batch Bundle, which ERPNext
+        # refuses to build unless Stock Settings > "Activate Serial and Batch No for
+        # Item" is on (it is off by default). It is a hard prerequisite for batch
+        # stock in ERPNext v15+, so enable it once when this import actually carries
+        # batch rows, and record it on the log so the change is visible.
+        if any(r.get("use_serial_batch_fields") for r in rows):
+            self._ensure_serial_batch_enabled(result)
+
         try:
             doc = frappe.get_doc({
                 "doctype": "Stock Reconciliation",
@@ -1090,7 +1098,17 @@ class StockOpeningImporter:
             # Batch-tracked item: tag the opening row with its Batch so the
             # reconciliation posts the quantity into that batch (the Batch master is
             # created first by BatchImporter).
+            #
+            # ERPNext v15+ models batch/serial stock through a Serial and Batch
+            # Bundle, not the legacy batch_no field. Stock Reconciliation.validate
+            # (set_current_serial_and_batch_bundle) throws "Please add Serial and
+            # Batch Bundle for Item ..." for any batch row unless use_serial_batch_fields
+            # is set. Setting it keeps the plain batch_no path: on_submit's
+            # make_bundle_using_old_serial_batch_fields then builds the Bundle from
+            # batch_no automatically. Without the flag the whole aggregate
+            # reconciliation fails to submit and no opening stock posts at all.
             row["batch_no"] = batch
+            row["use_serial_batch_fields"] = 1
         if rate == 0:
             # ERPNext rejects a positive opening qty at a zero rate
             # ("Valuation Rate required for Item …") unless the row explicitly
@@ -1106,6 +1124,22 @@ class StockOpeningImporter:
                 "opening stock has no book value. Set a valuation rate in ERPNext "
                 "if it should carry value.")
         by_key[key] = row
+
+    @staticmethod
+    def _ensure_serial_batch_enabled(result: ImportResult) -> None:
+        """Turn on Stock Settings > 'Activate Serial and Batch No for Item' if off.
+
+        Idempotent and global (Stock Settings is a Single). Required for ERPNext to
+        create the Serial and Batch Bundle that batch-tracked opening stock posts
+        through; we set it only when this import actually has batch rows."""
+        if frappe.db.get_single_value("Stock Settings", "enable_serial_and_batch_no_for_item"):
+            return
+        frappe.db.set_single_value("Stock Settings", "enable_serial_and_batch_no_for_item", 1)
+        result.add_warning(
+            "Opening Stock",
+            "enabled Stock Settings > 'Activate Serial and Batch No for Item' - it "
+            "was off, and ERPNext requires it to post batch-tracked opening stock. "
+            "Leave it on for batch/serial items to keep working.")
 
     def _existing_opening_stock(self) -> bool:
         """True when a non-cancelled Opening Stock reconciliation exists for the company."""

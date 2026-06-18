@@ -222,7 +222,8 @@ def clear_draft():
 @frappe.whitelist(methods=["POST"])
 def run_masters_migration_from_file(file_url: str, erpnext_company: str = "", uom_overrides: str = "",
                                     validation_report: str = "", record_overrides: str = "",
-                                    coa_mode: str = "reuse", posting_date: str = ""):
+                                    coa_mode: str = "reuse", posting_date: str = "",
+                                    created_uoms: str = ""):
     """Run the masters migration from an uploaded Tally masters XML export.
 
     ``file_url``        - URL of the File uploaded via the standard Frappe uploader.
@@ -239,6 +240,7 @@ def run_masters_migration_from_file(file_url: str, erpnext_company: str = "", uo
     _assert_no_active_run(erpnext_company)
     uom: dict = json.loads(uom_overrides) if uom_overrides else {}
     records: dict = json.loads(record_overrides) if record_overrides else {}
+    created: list = json.loads(created_uoms) if created_uoms else []
 
     file_doc, source = _source_from_file(file_url)
     config = _build_masters_config(
@@ -253,8 +255,9 @@ def run_masters_migration_from_file(file_url: str, erpnext_company: str = "", uo
     if source.approx_record_count() > RUN_ASYNC_THRESHOLD:
         return _enqueue_masters_run(
             config, file_url, erpnext_company, uom_overrides or "",
-            validation_report or "", record_overrides or "", coa_mode, posting_date or "")
-    return _run_and_summarize(config, source, uom, records)
+            validation_report or "", record_overrides or "", coa_mode, posting_date or "",
+            created_uoms or "")
+    return _run_and_summarize(config, source, uom, records, created)
 
 
 @frappe.whitelist(methods=["POST"])
@@ -524,12 +527,14 @@ def _build_masters_config(file_url, file_name, erpnext_company, source,
 
 
 def _run_and_summarize(config: TallyConfig, source, uom_overrides: dict | None = None,
-                       record_overrides: dict | None = None) -> dict:
+                       record_overrides: dict | None = None,
+                       created_uoms: list | None = None) -> dict:
     """Run a masters migration and return its summary dict plus the log name."""
     migrator = MasterMigrator(
         config, source=source,
         uom_overrides=uom_overrides or {},
         record_overrides=record_overrides or {},
+        created_uoms=created_uoms or [],
     )
     result = migrator.run().as_dict()
     result["log_name"] = migrator.log.name if migrator.log else None
@@ -537,7 +542,8 @@ def _run_and_summarize(config: TallyConfig, source, uom_overrides: dict | None =
 
 
 def _enqueue_masters_run(config: TallyConfig, file_url, erpnext_company, uom_overrides,
-                         validation_report, record_overrides, coa_mode, posting_date) -> dict:
+                         validation_report, record_overrides, coa_mode, posting_date,
+                         created_uoms="") -> dict:
     """Create the log now, hand the run to a background worker, return the log name.
 
     The log is created (and committed) in the request so the page has something to
@@ -564,18 +570,20 @@ def _enqueue_masters_run(config: TallyConfig, file_url, erpnext_company, uom_ove
         record_overrides=record_overrides,
         coa_mode=coa_mode,
         posting_date=posting_date,
+        created_uoms=created_uoms,
         log_name=log.name,
     )
     return {"enqueued": True, "log_name": log.name, "company": erpnext_company}
 
 
 def _run_masters_job(file_url, erpnext_company, uom_overrides, validation_report,
-                     record_overrides, coa_mode, posting_date, log_name):
+                     record_overrides, coa_mode, posting_date, log_name, created_uoms=""):
     """Background entry point: re-parse the file and run the migration into an
     already-created log. Errors are recorded on the log by ``MasterMigrator`` and
     re-raised so the failure is also visible in the job/error log."""
     uom = json.loads(uom_overrides) if uom_overrides else {}
     records = json.loads(record_overrides) if record_overrides else {}
+    created = json.loads(created_uoms) if created_uoms else []
     file_doc, source = _source_from_file(file_url)
     config = _build_masters_config(
         file_url, file_doc.file_name, erpnext_company, source,
@@ -583,6 +591,7 @@ def _run_masters_job(file_url, erpnext_company, uom_overrides, validation_report
     log = frappe.get_doc("Tally Migration Log", log_name)
     MasterMigrator(
         config, source=source, uom_overrides=uom, record_overrides=records, log=log,
+        created_uoms=created,
     ).run()
 
 

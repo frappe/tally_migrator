@@ -187,7 +187,8 @@ class MasterMigrator:
     }
 
     def __init__(self, config: TallyConfig, source, uom_overrides: dict | None = None,
-                 record_overrides: dict | None = None, log=None):
+                 record_overrides: dict | None = None, log=None,
+                 created_uoms: list | None = None):
         """``source`` is any object exposing ``ping()`` + ``get_collection``.
 
         In practice this is a :class:`FileTallySource` wrapping an uploaded
@@ -211,6 +212,11 @@ class MasterMigrator:
             coa_mode=getattr(config, "coa_mode", "reuse"),
         )
         self.record_overrides = record_overrides or {}
+        # UOMs the pre-flight "create as new" step (create_uoms) inserted BEFORE this
+        # run. The unit importer then skips them as already-existing and never records
+        # them, so they would survive a revert. We fold them into the manifest at
+        # finalize so revert undoes them too. See _track_wizard_uoms.
+        self.created_uoms = created_uoms or []
         self.applied_edits: list[dict] = []   # audit trail of effective pre-flight edits
         self.posting_date = getattr(config, "posting_date", "") or ""
         self.log = log
@@ -400,7 +406,9 @@ class MasterMigrator:
             self.log.extracted_counts = frappe.as_json({**masters.summary, **coa.summary})
             self.log.import_summary = frappe.as_json(summary.as_dict())
             self.log.applied_edits = frappe.as_json(self.applied_edits)
-            self.log.created_records = frappe.as_json(summary.created_records())
+            manifest = summary.created_records()
+            self._track_wizard_uoms(manifest)
+            self.log.created_records = frappe.as_json(manifest)
             self.log.reconciliation_report = frappe.as_json(self._reconciliation(masters, coa))
             self.log.set("errors", [])
             if summary.has_errors or summary.has_warnings:
@@ -411,6 +419,24 @@ class MasterMigrator:
             frappe.db.commit()
         except Exception as exc:
             frappe.log_error(f"Migration log finalize failed: {exc}", "Tally Migrator")
+
+    def _track_wizard_uoms(self, manifest: dict) -> None:
+        """Fold the pre-flight "create as new" UOMs into the manifest's Units entry so
+        revert undoes them.
+
+        These are inserted by the create_uoms endpoint BEFORE the run, so the unit
+        importer skips them as already-existing and never records them - leaving them
+        orphaned by revert. Only names the wizard reported creating are added, never
+        a pre-existing UOM (create_uoms returns those under "existing", not here), and
+        only if the UOM still exists. Revert deletes them unforced, so one still
+        referenced by a non-migration item is safely kept rather than force-removed."""
+        if not self.created_uoms:
+            return
+        units = manifest.setdefault("Units", [])
+        already = {(d.get("doctype"), d.get("name")) for d in units}
+        for name in self.created_uoms:
+            if ("UOM", name) not in already and frappe.db.exists("UOM", name):
+                units.append({"doctype": "UOM", "name": name})
 
     def _reconciliation(self, masters: ExtractedMasters, coa) -> dict:
         """Read-only post-import reconciliation summary (Tally figures vs ERPNext).

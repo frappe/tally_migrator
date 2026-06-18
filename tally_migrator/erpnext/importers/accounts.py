@@ -165,7 +165,7 @@ class AccountImporter:
 
     def _save_company_bank_account(self, node, account_name: str,
                                    result: ImportResult) -> None:
-        bank = _ensure_bank(node.bank_name)
+        bank = _ensure_bank(node.bank_name, result)
         if not bank:
             result.add_warning(
                 node.name, "bank account not created: no bank name on the ledger")

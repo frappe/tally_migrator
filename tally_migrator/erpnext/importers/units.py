@@ -212,6 +212,11 @@ class UnitImporter:
             cat.insert(ignore_permissions=True)
             frappe.db.commit()
             if result is not None:
+                # Track it so revert removes the category too. Its UOM Conversion
+                # Factors are purged as a side effect when the run's UOMs are deleted,
+                # and the category delete is unforced - so it goes only once nothing
+                # references it, and is otherwise safely kept.
+                result.add_created(cat.name, "UOM Category")
                 result.add_warning(
                     "UOM Category",
                     "auto-created a 'Tally Imported' UOM Category to hold compound-unit "

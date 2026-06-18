@@ -34,6 +34,16 @@ class TestUomResolver(unittest.TestCase):
         r = UomResolver([" Nos ", "Kg", "", "Nos"])
         self.assertEqual(r.existing_sorted, ["Kg", "Nos"])  # trimmed, deduped, sorted
 
+    def test_not_applicable_placeholder_is_dropped(self):
+        # A Tally service item carries the base unit "Not Applicable", often with a
+        # stray control char (e.g. "\x04 Not Applicable"). It is not a real UOM - the
+        # service Item keeps ERPNext's mandatory default - so it must not surface as
+        # a unit to resolve/create, while real units around it still do.
+        r = UomResolver(["Nos"])
+        names = [i["tally_uom"] for i in
+                 r.issues_for(["Ream", "\x04 Not Applicable", "Not Applicable", "Dozen"])]
+        self.assertEqual(names, ["Dozen", "Ream"])
+
 
 if __name__ == "__main__":
     unittest.main()

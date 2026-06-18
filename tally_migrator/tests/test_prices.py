@@ -44,6 +44,9 @@ class TestParsers(unittest.TestCase):
         self.assertEqual(PriceImporter._parse_rate("360.00"), (360.0, ""))
         self.assertEqual(PriceImporter._parse_rate(""), (None, ""))
         self.assertEqual(PriceImporter._parse_rate("x/Ream"), (None, ""))
+        # The price-level unit is normalised through UOM_MAP (like the item's stock
+        # UOM), so "Pcs" resolves to "Nos" and matches the item instead of warning.
+        self.assertEqual(PriceImporter._parse_rate("50.00/Pcs"), (50.0, "Nos"))
 
     def test_parse_qty_and_date(self):
         self.assertEqual(PriceImporter._parse_qty(" 100 Ream"), 100.0)

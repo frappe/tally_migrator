@@ -6,9 +6,25 @@ so the whitelisted endpoint stays thin (mirrors validation/engine.py).
 """
 from __future__ import annotations
 
+import re
 from typing import Iterable
 
 from tally_migrator.tally.mappings import UOM_MAP
+
+# Tally gives a service item the placeholder base unit "Not Applicable" (often
+# prefixed with a stray control char, e.g. "\x04 Not Applicable"). It is not a
+# real UOM - the service Item just keeps ERPNext's mandatory default (Nos) - so
+# it must never surface as a unit to create. Strip control chars before matching.
+_CONTROL_CHARS = re.compile(r"[\x00-\x1f]")
+
+
+def _clean_uom(raw: str) -> str:
+    return _CONTROL_CHARS.sub("", raw or "").strip()
+
+
+def _is_real_uom(raw: str) -> bool:
+    cleaned = _clean_uom(raw)
+    return bool(cleaned) and cleaned.lower() != "not applicable"
 
 
 class UomResolver:
@@ -36,4 +52,4 @@ class UomResolver:
 
     @staticmethod
     def _unique(values: Iterable[str]) -> list[str]:
-        return sorted({(v or "").strip() for v in values if (v or "").strip()})
+        return sorted({_clean_uom(v) for v in values if _is_real_uom(v)})

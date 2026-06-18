@@ -138,9 +138,10 @@ class TallyMigratorPage {
 						<div id="configure-counts" style="margin-top:10px;"></div>
 					</div>
 
-					<button id="btn-back-2" class="btn btn-default btn-sm">${TallyMigratorPage.navIcon("left")} Back</button>
-					&nbsp;
-					<button id="btn-next-2" class="btn btn-primary btn-sm">Continue ${TallyMigratorPage.navIcon("right")}</button>
+					<div style="margin-top:24px; display:flex; justify-content:space-between; align-items:center;">
+						<button id="btn-back-2" class="btn btn-default btn-sm">${TallyMigratorPage.navIcon("left")} Back</button>
+						<button id="btn-next-2" class="btn btn-primary btn-sm">Continue ${TallyMigratorPage.navIcon("right")}</button>
+					</div>
 				</div>
 
 				<!-- STEP 3: Pre-flight check -->
@@ -189,12 +190,14 @@ class TallyMigratorPage {
 					</div>
 
 
-					<div style="margin-top:24px;">
-						<button id="btn-back-check" class="btn btn-default btn-sm">${TallyMigratorPage.navIcon("left")} Back</button>
-						&nbsp;
+					<div style="margin-top:24px; display:flex; justify-content:space-between; align-items:center;">
+						<div>
+							<button id="btn-back-check" class="btn btn-default btn-sm">${TallyMigratorPage.navIcon("left")} Back</button>
+							&nbsp;
+							<button id="btn-startover-check" class="btn btn-default btn-sm"
+								style="color:var(--text-muted, #8d99a6);">Start over</button>
+						</div>
 						<button id="btn-next-check" class="btn btn-primary btn-sm">Continue ${TallyMigratorPage.navIcon("right")}</button>
-						<button id="btn-startover-check" class="btn btn-default btn-sm pull-right"
-							style="color:var(--text-muted, #8d99a6);">Start over</button>
 					</div>
 				</div>
 
@@ -211,9 +214,8 @@ class TallyMigratorPage {
 					<div id="review-all" style="margin-bottom:16px;"></div>
 					<div id="review-parties"></div>
 
-					<div style="margin-top:24px;">
+					<div style="margin-top:24px; display:flex; justify-content:space-between; align-items:center;">
 						<button id="btn-back-review" class="btn btn-default btn-sm">${TallyMigratorPage.navIcon("left")} Back</button>
-						&nbsp;
 						<button id="btn-next-review" class="btn btn-primary btn-sm">Continue ${TallyMigratorPage.navIcon("right")}</button>
 					</div>
 				</div>
@@ -235,9 +237,10 @@ class TallyMigratorPage {
 					<div id="error-section" style="display:none; background:var(--red-100, #fff0f0); border:1px solid var(--red-200, #fcd7d7); border-radius:8px; padding:12px 14px;"></div>
 
 					<div id="run-actions">
-						<button id="btn-back-3" class="btn btn-default btn-sm">${TallyMigratorPage.navIcon("left")} Back</button>
-						&nbsp;
-						<button id="btn-run" class="btn btn-primary btn-sm">Run Migration</button>
+						<div style="display:flex; justify-content:space-between; align-items:center;">
+							<button id="btn-back-3" class="btn btn-default btn-sm">${TallyMigratorPage.navIcon("left")} Back</button>
+							<button id="btn-run" class="btn btn-primary btn-sm">Run Migration</button>
+						</div>
 					</div>
 				</div>
 
@@ -1455,6 +1458,10 @@ class TallyMigratorPage {
 			callback: (r) => {
 				frappe.dom.unfreeze();
 				const res = r.message || {};
+				// Remember the units we actually created here so the run can record
+				// them in its revert manifest - they're inserted before the run, so the
+				// importer skips them and would otherwise orphan them on revert.
+				this.createdUoms = (this.createdUoms || []).concat(res.created || []);
 				const failed = res.failed || {};
 				if (Object.keys(failed).length) {
 					const lines = Object.entries(failed)
@@ -1869,6 +1876,7 @@ class TallyMigratorPage {
 				record_overrides: JSON.stringify(this.recordOverrides || {}),
 				coa_mode: $("#coa-mode").val() || "reuse",
 				posting_date: $("#opening-date").val() || "",
+				created_uoms: JSON.stringify(this.createdUoms || []),
 			},
 			callback: (r) => {
 				const summary = r.message;
