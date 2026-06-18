@@ -918,98 +918,20 @@ class StockOpeningImporter:
             result.add_error("Opening Stock", "no warehouse found to hold opening stock")
             return result
 
-        # Aggregate by item_code: a masters export can list the same Stock Item more
-        # than once (Tally names are unique, so duplicate tags are the same item), and
-        # all opening stock lands in one warehouse - so two rows for the same item
-        # would trip ERPNext's "Same item and warehouse combination should be unique"
-        # and fail the whole document. Keep one row per item; on a genuine quantity
-        # conflict keep the larger and warn rather than silently picking one.
-        by_code: dict[str, dict] = {}
+        # Aggregate by (item_code, warehouse): a masters export can list the same
+        # Stock Item more than once (Tally names are unique, so duplicate tags are
+        # the same item) and two rows for the same item+warehouse would trip
+        # ERPNext's "Same item and warehouse combination should be unique" and fail
+        # the whole document. Keep one row per item+warehouse; on a genuine quantity
+        # conflict keep the larger and warn. The warehouse key (not item alone) lets
+        # an item legitimately carry opening stock in several godowns.
+        by_key: dict[tuple, dict] = {}
         for it in items:
-            raw_qty = it.get("OpeningBalance")
-            qty = TallyExtractor._parse_quantity(raw_qty)
-            if qty < 0:
-                # Tally can carry a negative opening quantity (e.g. oversold stock);
-                # an 'Opening Stock' reconciliation cannot hold a negative qty and
-                # would fail the whole document. Drop this line with a warning rather
-                # than silently or fatally.
-                result.add_warning(
-                    it["_name"],
-                    f"opening stock not posted - Tally reports a negative opening "
-                    f"quantity '{raw_qty}'. ERPNext opening stock cannot be negative; "
-                    "review the item in Tally and set its opening stock manually.")
-                continue
-            if qty == 0:
-                # A non-empty cell that parses to zero is a real opening quantity we
-                # failed to read (e.g. an unexpected format) - surface it instead of
-                # dropping the item's opening stock silently.
-                if str(raw_qty or "").strip():
-                    result.add_warning(
-                        it["_name"],
-                        f"opening stock not posted - could not read quantity "
-                        f"'{raw_qty}'. Set this item's opening stock manually.")
-                continue
-            # Valuation: prefer the opening rate (unit-suffixed, e.g. "1.00/Nos"), then
-            # the value Tally already computed (OpeningValue ÷ qty - sign is direction,
-            # so abs), then the item's standard cost. _to_float can't read the unit
-            # suffix, hence _parse_rate.
-            opening_rate = TallyExtractor._parse_rate(it.get("OpeningRate"))
-            opening_value = abs(BaseImporter._to_float(it.get("OpeningValue")))
-            rate = opening_rate
-            if rate == 0 and opening_value:
-                rate = opening_value / qty
-            if rate == 0:
-                rate = TallyExtractor._parse_rate(it.get("StandardCost"))
-            # Item Master Rule 1: when Tally gives BOTH an opening rate and value they
-            # must satisfy value = qty x rate (Tally derives one from the other). A
-            # divergence beyond rounding means the source is internally inconsistent;
-            # we post using the opening rate, but flag that the posted value will not
-            # match Tally's recorded value rather than letting it diverge silently.
-            if opening_rate and opening_value:
-                expected = qty * opening_rate
-                if abs(opening_value - expected) > max(1.0, 0.01 * expected):
-                    result.add_warning(
-                        it["_name"],
-                        f"opening stock value does not reconcile - Tally reports a "
-                        f"value of {opening_value:,.2f}, but quantity x rate is "
-                        f"{qty:g} x {opening_rate:g} = {expected:,.2f}. Posted using "
-                        "the opening rate; verify this item's opening stock in Tally.")
-
-            code = safe_item_code(it["_name"])
-            prev = by_code.get(code)
-            if prev is not None:
-                if abs(prev["qty"] - qty) > 1e-9:
-                    result.add_warning(
-                        it["_name"],
-                        f"item appears more than once in the export with different "
-                        f"opening quantities ({prev['qty']:g} vs {qty:g}); kept the "
-                        f"larger. Verify the item's opening stock in Tally.")
-                    if qty <= prev["qty"]:
-                        continue
-                else:
-                    continue  # exact duplicate tag - same item exported twice
-            row = {
-                "item_code": code,
-                "warehouse": warehouse,
-                "qty": qty,
-                "valuation_rate": rate,
-            }
-            if rate == 0:
-                # ERPNext rejects a positive opening qty at a zero rate
-                # ("Valuation Rate required for Item …") unless the row explicitly
-                # allows it. Tally itself carries no value for these items, so we
-                # post the quantity faithfully at zero value rather than blocking
-                # the whole reconciliation. One warning per item, with identical
-                # text - the log groups same-reason rows into a single line.
-                row["allow_zero_valuation_rate"] = 1
-                result.add_warning(
-                    it["_name"],
-                    "opening stock posted with a zero valuation rate - Tally carries "
-                    "no opening rate, value or standard cost for this item, so its "
-                    "opening stock has no book value. Set a valuation rate in ERPNext "
-                    "if it should carry value.")
-            by_code[code] = row
-        rows = list(by_code.values())
+            for wh, raw_qty, raw_rate, raw_value in self._placements(it, warehouse):
+                self._add_opening_row(
+                    by_key, it["_name"], wh, raw_qty, raw_rate, raw_value,
+                    it.get("StandardCost"), result)
+        rows = list(by_key.values())
         if not rows:
             return result  # no opening stock to post
 
@@ -1031,6 +953,144 @@ class StockOpeningImporter:
             result.add_error("Opening Stock", exc)
             frappe.db.rollback()
         return result
+
+    def _placements(self, it: dict, default_wh: str) -> list[tuple]:
+        """Where this item's opening stock lands → list of
+        ``(warehouse, raw_qty, raw_rate, raw_value)`` buckets fed to
+        :meth:`_add_opening_row`.
+
+        - No godown-wise detail (``GodownOpenings`` empty, e.g. a live client or an
+          older export) → one bucket at the default warehouse using the item-level
+          OpeningBalance/Rate/Value, i.e. exactly the legacy behaviour.
+        - Godown-wise detail present → one bucket per resolved warehouse. Several
+          godowns that map to the same warehouse (e.g. both fall back to the default
+          because they weren't migrated) are summed, so nothing is lost and the rows
+          stay unique. A warehouse fed by a single godown keeps that godown's raw
+          rate (preserving the unit-suffixed rate and the value/rate cross-check);
+          a summed bucket derives its rate from value÷qty.
+        """
+        godowns = it.get("GodownOpenings") or []
+        if not godowns:
+            return [(default_wh, it.get("OpeningBalance"),
+                     it.get("OpeningRate"), it.get("OpeningValue"))]
+        buckets: dict[str, list] = {}
+        for g in godowns:
+            wh = self._warehouse_for_godown(g.get("godown", ""), default_wh)
+            buckets.setdefault(wh, []).append(g)
+        placements: list[tuple] = []
+        for wh, gs in buckets.items():
+            if len(gs) == 1:
+                g = gs[0]
+                placements.append((wh, g.get("qty"), g.get("rate"), g.get("value")))
+            else:
+                qsum = sum(TallyExtractor._parse_quantity(g.get("qty")) for g in gs)
+                vsum = sum(abs(BaseImporter._to_float(g.get("value"))) for g in gs)
+                placements.append((wh, str(qsum), "", str(vsum)))
+        return placements
+
+    def _warehouse_for_godown(self, godown: str, default_wh: str) -> str:
+        """Map a Tally godown name to its migrated ERPNext warehouse
+        (``"<Godown> - <ABBR>"``), falling back to the default warehouse when that
+        godown was not migrated (e.g. Tally's implicit "Main Location")."""
+        g = (godown or "").strip()
+        if g:
+            cand = company_scoped(g, self.abbr)
+            if frappe.db.exists(
+                    "Warehouse", {"name": cand, "is_group": 0, "company": self.company}):
+                return cand
+        return default_wh
+
+    def _add_opening_row(self, by_key: dict, name: str, warehouse: str, raw_qty,
+                         raw_rate, raw_value, raw_std_cost, result: ImportResult) -> None:
+        """Build and dedupe one opening-stock row for ``name`` at ``warehouse``.
+
+        Carries the full per-row treatment (negative/unreadable-quantity drops, the
+        rate cascade, the value/rate cross-check, the zero-rate allowance, and the
+        item+warehouse de-duplication), so both the legacy single-warehouse path and
+        the per-godown path share identical behaviour."""
+        qty = TallyExtractor._parse_quantity(raw_qty)
+        if qty < 0:
+            # Tally can carry a negative opening quantity (e.g. oversold stock);
+            # an 'Opening Stock' reconciliation cannot hold a negative qty and
+            # would fail the whole document. Drop this line with a warning rather
+            # than silently or fatally.
+            result.add_warning(
+                name,
+                f"opening stock not posted - Tally reports a negative opening "
+                f"quantity '{raw_qty}'. ERPNext opening stock cannot be negative; "
+                "review the item in Tally and set its opening stock manually.")
+            return
+        if qty == 0:
+            # A non-empty cell that parses to zero is a real opening quantity we
+            # failed to read (e.g. an unexpected format) - surface it instead of
+            # dropping the item's opening stock silently.
+            if str(raw_qty or "").strip():
+                result.add_warning(
+                    name,
+                    f"opening stock not posted - could not read quantity "
+                    f"'{raw_qty}'. Set this item's opening stock manually.")
+            return
+        # Valuation: prefer the opening rate (unit-suffixed, e.g. "1.00/Nos"), then
+        # the value Tally already computed (OpeningValue ÷ qty - sign is direction,
+        # so abs), then the item's standard cost. _to_float can't read the unit
+        # suffix, hence _parse_rate.
+        opening_rate = TallyExtractor._parse_rate(raw_rate)
+        opening_value = abs(BaseImporter._to_float(raw_value))
+        rate = opening_rate
+        if rate == 0 and opening_value:
+            rate = opening_value / qty
+        if rate == 0:
+            rate = TallyExtractor._parse_rate(raw_std_cost)
+        # Item Master Rule 1: when Tally gives BOTH an opening rate and value they
+        # must satisfy value = qty x rate (Tally derives one from the other). A
+        # divergence beyond rounding means the source is internally inconsistent;
+        # we post using the opening rate, but flag that the posted value will not
+        # match Tally's recorded value rather than letting it diverge silently.
+        if opening_rate and opening_value:
+            expected = qty * opening_rate
+            if abs(opening_value - expected) > max(1.0, 0.01 * expected):
+                result.add_warning(
+                    name,
+                    f"opening stock value does not reconcile - Tally reports a "
+                    f"value of {opening_value:,.2f}, but quantity x rate is "
+                    f"{qty:g} x {opening_rate:g} = {expected:,.2f}. Posted using "
+                    "the opening rate; verify this item's opening stock in Tally.")
+
+        code = safe_item_code(name)
+        key = (code, warehouse)
+        prev = by_key.get(key)
+        if prev is not None:
+            if abs(prev["qty"] - qty) > 1e-9:
+                result.add_warning(
+                    name,
+                    f"item appears more than once in the export with different "
+                    f"opening quantities ({prev['qty']:g} vs {qty:g}); kept the "
+                    f"larger. Verify the item's opening stock in Tally.")
+                if qty <= prev["qty"]:
+                    return
+            else:
+                return  # exact duplicate tag - same item exported twice
+        row = {
+            "item_code": code,
+            "warehouse": warehouse,
+            "qty": qty,
+            "valuation_rate": rate,
+        }
+        if rate == 0:
+            # ERPNext rejects a positive opening qty at a zero rate
+            # ("Valuation Rate required for Item …") unless the row explicitly
+            # allows it. Tally itself carries no value for these items, so we
+            # post the quantity faithfully at zero value rather than blocking
+            # the whole reconciliation. One warning per item, with identical
+            # text - the log groups same-reason rows into a single line.
+            row["allow_zero_valuation_rate"] = 1
+            result.add_warning(
+                name,
+                "opening stock posted with a zero valuation rate - Tally carries "
+                "no opening rate, value or standard cost for this item, so its "
+                "opening stock has no book value. Set a valuation rate in ERPNext "
+                "if it should carry value.")
+        by_key[key] = row
 
     def _existing_opening_stock(self) -> bool:
         """True when a non-cancelled Opening Stock reconciliation exists for the company."""

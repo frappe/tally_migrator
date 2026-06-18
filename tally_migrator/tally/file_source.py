@@ -392,6 +392,42 @@ class FileTallySource:
                 out[name] = boms
         return out
 
+    def item_godown_openings(self) -> dict:
+        """``{stock item name: [{godown, qty, rate, value}, ...]}``.
+
+        Tally stores an item's opening stock godown-wise (and batch-wise) under
+        repeating ``BATCHALLOCATIONS.LIST`` rows, each carrying GODOWNNAME plus the
+        allocation's own OPENINGBALANCE ("118 Ream") / OPENINGRATE ("265.50/Ream") /
+        OPENINGVALUE ("-31329.00"). The item-level OPENINGBALANCE is their sum, so
+        without this the whole opening collapses into one default warehouse. Raw
+        strings are returned; the importer parses qty/rate/value and maps the godown
+        to an ERPNext warehouse. Only rows that carry both a godown and an opening
+        balance are returned (an empty stub contributes nothing)."""
+        out: dict = {}
+        for elem in self._by_tag.get("STOCKITEM", ()):
+            name = (elem.get("NAME") or elem.findtext("NAME") or "").strip()
+            if not name:
+                continue
+            rows = []
+            for ba in elem:
+                if ba.tag.split("}")[-1].upper() != "BATCHALLOCATIONS.LIST":
+                    continue
+                d = {}
+                for c in ba:
+                    t = c.tag.split("}")[-1].upper()
+                    if t in ("GODOWNNAME", "OPENINGBALANCE", "OPENINGRATE", "OPENINGVALUE"):
+                        d[t.lower()] = (c.text or "").strip()
+                if d.get("godownname") and d.get("openingbalance"):
+                    rows.append({
+                        "godown": d["godownname"],
+                        "qty": d.get("openingbalance", ""),
+                        "rate": d.get("openingrate", ""),
+                        "value": d.get("openingvalue", ""),
+                    })
+            if rows:
+                out[name] = rows
+        return out
+
     # ── Field resolution (tag overrides + nested .LIST descent) ────────────────
     @classmethod
     def _resolve_field(cls, elem, candidates: list) -> str:
