@@ -169,6 +169,66 @@ class TestRealTallyTags(unittest.TestCase):
         self.assertEqual(item["StandardCost"], "72.00")
 
 
+# A Stock Item whose opening stock is split godown-wise: Tally carries each godown's
+# allocation in a repeating BATCHALLOCATIONS.LIST (GODOWNNAME + the allocation's own
+# OPENINGBALANCE / OPENINGRATE / OPENINGVALUE); the item-level OPENINGBALANCE is their
+# sum. Without reading these the whole opening collapses into one default warehouse.
+GODOWN_OPENING_XML = """<ENVELOPE>
+  <BODY><IMPORTDATA><REQUESTDATA>
+    <TALLYMESSAGE>
+      <STOCKITEM NAME="Pen"><PARENT>Primary</PARENT>
+        <OPENINGBALANCE>30 Nos</OPENINGBALANCE>
+        <BATCHALLOCATIONS.LIST>
+          <GODOWNNAME>Bangalore Godown</GODOWNNAME>
+          <BATCHNAME>Primary Batch</BATCHNAME>
+          <OPENINGBALANCE>20 Nos</OPENINGBALANCE>
+          <OPENINGRATE>10.00/Nos</OPENINGRATE>
+          <OPENINGVALUE>-200.00</OPENINGVALUE>
+        </BATCHALLOCATIONS.LIST>
+        <BATCHALLOCATIONS.LIST>
+          <GODOWNNAME>Delhi Godown</GODOWNNAME>
+          <BATCHNAME>Primary Batch</BATCHNAME>
+          <OPENINGBALANCE>10 Nos</OPENINGBALANCE>
+          <OPENINGRATE>10.00/Nos</OPENINGRATE>
+          <OPENINGVALUE>-100.00</OPENINGVALUE>
+        </BATCHALLOCATIONS.LIST></STOCKITEM>
+    </TALLYMESSAGE>
+    <TALLYMESSAGE>
+      <STOCKITEM NAME="NoBatch"><PARENT>Primary</PARENT>
+        <OPENINGBALANCE>5 Nos</OPENINGBALANCE></STOCKITEM>
+    </TALLYMESSAGE>
+  </REQUESTDATA></IMPORTDATA></BODY>
+</ENVELOPE>"""
+
+
+class TestGodownOpenings(unittest.TestCase):
+    """Item opening stock is read godown-wise from BATCHALLOCATIONS.LIST."""
+
+    def setUp(self):
+        self.source = FileTallySource(GODOWN_OPENING_XML)
+
+    def test_godown_openings_parsed_per_godown(self):
+        out = self.source.item_godown_openings()
+        self.assertIn("Pen", out)
+        rows = out["Pen"]
+        self.assertEqual(len(rows), 2)
+        by_godown = {r["godown"]: r for r in rows}
+        self.assertEqual(by_godown["Bangalore Godown"]["qty"], "20 Nos")
+        self.assertEqual(by_godown["Bangalore Godown"]["value"], "-200.00")
+        self.assertEqual(by_godown["Delhi Godown"]["rate"], "10.00/Nos")
+
+    def test_item_without_batch_allocations_absent(self):
+        out = self.source.item_godown_openings()
+        self.assertNotIn("NoBatch", out)
+
+    def test_extractor_attaches_godown_openings(self):
+        masters = TallyExtractor(self.source).extract_all()
+        pen = next(i for i in masters.items if i["_name"] == "Pen")
+        self.assertEqual(len(pen["GodownOpenings"]), 2)
+        nobatch = next(i for i in masters.items if i["_name"] == "NoBatch")
+        self.assertEqual(nobatch["GodownOpenings"], [])
+
+
 # A real Tally Prime export nests the ledger's bank account under PAYMENTDETAILS.LIST
 # (ACCOUNTNUMBER / IFSCODE / BANKNAME), not the older flat <BANKDETAILS> tag. Before
 # the nested path was mapped, every such party's bank account silently dropped.

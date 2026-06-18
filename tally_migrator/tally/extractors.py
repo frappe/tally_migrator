@@ -265,6 +265,9 @@ class TallyExtractor:
         self._attach_item_price_levels(masters.items)
         # Attach each item's bills of materials (component lists).
         self._attach_item_boms(masters.items)
+        # Attach each item's godown-wise opening stock (BATCHALLOCATIONS), so opening
+        # stock can post per warehouse instead of collapsing into one default godown.
+        self._attach_item_godown_openings(masters.items)
         return masters
 
     def _attach_item_gst_rates(self, items: list[dict]) -> None:
@@ -311,6 +314,15 @@ class TallyExtractor:
         boms = self.client.item_boms()
         for it in items:
             it.setdefault("Boms", boms.get(it.get("_name", ""), []))
+
+    def _attach_item_godown_openings(self, items: list[dict]) -> None:
+        """Set ``GodownOpenings`` (list of {godown, qty, rate, value}) on each item
+        dict. No-op when the source can't supply it (live client)."""
+        if not hasattr(self.client, "item_godown_openings"):
+            return
+        godowns = self.client.item_godown_openings()
+        for it in items:
+            it.setdefault("GodownOpenings", godowns.get(it.get("_name", ""), []))
 
     @staticmethod
     def _dedup_by_name(records: list[dict]) -> list[dict]:

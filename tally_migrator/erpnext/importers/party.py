@@ -32,6 +32,65 @@ from .banks import _ensure_bank, _insert_bank_account
 class PartyImporter(BaseImporter):
     """Shared behaviour for Customers and Suppliers: billing address + payment terms."""
 
+    # ── Party group derivation (set by each subclass) ──────────────────────────
+    # ERPNext stores a party's group in a separate doctype (Customer Group /
+    # Supplier Group). Tally states the group on the ledger itself (its PARENT,
+    # e.g. "Trade Debtors - Domestic"), so we recreate that group as a leaf under
+    # the standard root and assign it - mirroring how ItemImporter recreates Item
+    # Groups from an item's Parent. A blank/uncreatable group falls back to the
+    # standard default, so a party is never left without a (valid) group.
+    group_doctype: str = ""        # "Customer Group" / "Supplier Group"
+    group_name_field: str = ""     # "customer_group_name" / "supplier_group_name"
+    group_parent_field: str = ""   # "parent_customer_group" / "parent_supplier_group"
+    group_root: str = ""           # standard root group to nest new leaves under
+    default_group: str = ""        # fallback when Tally carries no usable group
+
+    def before_run(self, records: list[dict], result: "ImportResult") -> None:
+        self._ensure_party_groups(
+            {(r.get("Parent") or "").strip() for r in records}, result)
+
+    def _ensure_party_groups(self, names: set, result: "ImportResult") -> None:
+        """Create any missing party groups (as leaves under the standard root).
+
+        Best-effort and non-fatal: a group that can't be created just means those
+        parties fall back to ``default_group`` (recorded as a warning so the lost
+        grouping is visible), never a failed party. Mirrors
+        ``ItemImporter._ensure_item_groups``: created groups are NOT added to the
+        run's manifest, exactly like Item Groups, so they are not company-scoped
+        and a revert leaves shared masters untouched."""
+        if not self.group_doctype:
+            return
+        for name in names:
+            if not name or name == self.default_group:
+                continue
+            if frappe.db.exists(self.group_doctype, name):
+                continue
+            try:
+                doc = frappe.new_doc(self.group_doctype)
+                doc.set(self.group_name_field, name)
+                # A party group must be a leaf - ERPNext rejects assigning a group
+                # node to a party - so create it flat under the standard root.
+                doc.set(self.group_parent_field, self.group_root)
+                doc.is_group = 0
+                doc.insert(ignore_permissions=True)
+                frappe.db.commit()
+            except Exception as exc:
+                frappe.db.rollback()
+                frappe.log_error(
+                    "Tally Migrator", f"{self.group_doctype} creation failed: {name}: {exc}")
+                result.add_warning(
+                    name,
+                    f"{self.group_doctype.lower()} '{name}' not created; parties in it "
+                    f"fall back to '{self.default_group}': {exc}")
+
+    def _resolve_group(self, record: dict) -> str:
+        """The party's ERPNext group: its Tally PARENT when that group exists (it was
+        created in ``before_run``), else the standard default."""
+        name = (record.get("Parent") or "").strip()
+        if name and self.group_doctype and frappe.db.exists(self.group_doctype, name):
+            return name
+        return self.default_group
+
     def after_insert(self, name: str, record: dict, result: "ImportResult") -> None:
         self._save_address(name, self.doctype, record, result)
         self._save_extra_addresses(name, self.doctype, record, result)
@@ -338,12 +397,17 @@ class PartyImporter(BaseImporter):
 class CustomerImporter(PartyImporter):
     doctype = "Customer"
     key_field = "customer_name"
+    group_doctype = "Customer Group"
+    group_name_field = "customer_group_name"
+    group_parent_field = "parent_customer_group"
+    group_root = "All Customer Groups"
+    default_group = DEFAULT_CUSTOMER_GROUP
 
     def build_doc(self, record: dict) -> dict:
         doc = {
             "doctype": "Customer",
             "customer_name": record["_name"],
-            "customer_group": DEFAULT_CUSTOMER_GROUP,
+            "customer_group": self._resolve_group(record),
             "territory": DEFAULT_TERRITORY,
             "customer_type": "Company",
             "tax_id": record.get("GSTRegistrationNumber") or "",
@@ -362,12 +426,17 @@ class CustomerImporter(PartyImporter):
 class SupplierImporter(PartyImporter):
     doctype = "Supplier"
     key_field = "supplier_name"
+    group_doctype = "Supplier Group"
+    group_name_field = "supplier_group_name"
+    group_parent_field = "parent_supplier_group"
+    group_root = "All Supplier Groups"
+    default_group = DEFAULT_SUPPLIER_GROUP
 
     def build_doc(self, record: dict) -> dict:
         doc = {
             "doctype": "Supplier",
             "supplier_name": record["_name"],
-            "supplier_group": DEFAULT_SUPPLIER_GROUP,
+            "supplier_group": self._resolve_group(record),
             "supplier_type": "Company",
             "tax_id": record.get("GSTRegistrationNumber") or "",
             "pan": record.get("INCOMETAXNumber") or "",

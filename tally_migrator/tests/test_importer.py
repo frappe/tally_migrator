@@ -346,6 +346,41 @@ class TestERPNextImporter(unittest.TestCase):
             cat = imp._gst_category({"CountryName": "", "GSTRegistrationNumber": ""})
         self.assertEqual(cat, "Overseas")
 
+    # ── Party group derivation (no DB - existence stubbed) ──────────────────────
+    def test_customer_group_derived_from_tally_parent(self):
+        """The customer's Tally group (its PARENT, e.g. 'Trade Debtors - Domestic')
+        becomes its ERPNext Customer Group when that group exists - not the hardcoded
+        default. (Tier-1 fix: groups were collapsed into 'Commercial'.)"""
+        from unittest import mock
+        from tally_migrator.erpnext.importers import CustomerImporter
+        imp = CustomerImporter("_TMTest Co", "TC")
+        with mock.patch("frappe.db.exists", return_value=True):
+            doc = imp.build_doc({"_name": "Acme", "Parent": "Trade Debtors - Domestic"})
+        self.assertEqual(doc["customer_group"], "Trade Debtors - Domestic")
+
+    def test_supplier_group_derived_from_tally_parent(self):
+        from unittest import mock
+        from tally_migrator.erpnext.importers import SupplierImporter
+        imp = SupplierImporter("_TMTest Co", "TC")
+        with mock.patch("frappe.db.exists", return_value=True):
+            doc = imp.build_doc({"_name": "Zeta", "Parent": "Trade Creditors - Goods"})
+        self.assertEqual(doc["supplier_group"], "Trade Creditors - Goods")
+
+    def test_party_group_falls_back_to_default_when_absent(self):
+        """A blank Tally group, or one that couldn't be created, falls back to the
+        standard default so the party always gets a valid (leaf) group."""
+        from unittest import mock
+        from tally_migrator.erpnext.importers import CustomerImporter
+        from tally_migrator.tally.mappings import DEFAULT_CUSTOMER_GROUP
+        imp = CustomerImporter("_TMTest Co", "TC")
+        # blank parent -> default, no existence check needed
+        self.assertEqual(imp.build_doc({"_name": "Acme", "Parent": ""})["customer_group"],
+                         DEFAULT_CUSTOMER_GROUP)
+        # parent set but group doesn't exist (creation failed) -> default
+        with mock.patch("frappe.db.exists", return_value=False):
+            doc = imp.build_doc({"_name": "Acme", "Parent": "Trade Debtors - Domestic"})
+        self.assertEqual(doc["customer_group"], DEFAULT_CUSTOMER_GROUP)
+
     # ── Re-run idempotency guards (no DB - guard stubbed) ───────────────────────
 
     def test_opening_balance_skipped_when_entry_exists(self):
@@ -853,6 +888,95 @@ class TestERPNextImporter(unittest.TestCase):
                         "OpeningRate": "5.00/Nos", "OpeningValue": "-50.00"}],
                 posting_date="2024-04-01")
         self.assertFalse(any("does not reconcile" in w["reason"] for w in result.warnings))
+
+    def test_opening_stock_splits_across_godowns(self):
+        """An item whose opening stock spans two migrated godowns posts one row per
+        warehouse (Tier-1 fix: it used to collapse into a single default warehouse)."""
+        from unittest import mock
+        from tally_migrator.erpnext.importers import StockOpeningImporter
+
+        imp = StockOpeningImporter("_TMTest Co", "TC")
+        imp._existing_opening_stock = lambda: False
+        imp._default_warehouse = lambda: "Stores - TC"
+        captured = {}
+
+        def fake_get_doc(d):
+            captured["items"] = d["items"]
+            raise Exception("stop")
+
+        # Both godowns are "migrated" (warehouse exists); the default isn't consulted.
+        with mock.patch("frappe.db.exists", return_value=True), \
+                mock.patch("frappe.get_doc", side_effect=fake_get_doc):
+            imp.run(items=[{
+                "_name": "Pen", "OpeningBalance": "30 Nos",
+                "GodownOpenings": [
+                    {"godown": "Bangalore Godown", "qty": "20 Nos",
+                     "rate": "10.00/Nos", "value": "-200.00"},
+                    {"godown": "Delhi Godown", "qty": "10 Nos",
+                     "rate": "10.00/Nos", "value": "-100.00"},
+                ]}], posting_date="2024-04-01")
+        rows = {r["warehouse"]: r for r in captured["items"]}
+        self.assertEqual(len(rows), 2)
+        self.assertEqual(rows["Bangalore Godown - TC"]["qty"], 20.0)
+        self.assertEqual(rows["Delhi Godown - TC"]["qty"], 10.0)
+        self.assertEqual(rows["Bangalore Godown - TC"]["valuation_rate"], 10.0)
+
+    def test_opening_stock_godown_falls_back_to_default_warehouse(self):
+        """A godown that wasn't migrated (e.g. Tally's implicit 'Main Location')
+        falls back to the default warehouse - so the current single-godown exports
+        behave exactly as before."""
+        from unittest import mock
+        from tally_migrator.erpnext.importers import StockOpeningImporter
+
+        imp = StockOpeningImporter("_TMTest Co", "TC")
+        imp._existing_opening_stock = lambda: False
+        imp._default_warehouse = lambda: "Stores - TC"
+        captured = {}
+
+        def fake_get_doc(d):
+            captured["items"] = d["items"]
+            raise Exception("stop")
+
+        # No warehouse exists for the godown -> fall back to the default.
+        with mock.patch("frappe.db.exists", return_value=False), \
+                mock.patch("frappe.get_doc", side_effect=fake_get_doc):
+            imp.run(items=[{
+                "_name": "Pen", "OpeningBalance": "30 Nos",
+                "GodownOpenings": [
+                    {"godown": "Main Location", "qty": "30 Nos",
+                     "rate": "10.00/Nos", "value": "-300.00"},
+                ]}], posting_date="2024-04-01")
+        self.assertEqual(len(captured["items"]), 1)
+        self.assertEqual(captured["items"][0]["warehouse"], "Stores - TC")
+        self.assertEqual(captured["items"][0]["qty"], 30.0)
+
+    def test_opening_stock_unmigrated_godowns_sum_into_default(self):
+        """Two godowns that both fall back to the default warehouse are summed into
+        one row (not flagged as a spurious duplicate)."""
+        from unittest import mock
+        from tally_migrator.erpnext.importers import StockOpeningImporter
+
+        imp = StockOpeningImporter("_TMTest Co", "TC")
+        imp._existing_opening_stock = lambda: False
+        imp._default_warehouse = lambda: "Stores - TC"
+        captured = {}
+
+        def fake_get_doc(d):
+            captured["items"] = d["items"]
+            raise Exception("stop")
+
+        with mock.patch("frappe.db.exists", return_value=False), \
+                mock.patch("frappe.get_doc", side_effect=fake_get_doc):
+            result = imp.run(items=[{
+                "_name": "Pen", "OpeningBalance": "30 Nos",
+                "GodownOpenings": [
+                    {"godown": "A", "qty": "20 Nos", "rate": "", "value": "-200.00"},
+                    {"godown": "B", "qty": "10 Nos", "rate": "", "value": "-100.00"},
+                ]}], posting_date="2024-04-01")
+        self.assertEqual(len(captured["items"]), 1)
+        self.assertEqual(captured["items"][0]["qty"], 30.0)           # 20 + 10
+        self.assertEqual(captured["items"][0]["valuation_rate"], 10.0)  # 300 / 30
+        self.assertFalse(any("more than once" in w["reason"] for w in result.warnings))
 
     # ── Opening-balance batching (no DB - residual maths only) ──────────────────
 
