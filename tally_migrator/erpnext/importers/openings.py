@@ -927,10 +927,10 @@ class StockOpeningImporter:
         # an item legitimately carry opening stock in several godowns.
         by_key: dict[tuple, dict] = {}
         for it in items:
-            for wh, raw_qty, raw_rate, raw_value in self._placements(it, warehouse):
+            for wh, raw_qty, raw_rate, raw_value, batch in self._placements(it, warehouse):
                 self._add_opening_row(
                     by_key, it["_name"], wh, raw_qty, raw_rate, raw_value,
-                    it.get("StandardCost"), result)
+                    it.get("StandardCost"), result, batch=batch)
         rows = list(by_key.values())
         if not rows:
             return result  # no opening stock to post
@@ -956,36 +956,43 @@ class StockOpeningImporter:
 
     def _placements(self, it: dict, default_wh: str) -> list[tuple]:
         """Where this item's opening stock lands → list of
-        ``(warehouse, raw_qty, raw_rate, raw_value)`` buckets fed to
+        ``(warehouse, raw_qty, raw_rate, raw_value, batch)`` buckets fed to
         :meth:`_add_opening_row`.
 
         - No godown-wise detail (``GodownOpenings`` empty, e.g. a live client or an
           older export) → one bucket at the default warehouse using the item-level
           OpeningBalance/Rate/Value, i.e. exactly the legacy behaviour.
-        - Godown-wise detail present → one bucket per resolved warehouse. Several
-          godowns that map to the same warehouse (e.g. both fall back to the default
-          because they weren't migrated) are summed, so nothing is lost and the rows
-          stay unique. A warehouse fed by a single godown keeps that godown's raw
-          rate (preserving the unit-suffixed rate and the value/rate cross-check);
-          a summed bucket derives its rate from value÷qty.
+        - Godown-wise detail present → one bucket per (resolved warehouse, batch).
+          Several godowns that map to the same warehouse *and* batch (e.g. both fall
+          back to the default because they weren't migrated) are summed, so nothing
+          is lost and the rows stay unique. A bucket fed by a single godown keeps
+          that godown's raw rate (preserving the unit-suffixed rate and the
+          value/rate cross-check); a summed bucket derives its rate from value÷qty.
+          ``batch`` is "" for non-batch items, so they behave exactly as before.
         """
         godowns = it.get("GodownOpenings") or []
         if not godowns:
             return [(default_wh, it.get("OpeningBalance"),
-                     it.get("OpeningRate"), it.get("OpeningValue"))]
-        buckets: dict[str, list] = {}
+                     it.get("OpeningRate"), it.get("OpeningValue"), "")]
+        # Tally stamps EVERY item's opening allocation with a batch name - an implicit
+        # "Primary Batch" even for non-batch items - so the batch is only meaningful
+        # when the item is actually batch-tracked. Otherwise batch_no would be set on a
+        # has_batch_no=0 item and the reconciliation would be rejected.
+        is_batch = (it.get("IsBatchWiseOn") or "").strip().lower() == "yes"
+        buckets: dict[tuple, list] = {}
         for g in godowns:
             wh = self._warehouse_for_godown(g.get("godown", ""), default_wh)
-            buckets.setdefault(wh, []).append(g)
+            batch = (g.get("batch") or "").strip() if is_batch else ""
+            buckets.setdefault((wh, batch), []).append(g)
         placements: list[tuple] = []
-        for wh, gs in buckets.items():
+        for (wh, batch), gs in buckets.items():
             if len(gs) == 1:
                 g = gs[0]
-                placements.append((wh, g.get("qty"), g.get("rate"), g.get("value")))
+                placements.append((wh, g.get("qty"), g.get("rate"), g.get("value"), batch))
             else:
                 qsum = sum(TallyExtractor._parse_quantity(g.get("qty")) for g in gs)
                 vsum = sum(abs(BaseImporter._to_float(g.get("value"))) for g in gs)
-                placements.append((wh, str(qsum), "", str(vsum)))
+                placements.append((wh, str(qsum), "", str(vsum), batch))
         return placements
 
     def _warehouse_for_godown(self, godown: str, default_wh: str) -> str:
@@ -1001,13 +1008,16 @@ class StockOpeningImporter:
         return default_wh
 
     def _add_opening_row(self, by_key: dict, name: str, warehouse: str, raw_qty,
-                         raw_rate, raw_value, raw_std_cost, result: ImportResult) -> None:
+                         raw_rate, raw_value, raw_std_cost, result: ImportResult,
+                         batch: str = "") -> None:
         """Build and dedupe one opening-stock row for ``name`` at ``warehouse``.
 
         Carries the full per-row treatment (negative/unreadable-quantity drops, the
         rate cascade, the value/rate cross-check, the zero-rate allowance, and the
         item+warehouse de-duplication), so both the legacy single-warehouse path and
-        the per-godown path share identical behaviour."""
+        the per-godown path share identical behaviour. ``batch`` (when set) tags the
+        row with its Batch and widens the de-dup key, so a batch-tracked item can hold
+        opening stock in several batches at the same warehouse."""
         qty = TallyExtractor._parse_quantity(raw_qty)
         if qty < 0:
             # Tally can carry a negative opening quantity (e.g. oversold stock);
@@ -1057,7 +1067,7 @@ class StockOpeningImporter:
                     "the opening rate; verify this item's opening stock in Tally.")
 
         code = safe_item_code(name)
-        key = (code, warehouse)
+        key = (code, warehouse, batch)
         prev = by_key.get(key)
         if prev is not None:
             if abs(prev["qty"] - qty) > 1e-9:
@@ -1076,6 +1086,11 @@ class StockOpeningImporter:
             "qty": qty,
             "valuation_rate": rate,
         }
+        if batch:
+            # Batch-tracked item: tag the opening row with its Batch so the
+            # reconciliation posts the quantity into that batch (the Batch master is
+            # created first by BatchImporter).
+            row["batch_no"] = batch
         if rate == 0:
             # ERPNext rejects a positive opening qty at a zero rate
             # ("Valuation Rate required for Item …") unless the row explicitly

@@ -393,16 +393,19 @@ class FileTallySource:
         return out
 
     def item_godown_openings(self) -> dict:
-        """``{stock item name: [{godown, qty, rate, value}, ...]}``.
+        """``{stock item name: [{godown, qty, rate, value, batch, mfg_date, expiry}, ...]}``.
 
         Tally stores an item's opening stock godown-wise (and batch-wise) under
         repeating ``BATCHALLOCATIONS.LIST`` rows, each carrying GODOWNNAME plus the
         allocation's own OPENINGBALANCE ("118 Ream") / OPENINGRATE ("265.50/Ream") /
-        OPENINGVALUE ("-31329.00"). The item-level OPENINGBALANCE is their sum, so
-        without this the whole opening collapses into one default warehouse. Raw
-        strings are returned; the importer parses qty/rate/value and maps the godown
-        to an ERPNext warehouse. Only rows that carry both a godown and an opening
-        balance are returned (an empty stub contributes nothing)."""
+        OPENINGVALUE ("-31329.00"), and - for a batch-tracked item - BATCHNAME, MFDON
+        (manufacturing date) and EXPIRYPERIOD (expiry). The item-level OPENINGBALANCE
+        is their sum, so without this the whole opening collapses into one default
+        warehouse. Raw strings are returned; the importer parses qty/rate/value, maps
+        the godown to an ERPNext warehouse, and (for batch items) posts per batch.
+        ``batch``/``mfg_date``/``expiry`` are "" for non-batch items. Only rows that
+        carry both a godown and an opening balance are returned (an empty stub
+        contributes nothing)."""
         out: dict = {}
         for elem in self._by_tag.get("STOCKITEM", ()):
             name = (elem.get("NAME") or elem.findtext("NAME") or "").strip()
@@ -415,7 +418,8 @@ class FileTallySource:
                 d = {}
                 for c in ba:
                     t = c.tag.split("}")[-1].upper()
-                    if t in ("GODOWNNAME", "OPENINGBALANCE", "OPENINGRATE", "OPENINGVALUE"):
+                    if t in ("GODOWNNAME", "OPENINGBALANCE", "OPENINGRATE",
+                             "OPENINGVALUE", "BATCHNAME", "MFDON", "EXPIRYPERIOD"):
                         d[t.lower()] = (c.text or "").strip()
                 if d.get("godownname") and d.get("openingbalance"):
                     rows.append({
@@ -423,6 +427,12 @@ class FileTallySource:
                         "qty": d.get("openingbalance", ""),
                         "rate": d.get("openingrate", ""),
                         "value": d.get("openingvalue", ""),
+                        # Batch-wise opening (only on batch-tracked items): the batch id,
+                        # its manufacturing date (MFDON, Tally YYYYMMDD) and expiry date
+                        # (EXPIRYPERIOD text, e.g. "31-Jul-26"). Blank for non-batch items.
+                        "batch": d.get("batchname", ""),
+                        "mfg_date": d.get("mfdon", ""),
+                        "expiry": d.get("expiryperiod", ""),
                     })
             if rows:
                 out[name] = rows

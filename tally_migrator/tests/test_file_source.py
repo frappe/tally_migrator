@@ -229,6 +229,52 @@ class TestGodownOpenings(unittest.TestCase):
         self.assertEqual(nobatch["GodownOpenings"], [])
 
 
+# A batch-tracked, perishable item with MRP - mirrors a real "MRP Batch" export.
+BATCH_MRP_XML = """<ENVELOPE>
+  <BODY><IMPORTDATA><REQUESTDATA>
+    <TALLYMESSAGE>
+      <STOCKITEM NAME="Iphone 10"><PARENT>Primary</PARENT><BASEUNITS>Nos</BASEUNITS>
+        <ISBATCHWISEON>Yes</ISBATCHWISEON>
+        <ISPERISHABLEON>Yes</ISPERISHABLEON>
+        <HASMFGDATE>Yes</HASMFGDATE>
+        <OPENINGBALANCE>90 Nos</OPENINGBALANCE>
+        <MRPDETAILS.LIST>
+          <MRPRATEDETAILS.LIST><MRPRATE>50000.00/Nos</MRPRATE></MRPRATEDETAILS.LIST>
+        </MRPDETAILS.LIST>
+        <BATCHALLOCATIONS.LIST>
+          <MFDON>20260501</MFDON>
+          <GODOWNNAME>Main Location</GODOWNNAME>
+          <BATCHNAME>BATCH1</BATCHNAME>
+          <OPENINGBALANCE>90 Nos</OPENINGBALANCE>
+          <OPENINGRATE>50000.00/Nos</OPENINGRATE>
+          <OPENINGVALUE>-4500000.00</OPENINGVALUE>
+          <EXPIRYPERIOD JD="46142" INC="Y" P="31-Jul-26">31-Jul-26</EXPIRYPERIOD>
+        </BATCHALLOCATIONS.LIST></STOCKITEM>
+    </TALLYMESSAGE>
+  </REQUESTDATA></IMPORTDATA></BODY>
+</ENVELOPE>"""
+
+
+class TestBatchExpiryMrp(unittest.TestCase):
+    """Batch / expiry flags, batch-wise opening detail, and MRP are extracted."""
+
+    def setUp(self):
+        self.source = FileTallySource(BATCH_MRP_XML)
+
+    def test_batch_opening_carries_batch_mfg_expiry(self):
+        row = self.source.item_godown_openings()["Iphone 10"][0]
+        self.assertEqual(row["batch"], "BATCH1")
+        self.assertEqual(row["mfg_date"], "20260501")
+        self.assertEqual(row["expiry"], "31-Jul-26")
+
+    def test_item_flags_and_mrp_read(self):
+        item = self.source.get_collection(
+            "Stock Item", ITEM_FIELDS, ITEM_TAGS)[0]
+        self.assertEqual(item["IsBatchWiseOn"], "Yes")
+        self.assertEqual(item["IsPerishableOn"], "Yes")
+        self.assertEqual(item["Mrp"], "50000.00/Nos")
+
+
 # A real Tally Prime export nests the ledger's bank account under PAYMENTDETAILS.LIST
 # (ACCOUNTNUMBER / IFSCODE / BANKNAME), not the older flat <BANKDETAILS> tag. Before
 # the nested path was mapped, every such party's bank account silently dropped.
