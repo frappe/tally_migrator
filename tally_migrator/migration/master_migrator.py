@@ -281,9 +281,16 @@ class MasterMigrator:
             PipelineStep("Suppliers", 65, self.importer.import_suppliers, masters.suppliers),
             PipelineStep("Items", 80, self.importer.import_items, masters.items),
         ]
+        # Batch masters (Tally batch-wise opening detail) -> ERPNext Batch. After
+        # Items (the item must carry has_batch_no) and before Opening Stock (the
+        # reconciliation posts batch-wise rows against these). Gated on any item
+        # carrying a batch in its godown-wise opening detail.
+        if any((i.get("IsBatchWiseOn") or "").strip().lower() == "yes" for i in masters.items):
+            steps.append(PipelineStep("Batches", 81, self.importer.import_batches, masters.items))
         # Price levels (Retail/Wholesale) -> Price List + Item Price (+ discount
-        # Pricing Rule). After Items so item_code/UOM links resolve.
-        if any(i.get("PriceLevels") for i in masters.items):
+        # Pricing Rule); also Tally MRP -> an "MRP" Price List + Item Price. After
+        # Items so item_code/UOM links resolve.
+        if any(i.get("PriceLevels") or i.get("Mrp") for i in masters.items):
             steps.append(PipelineStep("Prices", 82, self.importer.import_prices, masters.items))
         # Bills of materials -> ERPNext BOM (submitted). After Items so the finished
         # item and every component exist.

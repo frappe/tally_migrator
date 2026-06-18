@@ -31,6 +31,12 @@ ITEM_FIELDS = [
     # Inventory valuation method (→ Item.valuation_method) and the flat item-level
     # GST flag (→ India-Compliance is_non_gst). Both have real ERPNext targets.
     "ValuationMethod", "GstApplicable",
+    # Batch/expiry flags (→ Item.has_batch_no / has_expiry_date). The flat tag names
+    # equal FIELD.upper() (ISBATCHWISEON / ISPERISHABLEON / HASMFGDATE), so no tag_map.
+    "IsBatchWiseOn", "IsPerishableOn", "HasMfgDate",
+    # Maximum Retail Price (→ an "MRP" selling Price List + Item Price). Nested under
+    # MRPDETAILS.LIST; the rate is unit-suffixed ("50000.00/Nos"), so it needs a path.
+    "Mrp",
 ]
 
 GODOWN_FIELDS     = ["Name", "Parent", "Address"]
@@ -111,6 +117,9 @@ ITEM_TAGS = {
     "ValuationMethod": ["VALUATIONMETHOD", "COSTINGMETHOD"],
     # Flat item-level "Applicable / Not Applicable" GST switch.
     "GstApplicable":   ["GSTAPPLICABLE"],
+    # MRP lives nested as a (state-wise, dated) revision list; take the latest rate.
+    # State-specific MRP is not modelled in ERPNext, so the "Any"/last rate is used.
+    "Mrp": ["MRPDETAILS.LIST/MRPRATEDETAILS.LIST/MRPRATE"],
 }
 
 GODOWN_TAGS = {
@@ -316,8 +325,9 @@ class TallyExtractor:
             it.setdefault("Boms", boms.get(it.get("_name", ""), []))
 
     def _attach_item_godown_openings(self, items: list[dict]) -> None:
-        """Set ``GodownOpenings`` (list of {godown, qty, rate, value}) on each item
-        dict. No-op when the source can't supply it (live client)."""
+        """Set ``GodownOpenings`` (list of {godown, qty, rate, value, batch, mfg_date,
+        expiry}) on each item dict. ``batch``/``mfg_date``/``expiry`` are populated only
+        for batch-tracked items. No-op when the source can't supply it (live client)."""
         if not hasattr(self.client, "item_godown_openings"):
             return
         godowns = self.client.item_godown_openings()

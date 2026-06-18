@@ -197,6 +197,109 @@ class TestERPNextImporter(unittest.TestCase):
         uom = frappe.db.get_value("Item", {"item_name": "_TMTest Item KG"}, "stock_uom")
         self.assertEqual(uom, "Kg")
 
+    # ── Batch / expiry / MRP (Tier 2) ───────────────────────────────────────────
+
+    @staticmethod
+    def _batch_item(name="_TMTest Batch Item"):
+        return {
+            "_name": name, "Parent": "All Item Groups", "BaseUnits": "Nos",
+            "HSNCode": "99041010",
+            "IsBatchWiseOn": "Yes", "IsPerishableOn": "Yes", "HasMfgDate": "Yes",
+            "Mrp": "50000.00/Nos",
+            "OpeningBalance": "90 Nos",
+            "GodownOpenings": [{
+                "godown": "Main Location", "qty": "90 Nos", "rate": "50000.00/Nos",
+                "value": "-4500000.00", "batch": "_TMTest BATCH1",
+                "mfg_date": "20260501", "expiry": "31-Jul-26",
+            }],
+        }
+
+    def test_batch_item_sets_has_batch_no_and_expiry(self):
+        item = self._batch_item()
+        result = self.importer.import_items([item])
+        self.assertEqual(result.failed, 0, msg=str(result.errors))
+        code = frappe.db.get_value("Item", {"item_name": item["_name"]}, "name")
+        flags = frappe.db.get_value(
+            "Item", code, ["has_batch_no", "has_expiry_date"], as_dict=True)
+        self.assertEqual(flags.has_batch_no, 1)
+        self.assertEqual(flags.has_expiry_date, 1)
+
+    def test_batch_master_created_with_dates(self):
+        item = self._batch_item()
+        self.importer.import_items([item])
+        self.addCleanup(
+            lambda: frappe.db.exists("Batch", "_TMTest BATCH1")
+            and frappe.delete_doc("Batch", "_TMTest BATCH1", force=1))
+        res = self.importer.import_batches([item])
+        self.assertEqual(res.failed, 0, msg=str(res.errors))
+        b = frappe.db.get_value(
+            "Batch", "_TMTest BATCH1",
+            ["item", "manufacturing_date", "expiry_date"], as_dict=True)
+        self.assertTrue(b)
+        self.assertEqual(str(b.manufacturing_date), "2026-05-01")
+        self.assertEqual(str(b.expiry_date), "2026-07-31")
+
+    def test_mrp_creates_item_price_on_mrp_list(self):
+        item = self._batch_item()
+        self.importer.import_items([item])
+        code = frappe.db.get_value("Item", {"item_name": item["_name"]}, "name")
+        self.addCleanup(
+            lambda: [frappe.delete_doc("Item Price", p, force=1)
+                     for p in frappe.get_all(
+                         "Item Price", filters={"item_code": code}, pluck="name")])
+        self.importer.import_prices([item])
+        rows = frappe.get_all(
+            "Item Price", filters={"item_code": code, "price_list": "MRP"},
+            fields=["price_list_rate", "uom"])
+        self.assertEqual(len(rows), 1)
+        self.assertEqual(rows[0].price_list_rate, 50000.0)
+
+    def test_opening_stock_row_carries_batch_no(self):
+        from tally_migrator.erpnext.importers import StockOpeningImporter
+        from tally_migrator.erpnext.importers.base import ImportResult
+        imp = StockOpeningImporter("_TMTest Co", "TC")
+        imp._warehouse_for_godown = lambda g, d: d   # avoid DB warehouse lookup
+        item = self._batch_item()
+        placements = imp._placements(item, "WH - TC")
+        self.assertEqual(placements[0][4], "_TMTest BATCH1")   # batch in the tuple
+        res, by_key = ImportResult("Stock Reconciliation"), {}
+        for wh, q, r, v, batch in placements:
+            imp._add_opening_row(by_key, "X", wh, q, r, v, None, res, batch=batch)
+        row = next(iter(by_key.values()))
+        self.assertEqual(row["batch_no"], "_TMTest BATCH1")
+        self.assertEqual(row["qty"], 90.0)
+
+    def test_parse_expiry_formats(self):
+        from tally_migrator.erpnext.importers.batch import BatchImporter
+        self.assertEqual(BatchImporter._parse_expiry("31-Jul-26"), "2026-07-31")
+        self.assertEqual(BatchImporter._parse_expiry(""), "")
+        self.assertEqual(BatchImporter._parse_expiry("garbage"), "")
+
+    def test_non_batch_item_ignores_implicit_primary_batch(self):
+        """Tally stamps EVERY item's opening with an implicit 'Primary Batch'. A
+        non-batch item (IsBatchWiseOn=No) must NOT get batch_no on its opening row,
+        or ERPNext rejects the row (has_batch_no=0)."""
+        from tally_migrator.erpnext.importers import StockOpeningImporter
+        from tally_migrator.erpnext.importers.base import ImportResult
+        imp = StockOpeningImporter("_TMTest Co", "TC")
+        imp._warehouse_for_godown = lambda g, d: d
+        item = {"_name": "PlainItem", "IsBatchWiseOn": "No", "GodownOpenings": [
+            {"godown": "Main Location", "qty": "10 Nos", "rate": "5.00/Nos",
+             "value": "-50.00", "batch": "Primary Batch"}]}
+        res, by_key = ImportResult("Stock Reconciliation"), {}
+        for wh, q, r, v, batch in imp._placements(item, "WH - TC"):
+            imp._add_opening_row(by_key, "PlainItem", wh, q, r, v, None, res, batch=batch)
+        row = next(iter(by_key.values()))
+        self.assertNotIn("batch_no", row)
+
+    def test_batch_importer_skips_non_batch_items(self):
+        """A non-batch item carrying an implicit 'Primary Batch' must not get a Batch."""
+        item = {"_name": "_TMTest Plain", "IsBatchWiseOn": "No", "GodownOpenings": [
+            {"godown": "Main Location", "qty": "10 Nos", "batch": "Primary Batch",
+             "mfg_date": "", "expiry": ""}]}
+        res = self.importer.import_batches([item])
+        self.assertEqual(res.created, 0)
+
     # ── Warehouse (requires a configured Company) ───────────────────────────────
 
     def test_warehouse_topo_sort_creates_parent_first(self):

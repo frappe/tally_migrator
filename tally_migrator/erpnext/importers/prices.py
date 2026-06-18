@@ -25,12 +25,35 @@ class PriceImporter:
         self.currency = frappe.get_cached_value(
             "Company", company, "default_currency") or "INR"
 
+    # Tally MRP has no native ERPNext field, so it is modelled as a selling Price
+    # List named "MRP" with one Item Price per item - mirroring how price levels map.
+    MRP_PRICE_LIST = "MRP"
+
     def run(self, items: list[dict]) -> ImportResult:
         result = ImportResult(self.doctype)
         for it in items:
             for lv in (it.get("PriceLevels") or []):
                 self._import_level(result, it.get("_name", ""), lv)
+            self._import_mrp(result, it.get("_name", ""), it.get("Mrp"))
         return result
+
+    def _import_mrp(self, result: ImportResult, item_name: str, raw_mrp) -> None:
+        """Tally MRP ("50000.00/Nos") → an Item Price on the 'MRP' selling list."""
+        rate, uom = self._parse_rate(raw_mrp or "")
+        if rate is None:
+            return                              # no MRP on this item
+        item_code = safe_item_code(item_name)
+        if not frappe.db.exists("Item", item_code):
+            return                              # item didn't import (warned by ItemImporter)
+        stock_uom = frappe.db.get_value("Item", item_code, "stock_uom")
+        if not self._uom_valid_for_item(item_code, uom, stock_uom):
+            uom = stock_uom
+        try:
+            price_list = self._ensure_price_list(self.MRP_PRICE_LIST)
+            self._ensure_item_price(result, item_code, price_list, uom, rate, None)
+        except Exception as exc:
+            result.add_error(f"{item_name} (MRP)", exc)
+            frappe.db.rollback()
 
     def _import_level(self, result: ImportResult, item_name: str, lv: dict) -> None:
         rate, uom = self._parse_rate(lv.get("rate", ""))

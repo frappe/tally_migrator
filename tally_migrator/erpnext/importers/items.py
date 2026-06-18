@@ -135,6 +135,14 @@ class ItemImporter(BaseImporter):
         vm = self._valuation_method(record)
         if vm:
             doc["valuation_method"] = vm
+        # Batch / expiry tracking. ERPNext models expiry per batch, so has_expiry_date
+        # is only valid alongside has_batch_no - gate it so a perishable-but-not-batch
+        # Tally item never produces an invalid Item. Tally batches are pre-existing, so
+        # we do NOT auto-create new ones; the Batch importer recreates the Tally batches.
+        if self._yes(record.get("IsBatchWiseOn")):
+            doc["has_batch_no"] = 1
+            if self._yes(record.get("IsPerishableOn")):
+                doc["has_expiry_date"] = 1
         doc.update(self._gst_fields(record))
         tpl = getattr(self, "_tax_templates", {}).get(record["_name"])
         if tpl:
@@ -228,6 +236,11 @@ class ItemImporter(BaseImporter):
         if "avg" in raw or "average" in raw or "moving" in raw:
             return "Moving Average"
         return None
+
+    @staticmethod
+    def _yes(val) -> bool:
+        """Tally boolean flag → bool. Tally writes 'Yes'/'No'; anything else is False."""
+        return (val or "").strip().lower() == "yes"
 
     @staticmethod
     def _is_stock_item(record: dict) -> int:
