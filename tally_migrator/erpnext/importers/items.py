@@ -289,7 +289,10 @@ class ItemImporter(BaseImporter):
 
         A failure here means items in that group will fall back to the default
         group, so it's recorded as a warning (visible loss of grouping) rather
-        than failing silently."""
+        than failing silently. A group we create is recorded on the manifest so
+        revert removes it too - the items that reference it are deleted first (same
+        bucket, reversed order) and the delete is unforced, so a group still used by
+        an item outside this run is kept."""
         for group in groups:
             if group and not frappe.db.exists("Item Group", group):
                 try:
@@ -298,6 +301,7 @@ class ItemImporter(BaseImporter):
                     ig.parent_item_group = DEFAULT_ITEM_GROUP
                     ig.insert(ignore_permissions=True)
                     frappe.db.commit()
+                    result.add_created(ig.name, "Item Group")
                 except Exception as exc:
                     frappe.log_error("Tally Migrator", f"Item Group creation failed: {group}: {exc}")
                     result.add_warning(group, f"item group not created: {exc}")

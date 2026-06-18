@@ -28,12 +28,18 @@ from .base import ImportResult
 
 # ── Bank Account helpers (shared by party + company bank accounts) ─────────────
 
-def _ensure_bank(bank_name: str) -> str:
+def _ensure_bank(bank_name: str, result: "ImportResult | None" = None) -> str:
     """Return an existing/created Bank master name, or "" when no name is given.
 
     ERPNext's Bank Account requires a linked Bank; Tally only gives us its name,
     so we create the Bank master on demand. Best-effort: a failure returns "" and
-    the caller skips bank-account creation with a warning rather than aborting."""
+    the caller skips bank-account creation with a warning rather than aborting.
+
+    A Bank we actually create is recorded on ``result`` so revert removes it too
+    (the linked Bank Accounts are deleted first - company ones in the same manifest
+    bucket, party ones when the party goes - and the Bank delete is unforced, so one
+    still referenced elsewhere is safely kept). An already-existing Bank is never
+    recorded, so a pre-existing Bank is left untouched."""
     name = (bank_name or "").strip()
     if not name:
         return ""
@@ -42,6 +48,8 @@ def _ensure_bank(bank_name: str) -> str:
     try:
         frappe.get_doc({"doctype": "Bank", "bank_name": name}).insert(ignore_permissions=True)
         frappe.db.commit()
+        if result is not None:
+            result.add_created(name, "Bank")
         return name
     except Exception:
         frappe.db.rollback()

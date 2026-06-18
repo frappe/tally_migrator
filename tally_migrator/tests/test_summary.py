@@ -1,8 +1,10 @@
 """Unit tests for MigrationSummary (no DB required)."""
 import unittest
+from unittest import mock
 
 from tally_migrator.erpnext.importers import ImportResult
-from tally_migrator.migration.master_migrator import MigrationSummary
+from tally_migrator.migration import master_migrator
+from tally_migrator.migration.master_migrator import MasterMigrator, MigrationSummary
 
 
 def _result(doctype, created=0, skipped=0, errors=(), created_names=(), warnings=()):
@@ -126,6 +128,42 @@ class TestMigrationSummary(unittest.TestCase):
     def test_error_records_empty_when_clean(self):
         s = _summary(_result("Warehouse", created=1), _result("Customer", created=2), _result("Supplier"), _result("Item"))
         self.assertEqual(s.error_records(), [])
+
+
+class TestTrackWizardUoms(unittest.TestCase):
+    """The pre-flight 'create as new' UOMs are inserted before the run, so the unit
+    importer skips them and never records them. _track_wizard_uoms folds them into the
+    manifest so revert undoes them - but only the ones that actually exist, and never
+    a duplicate of one the importer already recorded."""
+
+    def _migrator(self, created_uoms):
+        m = object.__new__(MasterMigrator)   # bypass __init__ (needs a live source)
+        m.created_uoms = created_uoms
+        return m
+
+    def test_existing_wizard_uoms_added_without_duplicates(self):
+        m = self._migrator(["Dozen", "Ream", "Ghost"])
+        manifest = {"Units": [{"doctype": "UOM", "name": "Pcs"},
+                              {"doctype": "UOM", "name": "Dozen"}]}  # Dozen already tracked
+        # Ghost was reported created but no longer exists -> must be skipped.
+        with mock.patch.object(master_migrator.frappe.db, "exists",
+                               side_effect=lambda dt, n: n in {"Dozen", "Ream"}):
+            m._track_wizard_uoms(manifest)
+        names = [d["name"] for d in manifest["Units"]]
+        self.assertEqual(names, ["Pcs", "Dozen", "Ream"])  # Ream added; no dup Dozen; no Ghost
+
+    def test_creates_units_label_when_absent(self):
+        m = self._migrator(["Ream"])
+        manifest = {}   # run created no Unit masters of its own
+        with mock.patch.object(master_migrator.frappe.db, "exists", return_value=True):
+            m._track_wizard_uoms(manifest)
+        self.assertEqual(manifest["Units"], [{"doctype": "UOM", "name": "Ream"}])
+
+    def test_no_wizard_uoms_leaves_manifest_untouched(self):
+        m = self._migrator([])
+        manifest = {"Items": [{"doctype": "Item", "name": "X"}]}
+        m._track_wizard_uoms(manifest)
+        self.assertEqual(manifest, {"Items": [{"doctype": "Item", "name": "X"}]})
 
 
 if __name__ == "__main__":

@@ -268,6 +268,35 @@ class TestERPNextImporter(unittest.TestCase):
         row = next(iter(by_key.values()))
         self.assertEqual(row["batch_no"], "_TMTest BATCH1")
         self.assertEqual(row["qty"], 90.0)
+        # ERPNext v15+ throws "Please add Serial and Batch Bundle" on a batch row
+        # unless use_serial_batch_fields is set; with it, on_submit builds the bundle
+        # from batch_no. Without this the whole opening-stock reconciliation fails.
+        self.assertEqual(row["use_serial_batch_fields"], 1)
+
+    def test_ensure_serial_batch_enabled_flips_setting_when_off(self):
+        from unittest import mock
+        from tally_migrator.erpnext.importers import StockOpeningImporter
+        from tally_migrator.erpnext.importers.base import ImportResult
+        from tally_migrator.erpnext.importers import openings
+        res = ImportResult("Stock Reconciliation")
+        with mock.patch.object(openings.frappe.db, "get_single_value", return_value=0), \
+             mock.patch.object(openings.frappe.db, "set_single_value") as set_single:
+            StockOpeningImporter._ensure_serial_batch_enabled(res)
+        set_single.assert_called_once_with(
+            "Stock Settings", "enable_serial_and_batch_no_for_item", 1)
+        self.assertTrue(res.warnings)   # the flip is recorded on the log
+
+    def test_ensure_serial_batch_enabled_noop_when_already_on(self):
+        from unittest import mock
+        from tally_migrator.erpnext.importers import StockOpeningImporter
+        from tally_migrator.erpnext.importers.base import ImportResult
+        from tally_migrator.erpnext.importers import openings
+        res = ImportResult("Stock Reconciliation")
+        with mock.patch.object(openings.frappe.db, "get_single_value", return_value=1), \
+             mock.patch.object(openings.frappe.db, "set_single_value") as set_single:
+            StockOpeningImporter._ensure_serial_batch_enabled(res)
+        set_single.assert_not_called()
+        self.assertFalse(res.warnings)
 
     def test_parse_expiry_formats(self):
         from tally_migrator.erpnext.importers.batch import BatchImporter
@@ -291,6 +320,8 @@ class TestERPNextImporter(unittest.TestCase):
             imp._add_opening_row(by_key, "PlainItem", wh, q, r, v, None, res, batch=batch)
         row = next(iter(by_key.values()))
         self.assertNotIn("batch_no", row)
+        # No batch_no -> the bundle flag must stay off too (a plain qty/warehouse row).
+        self.assertNotIn("use_serial_batch_fields", row)
 
     def test_batch_importer_skips_non_batch_items(self):
         """A non-batch item carrying an implicit 'Primary Batch' must not get a Batch."""
@@ -483,6 +514,64 @@ class TestERPNextImporter(unittest.TestCase):
         with mock.patch("frappe.db.exists", return_value=False):
             doc = imp.build_doc({"_name": "Acme", "Parent": "Trade Debtors - Domestic"})
         self.assertEqual(doc["customer_group"], DEFAULT_CUSTOMER_GROUP)
+
+    # ── Auto-created reference masters are tracked so revert removes them ────────
+    def test_party_group_creation_is_tracked_for_revert(self):
+        from unittest import mock
+        from tally_migrator.erpnext.importers import CustomerImporter
+        from tally_migrator.erpnext.importers.base import ImportResult
+        imp = CustomerImporter("_TMTest Co", "TC")
+        res = ImportResult("Customer")
+        fake = mock.MagicMock(); fake.name = "Trade Debtors"
+        with mock.patch("frappe.db.exists", return_value=False), \
+             mock.patch("frappe.new_doc", return_value=fake), \
+             mock.patch("frappe.db.commit"):
+            imp._ensure_party_groups({"Trade Debtors"}, res)
+        self.assertIn({"name": "Trade Debtors", "doctype": "Customer Group"}, res.created_docs)
+
+    def test_item_group_creation_is_tracked_for_revert(self):
+        from unittest import mock
+        from tally_migrator.erpnext.importers import ItemImporter
+        from tally_migrator.erpnext.importers.base import ImportResult
+        imp = ItemImporter("_TMTest Co", "TC")
+        res = ImportResult("Item")
+        fake = mock.MagicMock(); fake.name = "Stationery"
+        with mock.patch("frappe.db.exists", return_value=False), \
+             mock.patch("frappe.new_doc", return_value=fake), \
+             mock.patch("frappe.db.commit"):
+            imp._ensure_item_groups({"Stationery"}, res)
+        self.assertIn({"name": "Stationery", "doctype": "Item Group"}, res.created_docs)
+
+    def test_bank_creation_is_tracked_for_revert(self):
+        from unittest import mock
+        from tally_migrator.erpnext.importers import banks
+        from tally_migrator.erpnext.importers.base import ImportResult
+        res = ImportResult("Account")
+        with mock.patch.object(banks.frappe.db, "exists", return_value=False), \
+             mock.patch.object(banks.frappe, "get_doc"), \
+             mock.patch.object(banks.frappe.db, "commit"):
+            out = banks._ensure_bank("HDFC Bank", res)
+        self.assertEqual(out, "HDFC Bank")
+        self.assertIn({"name": "HDFC Bank", "doctype": "Bank"}, res.created_docs)
+        # An already-existing Bank must NOT be recorded (leave pre-existing data alone).
+        res2 = ImportResult("Account")
+        with mock.patch.object(banks.frappe.db, "exists", return_value=True):
+            banks._ensure_bank("HDFC Bank", res2)
+        self.assertEqual(res2.created_docs, [])
+
+    def test_uom_category_creation_is_tracked_for_revert(self):
+        from unittest import mock
+        from tally_migrator.erpnext.importers import units
+        from tally_migrator.erpnext.importers.units import UnitImporter
+        from tally_migrator.erpnext.importers.base import ImportResult
+        res = ImportResult("UOM")
+        fake = mock.MagicMock(); fake.name = "Tally Imported"
+        with mock.patch.object(units.frappe.db, "has_column", return_value=True), \
+             mock.patch.object(units.frappe, "get_all", return_value=[]), \
+             mock.patch.object(units.frappe, "get_doc", return_value=fake), \
+             mock.patch.object(units.frappe.db, "commit"):
+            UnitImporter._uom_category(res)
+        self.assertIn({"name": "Tally Imported", "doctype": "UOM Category"}, res.created_docs)
 
     # ── Re-run idempotency guards (no DB - guard stubbed) ───────────────────────
 

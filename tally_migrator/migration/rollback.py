@@ -161,6 +161,11 @@ _SIDE_EFFECTS = {
             # India Compliance's GST Settings child rows the UQC step writes; absent
             # on a site without india_compliance, so the purge is table-guarded.
             ("GST UOM Map", "uom")),
+    # The auto-created "Tally Imported" UOM Category is blocked by the UOM Conversion
+    # Factors that name it. Purge those when the category is deleted so it goes
+    # regardless of whether every owning UOM was removed first (order-independent) -
+    # they are this run's own conversions (all in this category), so this is safe.
+    "UOM Category": (("UOM Conversion Factor", "category"),),
 }
 
 
@@ -216,6 +221,15 @@ def _purge_party_links(party_type: str, party: str) -> list[dict]:
     contacts, bank accounts), not silent plumbing, so the audit must show them.
     """
     purged: list[dict] = []
+    # The party doc holds its own primary links (customer_primary_address /
+    # _contact, or the supplier_* equivalents - all core ERPNext fields). These
+    # point AT the Address/Contact, so delete_doc on that record is refused
+    # ("Cannot delete ... linked with <Party>") and the party is kept. The party is
+    # about to be deleted, so clear the links first; a direct db.set_value (plain
+    # UPDATE, no doc reload) is enough and the field set differs only by prefix.
+    prefix = party_type.lower()
+    for field in (f"{prefix}_primary_address", f"{prefix}_primary_contact"):
+        frappe.db.set_value(party_type, party, field, None)
     for linked_dt in ("Contact", "Address"):
         names = frappe.get_all(
             "Dynamic Link",
@@ -278,6 +292,21 @@ def _delete_one(row: dict, protected: set) -> str | None:
             doc.cancel()
             for ledger in _LEDGER_DOCTYPES:
                 frappe.db.delete(ledger, {"voucher_no": name})
+            # The opening Stock Reconciliation auto-creates a Serial and Batch Bundle
+            # per batch-tracked row (we set use_serial_batch_fields on those rows).
+            # Cancelling the reconciliation only delinks the Bundle and flags it
+            # is_cancelled - the submitted Bundle doc lingers with voucher_no still
+            # pointing here, and ERPNext's link check would then block the unforced
+            # delete of the reconciliation, leaving it kept. Cancel already removed
+            # its stock effect (the Stock Ledger Entries were purged just above), and
+            # is_cancelled lets the Bundle's on_trash guard pass, so force-delete each
+            # Bundle (cascading its child entries) before the voucher is removed.
+            if frappe.db.table_exists("Serial and Batch Bundle"):
+                for bundle in frappe.get_all(
+                        "Serial and Batch Bundle",
+                        filters={"voucher_no": name}, pluck="name"):
+                    frappe.delete_doc("Serial and Batch Bundle", bundle,
+                                      force=True, ignore_permissions=True)
         # Clear ERPNext's derived side-effect rows for this master (Repost Item
         # Valuation, UOM Conversion Factor, GST UOM Map) before the delete, so they
         # don't block it. Scoped to this master's name, inside the savepoint, so a

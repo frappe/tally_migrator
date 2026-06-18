@@ -54,10 +54,10 @@ class PartyImporter(BaseImporter):
 
         Best-effort and non-fatal: a group that can't be created just means those
         parties fall back to ``default_group`` (recorded as a warning so the lost
-        grouping is visible), never a failed party. Mirrors
-        ``ItemImporter._ensure_item_groups``: created groups are NOT added to the
-        run's manifest, exactly like Item Groups, so they are not company-scoped
-        and a revert leaves shared masters untouched."""
+        grouping is visible), never a failed party. A group we actually create is
+        recorded on the manifest so revert removes it too - the parties that
+        reference it are deleted first (same bucket, reversed order), and the delete
+        is unforced, so a group still used by a party outside this run is kept."""
         if not self.group_doctype:
             return
         for name in names:
@@ -74,6 +74,7 @@ class PartyImporter(BaseImporter):
                 doc.is_group = 0
                 doc.insert(ignore_permissions=True)
                 frappe.db.commit()
+                result.add_created(doc.name, self.group_doctype)
             except Exception as exc:
                 frappe.db.rollback()
                 frappe.log_error(
@@ -424,7 +425,7 @@ class PartyImporter(BaseImporter):
         acc_no = (data.get("BankAccountNo") or "").strip()
         if not acc_no:
             return
-        bank = _ensure_bank(data.get("BankName") or "")
+        bank = _ensure_bank(data.get("BankName") or "", result)
         if not bank:
             result.add_warning(
                 link_name, "bank account not created: no bank name on the ledger")

@@ -13,6 +13,15 @@ import frappe
 from tally_migrator.migration import rollback
 
 
+class TestSideEffects(unittest.TestCase):
+    def test_uom_category_purges_its_conversion_factors(self):
+        # The auto-created "Tally Imported" UOM Category is blocked by UOM Conversion
+        # Factors naming it; deleting the category must purge those first so it goes
+        # regardless of UOM deletion order.
+        self.assertIn(("UOM Conversion Factor", "category"),
+                      rollback._SIDE_EFFECTS["UOM Category"])
+
+
 class TestDeletionOrder(unittest.TestCase):
     """_deletion_order flattens the manifest into reverse-creation order."""
 
@@ -99,6 +108,7 @@ class TestDeleteOneSafety(unittest.TestCase):
             # no side-effect tables, no party links to purge.
             mock.patch.object(rollback.frappe.db, "table_exists", return_value=False),
             mock.patch.object(rollback.frappe.db, "delete", lambda *a, **k: None),
+            mock.patch.object(rollback.frappe.db, "set_value", lambda *a, **k: None),
             mock.patch.object(rollback.frappe, "get_all", return_value=[]),
             mock.patch.object(rollback.frappe, "get_doc",
                               return_value=mock.Mock(docstatus=0)),
@@ -126,6 +136,42 @@ class TestDeleteOneSafety(unittest.TestCase):
         reason = rollback._delete_one({"doctype": "Item", "name": "Widget"}, set())
         self.assertIn("SI-9", reason)                          # kept + reported, not deleted
 
+    def test_recon_bundle_force_deleted_before_voucher(self):
+        # The opening Stock Reconciliation auto-creates a Serial and Batch Bundle per
+        # batch row. Cancelling the recon only delinks + flags it; the submitted
+        # Bundle would block the recon's unforced delete. _delete_one must force-delete
+        # the Bundle (found by voucher_no) BEFORE deleting the reconciliation.
+        deleted = []
+
+        def fake_delete_doc(doctype, name, **kw):
+            deleted.append((doctype, name, kw.get("force")))
+
+        patches = [
+            mock.patch.object(rollback.frappe.db, "exists", return_value=True),
+            mock.patch.object(rollback.frappe.db, "savepoint", lambda *a, **k: None),
+            mock.patch.object(rollback.frappe.db, "rollback", lambda *a, **k: None),
+            mock.patch.object(rollback.frappe.db, "delete", lambda *a, **k: None),
+            mock.patch.object(rollback.frappe.db, "table_exists", return_value=True),
+            mock.patch.object(rollback.frappe, "get_all",
+                              side_effect=lambda dt, **k: ["SBB-1"]
+                              if dt == "Serial and Batch Bundle" else []),
+            mock.patch.object(rollback.frappe, "get_doc",
+                              return_value=mock.Mock(docstatus=1)),
+            mock.patch.object(rollback.frappe, "delete_doc", side_effect=fake_delete_doc),
+            mock.patch.object(rollback.frappe, "local", mock.Mock(message_log=[])),
+        ]
+        for p in patches:
+            p.start()
+        self.addCleanup(lambda: [p.stop() for p in patches])
+        reason = rollback._delete_one(
+            {"doctype": "Stock Reconciliation", "name": "SR-1"}, set())
+        self.assertIsNone(reason)
+        # Bundle force-deleted, and ordered before the reconciliation itself.
+        self.assertEqual(deleted[0], ("Serial and Batch Bundle", "SBB-1", True))
+        self.assertIn(("Stock Reconciliation", "SR-1", None), deleted)
+        self.assertLess(deleted.index(("Serial and Batch Bundle", "SBB-1", True)),
+                        deleted.index(("Stock Reconciliation", "SR-1", None)))
+
 
 class TestPurgePartyLinks(unittest.TestCase):
     """_purge_party_links must never strip a record shared with another party, and
@@ -138,7 +184,7 @@ class TestPurgePartyLinks(unittest.TestCase):
         ``link_rows_by_parent`` -> every link row on a given parent (to detect sharing);
         ``bank_accounts`` -> names returned for the Bank Account query.
         """
-        deleted, dl_deletes = [], []
+        deleted, dl_deletes, cleared = [], [], []
 
         def fake_get_all(doctype, filters=None, pluck=None, fields=None):
             if doctype == "Dynamic Link" and "link_name" in (filters or {}):
@@ -156,6 +202,8 @@ class TestPurgePartyLinks(unittest.TestCase):
             mock.patch.object(rollback.frappe, "get_all", side_effect=fake_get_all),
             mock.patch.object(rollback.frappe.db, "exists", return_value=True),
             mock.patch.object(rollback.frappe.db, "delete", side_effect=fake_db_delete),
+            mock.patch.object(rollback.frappe.db, "set_value",
+                              side_effect=lambda dt, nm, f, v: cleared.append((dt, nm, f, v))),
             mock.patch.object(rollback.frappe, "delete_doc",
                               side_effect=lambda dt, nm, **k: deleted.append((dt, nm))),
         ]
@@ -163,6 +211,7 @@ class TestPurgePartyLinks(unittest.TestCase):
             p.start()
         self.addCleanup(lambda: [p.stop() for p in patches])
         purged = rollback._purge_party_links("Customer", "ACME")
+        self._cleared = cleared
         return purged, deleted, dl_deletes
 
     def test_unshared_records_deleted_and_reported(self):
@@ -197,6 +246,22 @@ class TestPurgePartyLinks(unittest.TestCase):
         self.assertEqual(len(dl_deletes), 1)
         self.assertEqual(dl_deletes[0][1]["link_name"], "ACME")
         self.assertEqual(purged, [])  # nothing actually deleted -> nothing to report
+
+    def test_primary_links_cleared_before_deleting_records(self):
+        # The party's own customer_primary_address/_contact point at the Address/
+        # Contact, so deleting those is refused until the links are cleared. They
+        # must be nulled (one set_value per primary field) so the records - and then
+        # the party - can be removed.
+        self._run(
+            dynamic_links={"Address": ["ADDR-1"], "Contact": ["CON-1"]},
+            link_rows_by_parent={
+                "ADDR-1": [{"link_doctype": "Customer", "link_name": "ACME"}],
+                "CON-1": [{"link_doctype": "Customer", "link_name": "ACME"}],
+            },
+            bank_accounts=[],
+        )
+        self.assertIn(("Customer", "ACME", "customer_primary_address", None), self._cleared)
+        self.assertIn(("Customer", "ACME", "customer_primary_contact", None), self._cleared)
 
 
 class TestRevertGuards(unittest.TestCase):
