@@ -52,6 +52,15 @@ class TestGstCategoryFromType(unittest.TestCase):
         self.assertEqual(gst_category_from_type("Consumer"), "Unregistered")
         self.assertEqual(gst_category_from_type("SEZ"), "SEZ")
 
+    def test_compound_sez_type_maps_to_sez(self):
+        # Tally exports SEZ as the compound registration type "Regular - SEZ"
+        # (the bare "SEZ" the table holds never appears in a real export), so the
+        # SEZ token must be recognised inside the string, not only as an exact key.
+        self.assertEqual(gst_category_from_type("Regular - SEZ"), "SEZ")
+        self.assertEqual(gst_category_from_type("regular - sez"), "SEZ")
+        # The token match must not fire on substrings of unrelated words.
+        self.assertEqual(gst_category_from_type("Deemed Export"), "Deemed Export")
+
     def test_case_and_whitespace_insensitive(self):
         self.assertEqual(gst_category_from_type("  reGular "), "Registered Regular")
 
