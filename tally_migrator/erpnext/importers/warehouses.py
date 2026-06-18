@@ -61,7 +61,25 @@ class WarehouseImporter(BaseImporter):
         parent_wh = self._resolve_parent(record.get("Parent", "").strip())
         if parent_wh:
             doc["parent_warehouse"] = parent_wh
+        # Link the warehouse to the company's stock GL account. Tally has no
+        # per-godown account (inventory value posts to a single Stock-in-Hand
+        # ledger), so every warehouse shares the company default_inventory_account -
+        # making explicit the same account ERPNext falls back to when this is blank.
+        # Group warehouses hold no stock, so they get no account.
+        if not doc.get("is_group"):
+            account = self._stock_account()
+            if account:
+                doc["account"] = account
         return doc
+
+    def _stock_account(self) -> str:
+        """The company's default stock (inventory) account, resolved once. Returns
+        "" when the company has none set, so the warehouse is created without an
+        account (ERPNext then uses the same default at posting time)."""
+        if not hasattr(self, "_stock_acc"):
+            self._stock_acc = frappe.get_cached_value(
+                "Company", self.company, "default_inventory_account") or ""
+        return self._stock_acc
 
     def _resolve_parent(self, parent: str) -> str:
         """

@@ -92,11 +92,51 @@ class PartyImporter(BaseImporter):
         return self.default_group
 
     def after_insert(self, name: str, record: dict, result: "ImportResult") -> None:
-        self._save_address(name, self.doctype, record, result)
+        address_name = self._save_address(name, self.doctype, record, result)
         self._save_extra_addresses(name, self.doctype, record, result)
-        self._save_contact(name, self.doctype, record, result)
+        contact_name = self._save_contact(name, self.doctype, record, result)
         self._save_extra_contacts(name, self.doctype, record, result)
         self._save_bank_account(name, self.doctype, record, result)
+        # ERPNext does not back-populate the party's primary_* fields when an Address/
+        # Contact is inserted with links: Customer.create_primary_address only fires
+        # when the Customer doc itself carries address_line1, which a migrated party
+        # never does (addresses are created here, after the party). So mark the main
+        # billing address / primary contact explicitly and link them on the party,
+        # or every migrated party shows no primary address/contact.
+        self._set_primary_links(name, address_name, contact_name, result)
+
+    def _set_primary_links(self, party_name: str, address_name: str,
+                           contact_name: str, result: "ImportResult") -> None:
+        """Flag the primary Address/Contact and write the party's primary_* links.
+
+        Both halves are required (see after_insert): the ``is_primary_*`` flag alone
+        only enforces uniqueness among the party's addresses; it does not populate
+        ``<party>_primary_address`` / ``_primary_contact``. Non-fatal - a failure is a
+        warning, never a failed party."""
+        prefix = frappe.scrub(self.doctype)        # "customer" / "supplier"
+        try:
+            if address_name:
+                frappe.db.set_value("Address", address_name, "is_primary_address", 1,
+                                    update_modified=False)
+                frappe.db.set_value(self.doctype, party_name,
+                                    f"{prefix}_primary_address", address_name,
+                                    update_modified=False)
+                from frappe.contacts.doctype.address.address import get_address_display
+                frappe.db.set_value(self.doctype, party_name, "primary_address",
+                                    get_address_display(address_name),
+                                    update_modified=False)
+            if contact_name:
+                frappe.db.set_value("Contact", contact_name, "is_primary_contact", 1,
+                                    update_modified=False)
+                frappe.db.set_value(self.doctype, party_name,
+                                    f"{prefix}_primary_contact", contact_name,
+                                    update_modified=False)
+            if address_name or contact_name:
+                frappe.db.commit()
+        except Exception as exc:
+            frappe.log_error("Tally Migrator", f"Primary link failed for {party_name}: {exc}")
+            result.add_warning(
+                party_name, f"primary address/contact link not set: {exc}")
 
     # ERPNext Address.address_type select options - a Tally address-book label
     # (ADDRESSNAME) that matches one is reused, else the address is typed "Other"
@@ -246,13 +286,14 @@ class PartyImporter(BaseImporter):
         return candidate if frappe.db.exists("Payment Terms Template", candidate) else ""
 
     def _save_address(self, link_name: str, link_type: str, data: dict,
-                      result: "ImportResult") -> None:
-        """Create a Billing Address linked to the party. Non-fatal on failure -
-        but a failure is recorded as a warning so the dropped address is visible
-        in the migration log rather than lost silently."""
+                      result: "ImportResult") -> str:
+        """Create a Billing Address linked to the party. Returns the created Address
+        name (so the caller can mark it the party's primary address), or "" when no
+        address was created. Non-fatal on failure - a failure is recorded as a warning
+        so the dropped address is visible in the migration log rather than lost."""
         raw_address = (data.get("Address") or "").strip()
         if not raw_address:
-            return
+            return ""
         _msg_mark = None   # message-queue length, set just before insert (see below)
         try:
             addr = frappe.new_doc("Address")
@@ -286,6 +327,7 @@ class PartyImporter(BaseImporter):
                 _msg_mark = None
             addr.insert(ignore_permissions=True)
             frappe.db.commit()
+            return addr.name
         except Exception as exc:
             # India Compliance hard-rejects a pincode whose leading digits don't match
             # the state ("Postal Code X ... is not associated with <State>"). The
@@ -309,12 +351,13 @@ class PartyImporter(BaseImporter):
                     result.add_warning(
                         link_name, "address imported without its PIN code - the PIN did "
                         "not match the state (verify and set it in ERPNext)")
-                    return
+                    return addr.name
                 except Exception as exc2:
                     exc = exc2
             frappe.db.rollback()
             frappe.log_error("Tally Migrator", f"Address save failed for {link_name}: {exc}")
             result.add_warning(link_name, f"address not created: {exc}")
+            return ""
 
     @staticmethod
     def _resolve_state(data: dict) -> str:
@@ -331,8 +374,10 @@ class PartyImporter(BaseImporter):
         return ""
 
     def _save_contact(self, link_name: str, link_type: str, data: dict,
-                      result: "ImportResult") -> None:
-        """Create a Contact (phone / mobile / email) linked to the party.
+                      result: "ImportResult") -> str:
+        """Create a Contact (phone / mobile / email) linked to the party. Returns the
+        created Contact name (so the caller can mark it the party's primary contact),
+        or "" when none was created.
 
         Tally keeps these on the ledger, but ERPNext stores them on a Contact, not
         on the Customer/Supplier itself - so without this they'd survive only as
@@ -344,7 +389,7 @@ class PartyImporter(BaseImporter):
         email = (data.get("LedgerEmail") or "").strip()
         email_cc = (data.get("EmailCC") or "").strip()
         if not (phone or mobile or email or email_cc):
-            return
+            return ""
         try:
             contact = frappe.new_doc("Contact")
             # Tally's contact-person name when supplied, else the ledger name.
@@ -363,9 +408,11 @@ class PartyImporter(BaseImporter):
             contact.append("links", {"link_doctype": link_type, "link_name": link_name})
             contact.insert(ignore_permissions=True)
             frappe.db.commit()
+            return contact.name
         except Exception as exc:
             frappe.log_error("Tally Migrator", f"Contact save failed for {link_name}: {exc}")
             result.add_warning(link_name, f"contact not created: {exc}")
+            return ""
 
     def _save_bank_account(self, link_name: str, link_type: str, data: dict,
                            result: "ImportResult") -> None:
