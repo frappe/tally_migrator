@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import re
+
 # ── Tally root groups that classify ledgers as customers / suppliers ──────────
 
 DEBTOR_ROOTS   = {"Sundry Debtors"}
@@ -203,7 +205,14 @@ GST_REGISTRATION_TYPE_MAP: dict[str, str] = {
 def gst_category_from_type(raw: str) -> str:
     """Map a Tally GST registration type to an ERPNext GST Category, or "" when
     the value is blank/unrecognised (caller then falls back to inference)."""
-    return GST_REGISTRATION_TYPE_MAP.get((raw or "").strip().lower(), "")
+    key = (raw or "").strip().lower()
+    # Tally records SEZ as a compound registration type ("Regular - SEZ"), not the
+    # bare "SEZ" the exact-match table holds and not the ISSEZPARTY flag (which
+    # TallyPrime leaves "No"). Match the SEZ token anywhere so the compound form
+    # maps to the SEZ category instead of falling through to "Registered Regular".
+    if re.search(r"\bsez\b", key):
+        return "SEZ"
+    return GST_REGISTRATION_TYPE_MAP.get(key, "")
 
 # ERPNext's standard root-type representative groups, used as a last-resort parent
 # in coa_mode="reuse" when a more specific default group can't be found.
