@@ -59,16 +59,16 @@ class TallyMigratorPage {
 				<div id="section-upload">
 					<div id="resume-banner" style="display:none;"></div>
 					<h4>Bring your Tally data into ERPNext</h4>
-					<p class="text-muted" style="margin-bottom:18px;">
+					<p class="text-muted tm-lead">
 						This tool brings your Tally masters, accounts and opening balances into ERPNext. It
 						checks your file and shows you a preview first, so nothing changes until you are ready.
 					</p>
 
 					${TallyMigratorPage.callout("info", TallyMigratorPage.iconRow("success", `<strong>Your existing ERPNext data is safe.</strong> Nothing is ever overwritten or deleted. If a record already exists, the migrator skips it. You can run this as many times as you like.`))}
 
-					<div style="margin-top:18px;">
+					<div class="tm-section" style="margin-top:var(--margin-lg);">
 						<strong>First, export a file from Tally</strong>
-						<ol style="margin:10px 0 0 0; padding-left:20px; font-size:13px; line-height:1.7;">
+						<ol style="margin:var(--margin-sm) 0 0 0; padding-left:20px; font-size:var(--text-md); line-height:1.7;">
 							<li>Open your company in <strong>Tally Prime</strong>.</li>
 							<li>Go to <strong>Gateway of Tally → Import/Export → Export</strong>.</li>
 							<li>Choose <strong>Masters</strong> as the type.</li>
@@ -77,20 +77,20 @@ class TallyMigratorPage {
 						</ol>
 					</div>
 
-					<div style="margin-top:18px;">
+					<div class="tm-section" style="margin-top:var(--margin-lg);">
 						<strong>Then upload it here</strong>
-						<div style="margin-top:8px;">
+						<div style="margin-top:var(--margin-sm);">
 							<button id="btn-pick-file" class="btn btn-default btn-sm">
-								<i class="fa fa-upload"></i> &nbsp;Choose Tally XML file
+								${TallyMigratorPage.navIcon("upload")} &nbsp;Choose Tally XML file
 							</button>
 							<span id="file-status" style="margin-left:12px;" class="text-muted"></span>
 						</div>
 					</div>
 
 					<!-- Preview of what's inside the file -->
-					<div id="preview-box" style="display:none; margin-top:18px;"></div>
+					<div id="preview-box" style="display:none; margin-top:var(--margin-lg);"></div>
 
-					<div style="margin-top:24px;">
+					<div class="tm-footer" style="justify-content:flex-start;">
 						<button id="btn-next-upload" class="btn btn-primary btn-sm" disabled>Continue ${TallyMigratorPage.navIcon("right")}</button>
 					</div>
 				</div>
@@ -102,9 +102,8 @@ class TallyMigratorPage {
 
 					<div class="row">
 						<div class="form-group col-sm-6">
-							<label class="control-label">ERPNext Company</label>
-							<select id="erpnext-company" class="form-control" style="max-width:360px;"></select>
-							<div id="company-empty" style="display:none; margin-top:8px;" class="text-muted small">
+							<div id="company-control" class="tm-field"></div>
+							<div id="company-empty" style="display:none; margin-top:var(--margin-sm);" class="text-muted small">
 								No company found. <a href="/app/company/new">Create a Company in ERPNext</a> first,
 								then come back and refresh this page.
 							</div>
@@ -113,32 +112,27 @@ class TallyMigratorPage {
 
 					<div class="row">
 						<div class="form-group col-sm-6">
-							<label class="control-label">Chart of Accounts</label>
-							<select id="coa-mode" class="form-control" style="max-width:360px;">
-								<option value="reuse">Reuse ERPNext's standard accounts (recommended)</option>
-								<option value="mirror">Mirror Tally's group tree exactly</option>
-							</select>
-							<div class="text-muted small" style="margin-top:4px;">
+							<div id="coa-control" class="tm-field"></div>
+							<div class="text-muted small tm-field-hint">
 								<span id="coa-mode-hint">Tally's reserved groups map onto ERPNext's
 								built-in Chart of Accounts; only your custom groups and ledgers are created.</span>
 							</div>
 						</div>
 						<div class="form-group col-sm-6">
-							<label class="control-label">Opening-balance date</label>
-							<input type="date" id="opening-date" class="form-control" style="max-width:360px;" />
-							<div class="text-muted small" style="margin-top:4px;">
+							<div id="date-control" class="tm-field"></div>
+							<div class="text-muted small tm-field-hint">
 								Posting date for opening balances &amp; stock. Leave blank to use the
 								company's current fiscal-year start.
 							</div>
 						</div>
 					</div>
 
-					<div style="margin-top:16px; margin-bottom:20px;">
+					<div class="tm-section" style="margin-top:var(--margin-md);">
 						<strong>Here's what will be imported</strong>
-						<div id="configure-counts" style="margin-top:10px;"></div>
+						<div id="configure-counts" style="margin-top:var(--margin-sm);"></div>
 					</div>
 
-					<div style="margin-top:24px; display:flex; justify-content:space-between; align-items:center;">
+					<div class="tm-footer">
 						<button id="btn-back-2" class="btn btn-default btn-sm">${TallyMigratorPage.navIcon("left")} Back</button>
 						<button id="btn-next-2" class="btn btn-primary btn-sm">Continue ${TallyMigratorPage.navIcon("right")}</button>
 					</div>
@@ -152,8 +146,8 @@ class TallyMigratorPage {
 						decide how to handle anything that doesn't match - nothing is changed automatically.
 					</p>
 
-					<div id="check-loading" class="text-muted" style="margin:18px 0;">
-						<i class="fa fa-spinner fa-spin"></i> &nbsp;Checking your file against ERPNext...
+					<div id="check-loading" class="text-muted" style="margin:var(--margin-lg) 0;">
+						<span class="tm-spin"></span> &nbsp;Checking your file against ERPNext...
 					</div>
 
 					<div id="check-clean" style="display:none; margin-bottom:18px;">
@@ -248,7 +242,89 @@ class TallyMigratorPage {
 		`);
 
 		this.renderStepper("section-upload");
+		this.mountControls();
 		this.bindEvents();
+	}
+
+	// ── Step 2 form controls ─────────────────────────────────────────────────────
+	// Native Frappe field controls (make_control) replace raw <select>/<input>, so
+	// they pick up desk styling, dark mode and keyboard behaviour for free. Value
+	// access is centralised through get*/set* helpers below so the rest of the
+	// controller never touches the underlying inputs directly.
+	mountControls() {
+		this.companyControl = frappe.ui.form.make_control({
+			parent: $("#company-control")[0],
+			df: {
+				fieldtype: "Select",
+				fieldname: "erpnext_company",
+				label: __("ERPNext Company"),
+				options: [],
+				reqd: 1,
+				change: () => this.saveDraft(),
+			},
+			render_input: true,
+		});
+
+		this.coaControl = frappe.ui.form.make_control({
+			parent: $("#coa-control")[0],
+			df: {
+				fieldtype: "Select",
+				fieldname: "coa_mode",
+				label: __("Chart of Accounts"),
+				options: [
+					{ value: "reuse", label: __("Reuse ERPNext's standard accounts (recommended)") },
+					{ value: "mirror", label: __("Mirror Tally's group tree exactly") },
+				],
+				default: "reuse",
+				change: () => {
+					this.updateCoaHint();
+					this.saveDraft();
+				},
+			},
+			render_input: true,
+		});
+		this.coaControl.set_value("reuse");
+
+		this.dateControl = frappe.ui.form.make_control({
+			parent: $("#date-control")[0],
+			df: {
+				fieldtype: "Date",
+				fieldname: "posting_date",
+				label: __("Opening-balance date"),
+				change: () => this.saveDraft(),
+			},
+			render_input: true,
+		});
+	}
+
+	// Centralised accessors for the Step 2 controls. Date control stores/returns the
+	// system format (yyyy-mm-dd), matching what the API and draft expect.
+	getCompany() { return (this.companyControl && this.companyControl.get_value()) || ""; }
+	setCompany(v) { if (this.companyControl) this.companyControl.set_value(v || ""); }
+	getCoa() { return (this.coaControl && this.coaControl.get_value()) || ""; }
+	setCoa(v) { if (this.coaControl) this.coaControl.set_value(v || "reuse"); }
+	getDate() { return (this.dateControl && this.dateControl.get_value()) || ""; }
+	setDate(v) { if (this.dateControl) this.dateControl.set_value(v || ""); }
+
+	// Populate the company Select with a leading placeholder; an empty list clears it.
+	setCompanyOptions(names) {
+		if (!this.companyControl) return;
+		const opts = names.length
+			? [{ value: "", label: __("Select company...") }].concat(
+					names.map((n) => ({ value: n, label: n }))
+			  )
+			: [];
+		this.companyControl.df.options = opts;
+		this.companyControl.refresh();
+		this.companyControl.set_value("");
+	}
+
+	updateCoaHint() {
+		$("#coa-mode-hint").text(
+			this.getCoa() === "mirror"
+				? "Every Tally group is recreated verbatim in ERPNext, preserving your exact tree."
+				: "Tally's reserved groups map onto ERPNext's built-in Chart of Accounts; only your custom groups and ledgers are created."
+		);
 	}
 
 	// ── Persistent stepper ──────────────────────────────────────────────────────
@@ -307,16 +383,11 @@ class TallyMigratorPage {
 		});
 
 		// Step 2
-		$("#coa-mode").on("change", function () {
-			$("#coa-mode-hint").text(
-				$(this).val() === "mirror"
-					? "Every Tally group is recreated verbatim in ERPNext, preserving your exact tree."
-					: "Tally's reserved groups map onto ERPNext's built-in Chart of Accounts; only your custom groups and ledgers are created."
-			);
-		});
+		// (COA hint + draft-on-change are wired via each control's df.change in
+		// mountControls(), so no jQuery change handlers are needed here.)
 		$("#btn-back-2").on("click", () => this.show("section-upload"));
 		$("#btn-next-2").on("click", () => {
-			const erpnext = $("#erpnext-company").val();
+			const erpnext = this.getCompany();
 			if (!erpnext) {
 				frappe.msgprint(__("Please select an ERPNext company."));
 				return;
@@ -345,9 +416,6 @@ class TallyMigratorPage {
 		$("#btn-back-3").on("click", () =>
 			this.show(this.hasAccounts() ? "section-review" : "section-check"));
 		$("#btn-run").on("click", () => this.runMigration());
-
-		// Persist option changes to the draft as the user makes them.
-		$("#erpnext-company, #coa-mode, #opening-date").on("change", () => this.saveDraft());
 	}
 
 	// ── Step 1: upload + preview ────────────────────────────────────────────────
@@ -370,7 +438,7 @@ class TallyMigratorPage {
 	loadPreview() {
 		$("#preview-box")
 			.show()
-			.html(`<span class="text-muted"><i class="fa fa-spinner fa-spin"></i> &nbsp;Reading your file...</span>`);
+			.html(`<span class="text-muted"><span class="tm-spin"></span> &nbsp;Reading your file...</span>`);
 		$("#btn-next-upload").prop("disabled", true);
 
 		frappe.call({
@@ -462,9 +530,9 @@ class TallyMigratorPage {
 		this._draftPending = {
 			file_url: this.fileUrl,
 			file_name: this.fileName,
-			erpnext_company: $("#erpnext-company").val() || "",
-			coa_mode: $("#coa-mode").val() || "",
-			posting_date: $("#opening-date").val() || "",
+			erpnext_company: this.getCompany(),
+			coa_mode: this.getCoa(),
+			posting_date: this.getDate(),
 			step: this._currentStep || "section-upload",
 			uom_overrides: this.uomOverrides || {},
 			record_overrides: this.recordOverrides || {},
@@ -565,8 +633,8 @@ class TallyMigratorPage {
 		);
 		this.loadPreview();        // refresh the counts for the file
 		this.proceedToConfigure(); // land on Configure, one click from where they were
-		if (this._restore.coa) $("#coa-mode").val(this._restore.coa).trigger("change");
-		if (this._restore.posting) $("#opening-date").val(this._restore.posting);
+		if (this._restore.coa) { this.setCoa(this._restore.coa); this.updateCoaHint(); }
+		if (this._restore.posting) this.setDate(this._restore.posting);
 		frappe.show_alert({
 			message: __("Resumed your in-progress migration - your fixes are saved."),
 			indicator: "green",
@@ -612,22 +680,18 @@ class TallyMigratorPage {
 			method: "tally_migrator.api.get_companies",
 			callback: (r) => {
 				const companies = r.message || [];
-				const $select = $("#erpnext-company").empty();
 				if (!companies.length) {
+					this.setCompanyOptions([]);
 					$("#company-empty").show();
 					$("#btn-next-2").prop("disabled", true);
 					return;
 				}
 				$("#company-empty").hide();
 				$("#btn-next-2").prop("disabled", false);
-				$select.append('<option value="">Select company...</option>');
-				companies.forEach((c) => {
-					const name = frappe.utils.escape_html(c.name);
-					$select.append(`<option value="${name}">${name}</option>`);
-				});
+				this.setCompanyOptions(companies.map((c) => c.name));
 				// Restore a resumed company, else auto-select when there is exactly one.
 				if (this._restore && this._restore.company) {
-					$select.val(this._restore.company);
+					this.setCompany(this._restore.company);
 					this.saveDraft();   // persist the restored selection
 					// Resume at the step the user actually left off on. Landing on
 					// Configure (step 1) every time forced them to re-walk the wizard
@@ -641,14 +705,14 @@ class TallyMigratorPage {
 						this.proceedToCheck();
 					}
 				} else if (companies.length === 1) {
-					$select.val(companies[0].name);
+					this.setCompany(companies[0].name);
 				}
 			},
 			error: () => {
 				// A failed load leaves the picker empty, which looks identical to "no
 				// companies exist" and silently strands the user on this step. Tell them
 				// what actually happened and offer a retry instead.
-				$("#erpnext-company").empty();
+				this.setCompanyOptions([]);
 				$("#btn-next-2").prop("disabled", true);
 				$("#company-empty")
 					.html(
@@ -723,12 +787,12 @@ class TallyMigratorPage {
 			method: "tally_migrator.api.validate_masters_data",
 			args: {
 				file_url: this.fileUrl,
-				erpnext_company: $("#erpnext-company").val(),
+				erpnext_company: this.getCompany(),
 				// Apply the user's saved inline fixes (e.g. a resumed draft) so the
 				// scan reflects them on first load - otherwise edits stay invisible
 				// until the user manually clicks Re-check. Mirrors recheck()'s args.
 				record_overrides: JSON.stringify(this.recordOverrides || {}),
-				posting_date: $("#opening-date").val() || "",
+				posting_date: this.getDate(),
 			},
 			callback: (r) => {
 				this.qualityReport = r.message || null;
@@ -812,7 +876,7 @@ class TallyMigratorPage {
 		$btn.prop("disabled", true);
 		frappe.call({
 			method: "tally_migrator.api.company_readiness",
-			args: { erpnext_company: $("#erpnext-company").val() },
+			args: { erpnext_company: this.getCompany() },
 			callback: (r) => {
 				this.readiness = r.message || null;
 				this.renderReadiness();
@@ -1048,6 +1112,14 @@ class TallyMigratorPage {
 
 			/* ── Consent / checkbox row ─────────────────────────────────────────── */
 			.tally-migrator .tm-consent { display: flex; align-items: flex-start; gap: var(--margin-sm); margin: 0; font-weight: 400; cursor: pointer; }
+
+			/* ── Inline spinner (native, no FontAwesome dependency) ─────────────── */
+			.tally-migrator .tm-spin {
+				display: inline-block; width: 12px; height: 12px; vertical-align: -2px;
+				border: 2px solid var(--gray-300, #d1d8dd); border-top-color: var(--text-muted, #8d99a6);
+				border-radius: 50%; animation: tm-spin 0.7s linear infinite;
+			}
+			@keyframes tm-spin { to { transform: rotate(360deg); } }
 
 			/* Reusable info tooltip: an inline (i) revealing secondary explanation
 			   on hover/focus, so the screen stays terse. */
@@ -1387,8 +1459,8 @@ class TallyMigratorPage {
 				record_overrides: JSON.stringify(this.recordOverrides),
 				// Pass the company + date so the readiness panel (incl. frozen-period
 				// checks) is recomputed alongside the data fixes, not left stale.
-				erpnext_company: $("#erpnext-company").val() || "",
-				posting_date: $("#opening-date").val() || "",
+				erpnext_company: this.getCompany(),
+				posting_date: this.getDate(),
 			},
 			callback: (r) => {
 				frappe.dom.unfreeze();
@@ -1889,7 +1961,7 @@ class TallyMigratorPage {
 	}
 
 	gotoRun() {
-		const erpnext = $("#erpnext-company").val();
+		const erpnext = this.getCompany();
 		$("#run-subtitle").html(
 			`Importing from <strong>${frappe.utils.escape_html(this.fileName || "your file")}</strong> ` +
 				`into <strong>${frappe.utils.escape_html(erpnext)}</strong>.`
@@ -1900,7 +1972,7 @@ class TallyMigratorPage {
 	// ── Step 5: run ──────────────────────────────────────────────────────────────
 
 	runMigration() {
-		const erpnext = $("#erpnext-company").val();
+		const erpnext = this.getCompany();
 		const overrides = this.uomOverrides || {};
 
 		$("#btn-run").prop("disabled", true);
@@ -1949,8 +2021,8 @@ class TallyMigratorPage {
 				uom_overrides: JSON.stringify(overrides),
 				validation_report: this.qualityReport ? JSON.stringify(this.qualityReport) : "",
 				record_overrides: JSON.stringify(this.recordOverrides || {}),
-				coa_mode: $("#coa-mode").val() || "reuse",
-				posting_date: $("#opening-date").val() || "",
+				coa_mode: this.getCoa() || "reuse",
+				posting_date: this.getDate(),
 				created_uoms: JSON.stringify(this.createdUoms || []),
 			},
 			callback: (r) => {
@@ -2206,8 +2278,9 @@ class TallyMigratorPage {
 		$("#check-clean").hide().removeClass("alert-warning").addClass("alert-success");
 		$("#check-issues").hide();
 		$("#uom-issue-list").html("");
-		$("#coa-mode").val("reuse");
-		$("#opening-date").val("");
+		this.setCoa("reuse");
+		this.updateCoaHint();
+		this.setDate("");
 		$("#dq-section").hide();
 		$("#readiness-section").hide().empty();
 		$("#coverage-section").hide().empty();
