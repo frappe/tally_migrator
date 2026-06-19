@@ -150,33 +150,33 @@ class TallyMigratorPage {
 						<span class="tm-spin"></span> &nbsp;Checking your file against ERPNext...
 					</div>
 
-					<div id="check-clean" style="display:none; margin-bottom:18px;">
+					<div id="check-clean" class="tm-section" style="display:none;">
 						${TallyMigratorPage.callout("success", TallyMigratorPage.iconRow("success", `<strong>Nothing to resolve.</strong> We found no data-quality issues (GST numbers, states, units, HSN codes) that need your input before importing.`))}
 					</div>
 
 					<!-- Data-quality report (read-only; informational + consent) -->
-					<div id="dq-section" style="display:none; margin-bottom:18px;">
-						<div id="dq-cards" style="display:flex; gap:10px; margin-bottom:12px;"></div>
+					<div id="dq-section" class="tm-section" style="display:none;">
+						<div id="dq-cards" class="tm-stats" style="margin-bottom:var(--margin-sm);"></div>
 						<div id="dq-list"></div>
 					</div>
 
 					<!-- Company-readiness gate (blockers stop the run) -->
-					<div id="readiness-section" style="display:none; margin-bottom:18px;"></div>
+					<div id="readiness-section" class="tm-section" style="display:none;"></div>
 
 					<!-- Field-coverage notice (read-only; informational) -->
-					<div id="coverage-section" style="display:none; margin-bottom:18px;"></div>
+					<div id="coverage-section" class="tm-section" style="display:none;"></div>
 
-					<div id="check-issues" style="display:none; margin-bottom:18px;">
-						<div style="margin-bottom:14px; background:var(--blue-100, #edf6fd); border:1px solid var(--blue-200, #e3f1fd); border-radius:8px; padding:12px 14px;">
+					<div id="check-issues" class="tm-section" style="display:none;">
+						<div class="tm-callout tm-callout--info" style="margin-bottom:var(--margin-md);">
 							${TallyMigratorPage.iconRow("info", `<strong>Some Units of Measure in your file don't exist in ERPNext yet.</strong> By default we'll create each one as a new unit. Change any row below if you'd rather map it to a unit you already use - then click Continue.`)}
 						</div>
 						<div id="uom-issue-list"></div>
 					</div>
 
 					<!-- Error consent (final gate; shown only when records have errors) -->
-					<div id="dq-consent" style="display:none; margin-bottom:18px; background:var(--blue-100, #edf6fd); border:1px solid var(--blue-200, #e3f1fd); border-radius:8px; padding:12px 14px;">
-						<label style="margin:0; font-weight:400; cursor:pointer; display:flex; align-items:flex-start; gap:8px;">
-							<span style="flex:0 0 auto; display:inline-flex; align-items:center; height:1.5em;">
+					<div id="dq-consent" class="tm-section tm-callout tm-callout--info" style="display:none;">
+						<label class="tm-consent">
+							<span class="tm-iconrow-icon">
 								<input type="checkbox" id="dq-consent-check" style="margin:0;" />
 							</span>
 							<span>Some records have errors and won't import. Continue with the rest - you can fix and re-import them later from the Migration Log.</span>
@@ -184,10 +184,9 @@ class TallyMigratorPage {
 					</div>
 
 
-					<div style="margin-top:24px; display:flex; justify-content:space-between; align-items:center;">
-						<div>
+					<div class="tm-footer">
+						<div class="tm-footer-group">
 							<button id="btn-back-check" class="btn btn-default btn-sm">${TallyMigratorPage.navIcon("left")} Back</button>
-							&nbsp;
 							<button id="btn-startover-check" class="btn btn-default btn-sm"
 								style="color:var(--text-muted, #8d99a6);">Start over</button>
 						</div>
@@ -596,9 +595,9 @@ class TallyMigratorPage {
 				const when = d.modified ? frappe.datetime.comment_when(d.modified) : "";
 				$("#resume-banner")
 					.html(`
-						<div style="display:flex; gap:10px; align-items:center; justify-content:space-between; margin-bottom:18px; background:var(--blue-100, #edf6fd); border:1px solid var(--blue-200, #e3f1fd); border-radius:8px; padding:12px 14px;">
-							${TallyMigratorPage.iconRow("info", `<div style="font-size:13px;"><strong>You have an unfinished migration.</strong> File <strong>${frappe.utils.escape_html(d.file_name || d.file_url)}</strong>${when ? ` - last saved ${when}` : ""}. Your fixes are saved.</div>`)}
-							<div style="white-space:nowrap;">
+						<div class="tm-callout tm-callout--info tm-section" style="display:flex; gap:var(--margin-md); align-items:center; justify-content:space-between;">
+							${TallyMigratorPage.iconRow("info", `<div style="font-size:var(--text-md);"><strong>You have an unfinished migration.</strong> File <strong>${frappe.utils.escape_html(d.file_name || d.file_url)}</strong>${when ? ` - last saved ${when}` : ""}. Your fixes are saved.</div>`)}
+							<div class="tm-nowrap">
 								<button class="btn btn-primary btn-xs" id="btn-resume">Resume</button>
 								<button class="btn btn-default btn-xs" id="btn-discard">Start over</button>
 							</div>
@@ -970,11 +969,8 @@ class TallyMigratorPage {
 		// one thing the coverage system exists to surface; the reassurance counts
 		// (noise / constants / duplicates / taxes) are deliberately NOT shown here -
 		// they are on the migration log's full audit.
-		$sec.html(`
-			<div style="margin:0; background:var(--blue-100, #edf6fd); border:1px solid var(--blue-200, #e3f1fd); border-radius:8px; padding:12px 14px;">
-				<div style="display:flex; align-items:flex-start; gap:8px;">
-					<span style="flex:0 0 auto; display:inline-flex; align-items:center; height:1.5em;">${TallyMigratorPage.statusIcon("info")}</span>
-					<div style="flex:1;">
+		$sec.html(
+			TallyMigratorPage.callout("info", TallyMigratorPage.iconRow("info", `
 						<strong>Most of your data imports fully - but ${plur(
 							lossCount,
 							"field"
@@ -986,11 +982,9 @@ class TallyMigratorPage {
 						} below: only you can tell whether a custom field matters for your
 						business. Nothing is changed automatically, and the full list is
 						saved on the migration log.
-						<div style="margin-top:10px;">${lossBlocks}</div>
-					</div>
-				</div>
-			</div>
-		`).show();
+						<div style="margin-top:var(--margin-sm);">${lossBlocks}</div>
+			`))
+		).show();
 	}
 
 	// ── Dark-mode theming ───────────────────────────────────────────────────────
@@ -1082,6 +1076,7 @@ class TallyMigratorPage {
 			.tally-migrator .tm-pill--green { background: var(--green-200, #daf0e1); }
 			.tally-migrator .tm-pill--blue { background: var(--blue-200, #e3f1fd); }
 			.tally-migrator .tm-pill--gray { background: var(--gray-200, #f0f4f7); }
+			.tally-migrator .tm-pill--red { background: var(--red-200, #fcd7d7); }
 
 			/* ── Preview count chips ────────────────────────────────────────────── */
 			.tally-migrator .tm-chips { margin-top: var(--margin-xs); }
@@ -1205,7 +1200,7 @@ class TallyMigratorPage {
 	// `tone` is a tm-pill colour keyword (green / blue / gray). For back-compat a raw
 	// CSS colour value still works via an inline fallback.
 	static pill(text, tone) {
-		if (["green", "blue", "gray"].includes(tone)) {
+		if (["green", "blue", "gray", "red"].includes(tone)) {
 			return `<span class="tm-pill tm-pill--${tone}">${text}</span>`;
 		}
 		return `<span class="tm-pill" style="background:${tone};">${text}</span>`;
@@ -1305,12 +1300,10 @@ class TallyMigratorPage {
 		const esc = frappe.utils.escape_html;
 		// Number stays in the regular text colour; the label below carries a soft
 		// colour as a background pill (green = mapped, red = errors, blue = warnings).
-		const card = (n, label, bg) => `
-			<div style="flex:1; border:1px solid var(--border-color, #e0e6ed); border-radius:6px; padding:10px 12px;">
-				<div style="font-size:20px; font-weight:700; color:var(--text-color, #1f272e);">${n}</div>
-				<div style="margin-top:5px;">
-					<span style="display:inline-block; padding:1px 12px; border-radius:10px; font-size:12px; background:${bg};">${label}</span>
-				</div>
+		const card = (n, label, tone) => `
+			<div class="tm-stat">
+				<div class="tm-stat-num">${n}</div>
+				<div class="tm-stat-label">${TallyMigratorPage.pill(label, tone)}</div>
 			</div>`;
 		// Headline shows the number of distinct issue *types* (matching the rows
 		// below); the affected-record count is shown inside each group's row.
@@ -1319,15 +1312,15 @@ class TallyMigratorPage {
 		// "Mapped" = total records read from the file (customers + suppliers + items).
 		const mapped = Object.values(report.totals || {}).reduce((a, b) => a + (b || 0), 0);
 		$("#dq-cards").html(
-			card(mapped, "Mapped", "var(--green-200, #daf0e1)") +
-			card(errGroups, "Errors", "var(--red-200, #fcd7d7)") +
-			card(warnGroups, "Warnings", "var(--blue-200, #e3f1fd)")
+			card(mapped, "Mapped", "green") +
+			card(errGroups, "Errors", "red") +
+			card(warnGroups, "Warnings", "blue")
 		);
 
 		const rows = report.groups.map((g, idx) => this.dqGroupHtml(g, idx)).join("");
 		const hasEditable = report.groups.some((g) => (g.editable_fields || []).length);
 		const toolbar = hasEditable
-			? `<div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:8px;">
+			? `<div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:var(--margin-sm);">
 					<span class="text-muted small">Fix a value below, then re-check - or continue anyway.</span>
 					<button class="btn btn-default btn-xs" id="btn-dq-recheck">${TallyMigratorPage.navIcon("refresh")} Re-check</button>
 				</div>`
@@ -1335,7 +1328,7 @@ class TallyMigratorPage {
 
 		$("#dq-list").html(`
 			${toolbar}
-			<div style="border:1px solid var(--border-color, #e0e6ed); border-radius:6px; padding:6px 14px; max-height:340px; overflow-y:auto;">
+			<div class="tm-card tm-scroll" style="padding:var(--padding-xs) var(--padding-md);">
 				${rows}
 			</div>`);
 
@@ -1522,17 +1515,17 @@ class TallyMigratorPage {
 
 		const n = this.uomIssues.length;
 		$("#uom-issue-list").html(`
-			<div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:8px;">
+			<div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:var(--margin-sm);">
 				<span class="text-muted small">${n} unit${n === 1 ? "" : "s"} to resolve</span>
 				<button class="btn btn-default btn-xs" id="btn-uom-all-create">Set all to "create as new"</button>
 			</div>
-			<div style="max-height:340px; overflow-y:auto; border:1px solid var(--border-color, #e0e6ed); border-radius:6px;">
-				<table class="table table-condensed" style="margin:0;">
+			<div class="tm-card tm-scroll">
+				<table class="table table-condensed tm-table">
 					<thead>
 						<tr>
-							<th style="border-top:0;">Tally unit</th>
-							<th style="border-top:0;"></th>
-							<th style="border-top:0;">What to do</th>
+							<th>Tally unit</th>
+							<th></th>
+							<th>What to do</th>
 						</tr>
 					</thead>
 					<tbody>${rows}</tbody>
