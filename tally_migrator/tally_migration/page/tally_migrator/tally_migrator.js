@@ -50,10 +50,10 @@ class TallyMigratorPage {
 	render() {
 		$(this.wrapper).find(".page-content").html(`
 			${TallyMigratorPage.themeStyle()}
-			<div class="container tally-migrator" style="max-width:680px; padding-top: 24px; padding-bottom: 48px;">
+			<div class="container tally-migrator">
 
 				<!-- Persistent stepper -->
-				<div id="stepper" style="display:flex; align-items:center; margin-bottom:28px;"></div>
+				<div id="stepper" class="tm-stepper"></div>
 
 				<!-- STEP 1: Upload -->
 				<div id="section-upload">
@@ -276,38 +276,21 @@ class TallyMigratorPage {
 	renderStepper(activeId) {
 		const steps = this.visibleSteps();
 		const activeIdx = steps.findIndex((s) => s.id === activeId);
-		// Use Frappe design tokens (with hex fallbacks) so the stepper matches the
-		// active desk theme - including dark mode - instead of hardcoded colours.
-		const ACTIVE = "var(--text-color, #1f272e)";    // desk ink / near-black
-		const DONE = "var(--green-600, #30a66d)";       // standard success green
-		const PENDING = "var(--gray-300, #d1d8dd)";     // muted fill
+		const check =
+			'<svg width="12" height="12" viewBox="0 0 16 16" fill="none" aria-hidden="true" style="display:block;"><path d="M3.5 8.5l3 3 6-7" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg>';
 
 		const parts = steps.map((s, i) => {
-			const done = i < activeIdx;
-			const active = i === activeIdx;
-			const circleColor = done ? DONE : active ? ACTIVE : PENDING;
-			const textColor = active ? ACTIVE : done ? DONE : "var(--text-muted, #8d99a6)";
-			// The active circle is filled with --text-color (near-black in light,
-			// near-white in dark), so its number must use the opposite ink (--bg-color)
-			// to stay legible. Done/pending circles are mid/dark fills - white reads on
-			// both themes (the dark-mode --gray-300 fill is #343434).
-			const circleText = active ? "var(--bg-color, #fff)" : "#fff";
-			const circle = `
-				<div style="display:flex; align-items:center; gap:8px;">
-					<span style="display:inline-flex; align-items:center; justify-content:center;
-						width:24px; height:24px; border-radius:50%; background:${circleColor};
-						color:${circleText}; font-size:12px; font-weight:600;">
-						${done
-							? '<svg width="12" height="12" viewBox="0 0 16 16" fill="none" aria-hidden="true" style="display:block;"><path d="M3.5 8.5l3 3 6-7" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg>'
-							: i + 1}
-					</span>
-					<span style="color:${textColor}; font-weight:${active ? 600 : 400}; font-size:13px;">${s.label}</span>
+			const state = i < activeIdx ? "is-done" : i === activeIdx ? "is-active" : "is-pending";
+			const dot = i < activeIdx ? check : i + 1;
+			const step = `<div class="tm-step ${state}">
+					<span class="tm-step-dot">${dot}</span>
+					<span class="tm-step-label">${s.label}</span>
 				</div>`;
 			const connector =
 				i < steps.length - 1
-					? `<div style="flex:1; height:2px; background:${i < activeIdx ? DONE : "var(--border-color, #e0e6ed)"}; margin:0 12px;"></div>`
+					? `<div class="tm-step-line ${i < activeIdx ? "is-done" : ""}"></div>`
 					: "";
-			return circle + connector;
+			return step + connector;
 		});
 		$("#stepper").html(parts.join(""));
 	}
@@ -447,14 +430,9 @@ class TallyMigratorPage {
 		];
 		const chips = rows
 			.filter(([, , show]) => show)
-			.map(
-				([label, n]) =>
-					`<span style="display:inline-block; margin:6px 8px 0 0; padding:3px 10px;
-						background:var(--gray-100, #f4f5f6); border-radius:12px; font-size:12px;">
-						<strong>${n}</strong> ${label}</span>`
-			)
+			.map(([label, n]) => `<span class="tm-chip"><strong>${n}</strong> ${label}</span>`)
 			.join("");
-		return `<div style="margin-top:6px;">${chips}</div>`;
+		return `<div class="tm-chips">${chips}</div>`;
 	}
 
 	proceedToConfigure() {
@@ -968,27 +946,130 @@ class TallyMigratorPage {
 				--red-100: #361515;    --red-200: #521515;
 				--gray-100: #232323;   --gray-200: #2b2b2b;   --gray-300: #343434;
 			}
-				/* Reusable info tooltip: an inline (i) revealing secondary explanation
-				   on hover/focus, so the screen stays terse. */
-				.tally-migrator .tm-tip {
-					position: relative; display: inline-flex; align-items: center;
-					vertical-align: middle; margin-left: 5px; position: relative; top: -1px;
-					color: var(--text-muted, #999); cursor: help;
-				}
-				.tally-migrator .tm-tip-icon { display: block; }
-				.tally-migrator .tm-tip:hover { color: var(--text-color, #1f272e); }
-				.tally-migrator .tm-tip-bubble {
-					visibility: hidden; opacity: 0;
-					position: absolute; bottom: 145%; left: 50%; transform: translateX(-50%);
-					width: 240px; max-width: 70vw;
-					background: var(--text-color, #1f272e); color: var(--bg-color, #fff);
-					text-align: left; font-size: 12px; line-height: 1.45; font-weight: 400;
-					padding: 8px 10px; border-radius: 6px;
-					box-shadow: 0 4px 14px rgba(0,0,0,0.18); z-index: 1000;
-					transition: opacity 0.12s ease; pointer-events: none; white-space: normal;
-				}
-				.tally-migrator .tm-tip:hover .tm-tip-bubble,
-				.tally-migrator .tm-tip:focus .tm-tip-bubble { visibility: visible; opacity: 1; }
+
+			/* ── Layout ─────────────────────────────────────────────────────────
+			   One scoped, token-driven stylesheet replaces ~180 inline styles. All
+			   colours/spacing/radii ride on Frappe desk tokens so light/dark mode and
+			   the active theme are honoured automatically. */
+			.tally-migrator { max-width: 680px; padding-top: var(--padding-lg); padding-bottom: var(--padding-2xl); }
+			.tally-migrator h4 { font-size: var(--text-xl); font-weight: 600; margin: 0 0 var(--margin-sm); }
+			.tally-migrator h5 { font-size: var(--text-md); font-weight: 600; margin: 0 0 var(--margin-sm); }
+			.tally-migrator p { line-height: 1.6; }
+			.tally-migrator .tm-lead { margin-bottom: var(--margin-lg); }
+
+			/* ── Stepper ────────────────────────────────────────────────────────── */
+			.tally-migrator .tm-stepper { display: flex; align-items: center; margin-bottom: var(--margin-xl); }
+			.tally-migrator .tm-step { display: flex; align-items: center; gap: var(--margin-sm); }
+			.tally-migrator .tm-step-dot {
+				display: inline-flex; align-items: center; justify-content: center;
+				width: 24px; height: 24px; border-radius: 50%;
+				font-size: var(--text-sm); font-weight: 600;
+			}
+			.tally-migrator .tm-step-label { font-size: var(--text-md); font-weight: 400; }
+			.tally-migrator .tm-step.is-active .tm-step-label { font-weight: 600; color: var(--text-color); }
+			.tally-migrator .tm-step.is-done .tm-step-label { color: var(--green-600, #30a66d); }
+			.tally-migrator .tm-step.is-pending .tm-step-label { color: var(--text-muted); }
+			.tally-migrator .tm-step.is-active .tm-step-dot { background: var(--text-color); color: var(--bg-color); }
+			.tally-migrator .tm-step.is-done .tm-step-dot { background: var(--green-600, #30a66d); color: #fff; }
+			.tally-migrator .tm-step.is-pending .tm-step-dot { background: var(--gray-300, #d1d8dd); color: #fff; }
+			.tally-migrator .tm-step-line { flex: 1; height: 2px; margin: 0 var(--margin-md); background: var(--border-color); }
+			.tally-migrator .tm-step-line.is-done { background: var(--green-600, #30a66d); }
+
+			/* ── Footer nav ─────────────────────────────────────────────────────── */
+			.tally-migrator .tm-footer {
+				margin-top: var(--margin-xl); display: flex;
+				justify-content: space-between; align-items: center;
+			}
+			.tally-migrator .tm-footer-group { display: flex; align-items: center; gap: var(--margin-sm); }
+
+			/* ── Cards & callouts ───────────────────────────────────────────────── */
+			.tally-migrator .tm-card {
+				border: 1px solid var(--border-color); border-radius: var(--border-radius);
+				background: var(--card-bg, #fff);
+			}
+			.tally-migrator .tm-callout {
+				border: 1px solid var(--border-color); border-radius: var(--border-radius);
+				padding: var(--padding-md) var(--padding-md); color: var(--text-color);
+			}
+			.tally-migrator .tm-callout--info { background: var(--blue-100, #edf6fd); border-color: var(--blue-200, #e3f1fd); }
+			.tally-migrator .tm-callout--success { background: var(--green-100, #e4f5e9); border-color: var(--green-200, #daf0e1); }
+			.tally-migrator .tm-callout--error { background: var(--red-100, #fff0f0); border-color: var(--red-200, #fcd7d7); }
+			.tally-migrator .tm-section { margin-bottom: var(--margin-lg); }
+
+			/* ── Icon + text row ────────────────────────────────────────────────── */
+			.tally-migrator .tm-iconrow { display: flex; align-items: flex-start; gap: var(--margin-sm); }
+			.tally-migrator .tm-iconrow > .tm-iconrow-icon {
+				flex: 0 0 auto; display: inline-flex; align-items: center; height: 1.5em;
+			}
+			.tally-migrator .tm-iconrow > .tm-iconrow-body { flex: 1; min-width: 0; }
+
+			/* ── Stat cards & pills ─────────────────────────────────────────────── */
+			.tally-migrator .tm-stats { display: flex; gap: var(--margin-md); }
+			.tally-migrator .tm-stat {
+				flex: 1; border: 1px solid var(--border-color);
+				border-radius: var(--border-radius); padding: var(--padding-sm) var(--padding-md);
+			}
+			.tally-migrator .tm-stat-num { font-size: var(--text-2xl); font-weight: 700; color: var(--text-color); }
+			.tally-migrator .tm-stat-sub { color: var(--text-muted); font-size: var(--text-sm); margin-top: 2px; }
+			.tally-migrator .tm-stat-label { margin-top: 5px; }
+			.tally-migrator .tm-pill {
+				display: inline-block; padding: 1px 12px; border-radius: 10px; font-size: var(--text-sm);
+			}
+			.tally-migrator .tm-pill--green { background: var(--green-200, #daf0e1); }
+			.tally-migrator .tm-pill--blue { background: var(--blue-200, #e3f1fd); }
+			.tally-migrator .tm-pill--gray { background: var(--gray-200, #f0f4f7); }
+
+			/* ── Preview count chips ────────────────────────────────────────────── */
+			.tally-migrator .tm-chips { margin-top: var(--margin-xs); }
+			.tally-migrator .tm-chip {
+				display: inline-block; margin: var(--margin-xs) var(--margin-sm) 0 0;
+				padding: 3px 10px; background: var(--gray-100, #f4f5f6);
+				border-radius: 12px; font-size: var(--text-sm);
+			}
+
+			/* ── Tables ─────────────────────────────────────────────────────────── */
+			.tally-migrator .tm-table { margin: 0; font-size: var(--text-md); }
+			.tally-migrator .tm-table th { border-top: 0; padding: var(--padding-xs) var(--padding-sm); }
+			.tally-migrator .tm-table td { padding: var(--padding-xs) var(--padding-sm); }
+			.tally-migrator .tm-table .tm-num { text-align: right; white-space: nowrap; }
+			.tally-migrator .tm-scroll { max-height: 340px; overflow-y: auto; }
+			.tally-migrator .tm-nowrap { white-space: nowrap; }
+
+			/* ── Disclosure (collapsible) header ────────────────────────────────── */
+			.tally-migrator .tm-disclosure {
+				cursor: pointer; display: flex; align-items: center; justify-content: space-between;
+				border: 1px solid var(--border-color); border-radius: var(--border-radius);
+				padding: var(--padding-sm) var(--padding-md); color: var(--text-muted);
+			}
+
+			/* ── Form fields (Step 2) ───────────────────────────────────────────── */
+			.tally-migrator .tm-field { max-width: 360px; margin-bottom: var(--margin-md); }
+			.tally-migrator .tm-field-hint { margin-top: var(--margin-xs); }
+
+			/* ── Consent / checkbox row ─────────────────────────────────────────── */
+			.tally-migrator .tm-consent { display: flex; align-items: flex-start; gap: var(--margin-sm); margin: 0; font-weight: 400; cursor: pointer; }
+
+			/* Reusable info tooltip: an inline (i) revealing secondary explanation
+			   on hover/focus, so the screen stays terse. */
+			.tally-migrator .tm-tip {
+				position: relative; display: inline-flex; align-items: center;
+				vertical-align: middle; margin-left: 5px; top: -1px;
+				color: var(--text-muted, #999); cursor: help;
+			}
+			.tally-migrator .tm-tip-icon { display: block; }
+			.tally-migrator .tm-tip:hover { color: var(--text-color, #1f272e); }
+			.tally-migrator .tm-tip-bubble {
+				visibility: hidden; opacity: 0;
+				position: absolute; bottom: 145%; left: 50%; transform: translateX(-50%);
+				width: 240px; max-width: 70vw;
+				background: var(--text-color, #1f272e); color: var(--bg-color, #fff);
+				text-align: left; font-size: 12px; line-height: 1.45; font-weight: 400;
+				padding: 8px 10px; border-radius: 6px;
+				box-shadow: 0 4px 14px rgba(0,0,0,0.18); z-index: 1000;
+				transition: opacity 0.12s ease; pointer-events: none; white-space: normal;
+			}
+			.tally-migrator .tm-tip:hover .tm-tip-bubble,
+			.tally-migrator .tm-tip:focus .tm-tip-bubble { visibility: visible; opacity: 1; }
 		</style>`;
 	}
 
@@ -1025,11 +1106,9 @@ class TallyMigratorPage {
 	// line of text (not the top of a multi-line block). This is the single source
 	// of icon/text alignment for every notice, so they all line up identically.
 	static iconRow(kind, html) {
-		return `<div style="display:flex; align-items:flex-start; gap:8px;">
-			<span style="flex:0 0 auto; display:inline-flex; align-items:center; height:1.5em;">${TallyMigratorPage.statusIcon(
-				kind
-			)}</span>
-			<div style="flex:1; min-width:0;">${html}</div>
+		return `<div class="tm-iconrow">
+			<span class="tm-iconrow-icon">${TallyMigratorPage.statusIcon(kind)}</span>
+			<div class="tm-iconrow-body">${html}</div>
 		</div>`;
 	}
 
@@ -1039,14 +1118,9 @@ class TallyMigratorPage {
 	// do NOT swap in --text-on-* (e.g. --green-800), as those tints are not remapped for
 	// dark mode here and would render dark text on the dark box.
 	static callout(kind, inner, extraStyle = "") {
-		const t =
-			{
-				info: ["var(--blue-100, #edf6fd)", "var(--blue-200, #e3f1fd)"],
-				success: ["var(--green-100, #e4f5e9)", "var(--green-200, #daf0e1)"],
-				error: ["var(--red-100, #fff0f0)", "var(--red-200, #fcd7d7)"],
-			}[kind] || ["var(--blue-100, #edf6fd)", "var(--blue-200, #e3f1fd)"];
-		return `<div style="background:${t[0]}; border:1px solid ${t[1]}; border-radius:8px;
-			padding:12px 14px; color:var(--text-color, #1f272e);${extraStyle}">${inner}</div>`;
+		const variant = { info: "info", success: "success", error: "error" }[kind] || "info";
+		const style = extraStyle ? ` style="${extraStyle}"` : "";
+		return `<div class="tm-callout tm-callout--${variant}"${style}>${inner}</div>`;
 	}
 
 	// Soft status pill (tinted background, no border/icon) and the summary "stat
@@ -1054,14 +1128,15 @@ class TallyMigratorPage {
 	// party-openings panels so they stay pixel-identical. Background tints:
 	// green = good, blue = worth a look, grey = none.
 	static get STAT_BG() {
-		return {
-			green: "var(--green-200, #daf0e1)",
-			blue: "var(--blue-200, #e3f1fd)",
-			gray: "var(--gray-200, #f0f4f7)",
-		};
+		return { green: "green", blue: "blue", gray: "gray" };
 	}
-	static pill(text, bg) {
-		return `<span style="display:inline-block; padding:1px 12px; border-radius:10px; font-size:12px; background:${bg};">${text}</span>`;
+	// `tone` is a tm-pill colour keyword (green / blue / gray). For back-compat a raw
+	// CSS colour value still works via an inline fallback.
+	static pill(text, tone) {
+		if (["green", "blue", "gray"].includes(tone)) {
+			return `<span class="tm-pill tm-pill--${tone}">${text}</span>`;
+		}
+		return `<span class="tm-pill" style="background:${tone};">${text}</span>`;
 	}
 	// Inline (i) that reveals `text` on hover/focus - for secondary explanation we
 	// don't want occupying a line of body copy. Keyboard-reachable (tabindex) and
@@ -1079,13 +1154,13 @@ class TallyMigratorPage {
 	}
 	// `tip` (optional) appends an info (i) beside the label - secondary explanation
 	// on hover instead of a paragraph below the cards.
-	static statCard(big, label, sub, bg, tip = "") {
+	static statCard(big, label, sub, tone, tip = "") {
 		const tipIcon = tip ? TallyMigratorPage.infoTip(tip) : "";
 		return `
-			<div style="flex:1; border:1px solid var(--border-color, #e0e6ed); border-radius:6px; padding:10px 12px;">
+			<div class="tm-stat">
 				<div class="text-muted small">${label}${tipIcon}</div>
-				<div style="font-size:20px; font-weight:700; color:var(--text-color, #1f272e); margin:2px 0 5px;">${big}</div>
-				<div>${TallyMigratorPage.pill(sub, bg)}</div>
+				<div class="tm-stat-num" style="margin:2px 0 5px;">${big}</div>
+				<div>${TallyMigratorPage.pill(sub, tone)}</div>
 			</div>`;
 	}
 
