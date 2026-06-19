@@ -202,12 +202,12 @@ class TallyMigratorPage {
 						accounts, with their opening balances. Nothing is changed automatically -
 						please check anything we've flagged below.
 					</p>
-					<div id="review-summary" style="margin-bottom:16px;"></div>
-					<div id="review-exceptions" style="margin-bottom:16px;"></div>
-					<div id="review-all" style="margin-bottom:16px;"></div>
+					<div id="review-summary" class="tm-section"></div>
+					<div id="review-exceptions" class="tm-section"></div>
+					<div id="review-all" class="tm-section"></div>
 					<div id="review-parties"></div>
 
-					<div style="margin-top:24px; display:flex; justify-content:space-between; align-items:center;">
+					<div class="tm-footer">
 						<button id="btn-back-review" class="btn btn-default btn-sm">${TallyMigratorPage.navIcon("left")} Back</button>
 						<button id="btn-next-review" class="btn btn-primary btn-sm">Continue ${TallyMigratorPage.navIcon("right")}</button>
 					</div>
@@ -1685,7 +1685,7 @@ class TallyMigratorPage {
 			  );
 
 		$("#review-summary").html(`
-			<div style="display:flex; gap:10px;">
+			<div class="tm-stats">
 				${card(fmt(confident), "Mapped by standard groups", "high confidence", GREEN_BG)}
 				${card(
 					fmt(inferred),
@@ -1709,36 +1709,34 @@ class TallyMigratorPage {
 				.map(
 					(r) => `
 					<tr>
-						<td style="padding:6px 10px;"><strong>${esc(r.name)}</strong></td>
-						<td style="padding:6px 10px;" class="text-muted">${classifiedAs(r)}</td>
-						<td style="padding:6px 10px; text-align:right;">${ob(r)}</td>
+						<td><strong>${esc(r.name)}</strong></td>
+						<td class="text-muted">${classifiedAs(r)}</td>
+						<td class="tm-num">${ob(r)}</td>
 					</tr>`
 				)
 				.join("");
-			$("#review-exceptions").html(`
-				<div style="margin:0; background:var(--blue-100, #edf6fd); border:1px solid var(--blue-200, #e3f1fd); border-radius:8px; padding:12px 14px;">
+			$("#review-exceptions").html(
+				TallyMigratorPage.callout("info", `
 					${TallyMigratorPage.iconRow("info", `<strong>${fmt(inferred)} account${inferred === 1 ? "" : "s"} we inferred - please confirm.</strong> These ledgers sit under a custom Tally group, so we inferred each type from the group's own nature (income/expense/asset/liability). A type shown as "--" is one we couldn't determine. Confirm these, or fix the group in Tally and re-upload.`)}
-					<div style="margin-top:10px; border:1px solid var(--border-color, #e0e6ed); border-radius:6px; background:var(--card-bg, #fff);">
-						<table class="table table-condensed" style="margin:0; font-size:13px; table-layout:fixed;">
+					<div class="tm-card" style="margin-top:var(--margin-sm);">
+						<table class="table table-condensed tm-table" style="table-layout:fixed;">
 							${REVIEW_COLGROUP}
 							<thead>
 								<tr>
-									<th style="border-top:0; padding:6px 10px;">Tally ledger</th>
-									<th style="border-top:0; padding:6px 10px;">Classified as</th>
-									<th style="border-top:0; padding:6px 10px; text-align:right;">Opening</th>
+									<th>Tally ledger</th>
+									<th>Classified as</th>
+									<th class="tm-num">Opening</th>
 								</tr>
 							</thead>
 							<tbody>${rows}</tbody>
 						</table>
 					</div>
-				</div>
-			`);
+				`)
+			);
 		} else {
-			$("#review-exceptions").html(`
-				<div style="margin:0; background:var(--green-100, #e4f5e9); border:1px solid var(--green-200, #daf0e1); border-radius:8px; padding:12px 14px;">
-					${TallyMigratorPage.iconRow("success", `<strong>All ${fmt(m.total_accounts)} accounts mapped using Tally's standard groups.</strong> Nothing needed guessing. Open the full list below if you'd like to review it.`)}
-				</div>
-			`);
+			$("#review-exceptions").html(
+				TallyMigratorPage.callout("success", TallyMigratorPage.iconRow("success", `<strong>All ${fmt(m.total_accounts)} accounts mapped using Tally's standard groups.</strong> Nothing needed guessing. Open the full list below if you'd like to review it.`))
+			);
 		}
 
 		// ── Full chart of accounts (collapsed) ─────────────────────────────────
@@ -1747,48 +1745,45 @@ class TallyMigratorPage {
 				// Each subtotal stays on its own line with the amount glued to its
 				// Dr/Cr suffix (nowrap), so a long mixed-sign group never orphans "Cr".
 				const sub = [];
-				if (g.subtotal_dr) sub.push(`<span style="white-space:nowrap;">${fmt(g.subtotal_dr)} Dr</span>`);
-				if (g.subtotal_cr) sub.push(`<span style="white-space:nowrap;">${fmt(g.subtotal_cr)} Cr</span>`);
+				if (g.subtotal_dr) sub.push(`<span class="tm-nowrap">${fmt(g.subtotal_dr)} Dr</span>`);
+				if (g.subtotal_cr) sub.push(`<span class="tm-nowrap">${fmt(g.subtotal_cr)} Cr</span>`);
 				const accRows = g.accounts
 					.map(
 						(r) => `
 						<tr>
-							<td style="padding:6px 10px;">${esc(r.name)}${
+							<td>${esc(r.name)}${
 							r.inferred
 								? ` ${TallyMigratorPage.statusIcon("info")}`
 								: ""
 						}</td>
-							<td style="padding:6px 10px;" class="text-muted">${esc(r.account_type || "-")}</td>
-							<td style="padding:6px 10px;" class="text-muted">${esc(r.parent || "-")}</td>
-							<td style="padding:6px 10px; text-align:right;">${ob(r)}</td>
+							<td class="text-muted">${esc(r.account_type || "-")}</td>
+							<td class="text-muted">${esc(r.parent || "-")}</td>
+							<td class="tm-num">${ob(r)}</td>
 						</tr>`
 					)
 					.join("");
 				return `
 					<tr style="background:var(--fg-color, #f7fafc);">
-						<td colspan="3" style="padding:6px 10px; font-weight:600;">${esc(g.root_type)}</td>
-						<td style="padding:6px 10px; text-align:right; font-weight:600;">${sub.join("<br>")}</td>
+						<td colspan="3" style="font-weight:600;">${esc(g.root_type)}</td>
+						<td class="tm-num" style="font-weight:600;">${sub.join("<br>")}</td>
 					</tr>
 					${accRows}`;
 			})
 			.join("");
 
 		$("#review-all").html(`
-			<div id="review-all-head" role="button" tabindex="0" aria-expanded="false" aria-controls="review-all-body"
-				style="cursor:pointer; display:flex; align-items:center; justify-content:space-between;
-				border:1px solid var(--border-color, #e0e6ed); border-radius:6px; padding:10px 12px;">
+			<div id="review-all-head" class="tm-disclosure" role="button" tabindex="0" aria-expanded="false" aria-controls="review-all-body">
 				<span class="text-muted">Show all ${fmt(m.total_accounts)} mapped accounts</span>
 				<span class="text-muted" id="review-all-caret">${TallyMigratorPage.caretIcon(false)}</span>
 			</div>
-			<div id="review-all-body" style="display:none; margin-top:8px; max-height:360px; overflow-y:auto;
-				border:1px solid var(--border-color, #e0e6ed); border-radius:6px;">
-				<table class="table table-condensed" style="margin:0; font-size:13px;">
+			<div id="review-all-body" class="tm-card tm-scroll" style="display:none; margin-top:var(--margin-sm);">
+				<table class="table table-condensed tm-table">
 					<thead>
 						<tr>
-							<th style="border-top:0; padding:6px 10px;">Tally ledger</th>
-							<th style="border-top:0; padding:6px 10px;">Account type</th>
-							<th style="border-top:0; padding:6px 10px;">Under group</th>
-							<th style="border-top:0; padding:6px 10px; text-align:right;">Opening</th>
+							<th>Tally ledger</th>
+							<th>Account type</th>
+							<th>Under group</th>
+							<th class="tm-num">Opening</th>
 						</tr>
 					</thead>
 					<tbody>${book}</tbody>
@@ -1847,27 +1842,26 @@ class TallyMigratorPage {
 				.map(
 					(m) => `
 					<tr>
-						<td style="padding:6px 10px;"><strong>${esc(m.name)}</strong></td>
-						<td style="padding:6px 10px;" class="text-muted">${esc(m.party_type)}</td>
-						<td style="padding:6px 10px; text-align:right;" class="text-muted">${
+						<td><strong>${esc(m.name)}</strong></td>
+						<td class="text-muted">${esc(m.party_type)}</td>
+						<td class="tm-num text-muted">${
 							m.opening ? `${fmt(m.opening)} ${esc(m.opening_dr_cr || "")}`.trim() : "-"
 						}</td>
-						<td style="padding:6px 10px; text-align:right;">${fmt(m.amount)}</td>
+						<td class="tm-num">${fmt(m.amount)}</td>
 					</tr>`
 				)
 				.join("");
-			warn = `
-				<div style="margin:12px 0 0; background:var(--blue-100, #edf6fd); border:1px solid var(--blue-200, #e3f1fd); border-radius:8px; padding:12px 14px;">
+			warn = `<div style="margin-top:var(--margin-md);">` + TallyMigratorPage.callout("info", `
 					${TallyMigratorPage.iconRow("info", `<strong>${fmt(p.on_account)} part${p.on_account === 1 ? "y's" : "ies'"} bills didn't add up to the ledger opening.</strong> The 'On Account' figure is the unreconciled gap between the party's bills and its ledger opening (not the total opening) - it posts as an 'On Account' opening so the party still ties to the trial balance. Review these in Tally; a bill may be missing or mis-dated.`)}
-					<div style="margin-top:10px; border:1px solid var(--border-color, #e0e6ed); border-radius:6px; background:var(--card-bg, #fff);">
-						<table class="table table-condensed" style="margin:0; font-size:13px; table-layout:fixed;">
+					<div class="tm-card" style="margin-top:var(--margin-sm);">
+						<table class="table table-condensed tm-table" style="table-layout:fixed;">
 							<colgroup><col style="width:32%;"><col style="width:16%;"><col style="width:24%;"><col style="width:28%;"></colgroup>
 							<thead>
 								<tr>
-									<th style="border-top:0; padding:6px 10px;">Party</th>
-									<th style="border-top:0; padding:6px 10px;">Type</th>
-									<th style="border-top:0; padding:6px 10px; text-align:right; white-space:nowrap;">Ledger opening</th>
-									<th style="border-top:0; padding:6px 10px; text-align:right; white-space:nowrap;">On Account (gap) ${TallyMigratorPage.infoTip(
+									<th>Party</th>
+									<th>Type</th>
+									<th class="tm-num">Ledger opening</th>
+									<th class="tm-num">On Account (gap) ${TallyMigratorPage.infoTip(
 										"When a party's bills don't add up to its ledger opening, we post the difference as an 'On Account' opening so the party still ties to the trial balance. A non-zero gap is worth checking in Tally - a bill may be missing or mis-dated."
 									)}</th>
 								</tr>
@@ -1875,7 +1869,7 @@ class TallyMigratorPage {
 							<tbody>${rows}</tbody>
 						</table>
 					</div>
-				</div>`;
+				`) + `</div>`;
 		}
 
 		// Collapsed per-party list - the twin of the COA book, so the user can drill
@@ -1892,30 +1886,27 @@ class TallyMigratorPage {
 					: "";
 				return `
 					<tr>
-						<td style="padding:6px 10px;">${esc(r.name)}${flag}</td>
-						<td style="padding:6px 10px;" class="text-muted">${esc(r.party_type)}</td>
-						<td style="padding:6px 10px; text-align:right;" class="text-muted">${fmt(r.documents)}</td>
-						<td style="padding:6px 10px; text-align:right;">${amt}</td>
+						<td>${esc(r.name)}${flag}</td>
+						<td class="text-muted">${esc(r.party_type)}</td>
+						<td class="tm-num text-muted">${fmt(r.documents)}</td>
+						<td class="tm-num">${amt}</td>
 					</tr>`;
 			})
 			.join("");
 		const partyBook = partyRows
 			? `
-			<div id="review-parties-head" role="button" tabindex="0" aria-expanded="false" aria-controls="review-parties-body"
-				style="cursor:pointer; display:flex; align-items:center; justify-content:space-between;
-				border:1px solid var(--border-color, #e0e6ed); border-radius:6px; padding:10px 12px; margin-top:12px;">
+			<div id="review-parties-head" class="tm-disclosure" role="button" tabindex="0" aria-expanded="false" aria-controls="review-parties-body" style="margin-top:var(--margin-md);">
 				<span class="text-muted">Show all ${fmt(p.parties)} part${p.parties === 1 ? "y" : "ies"}</span>
 				<span class="text-muted" id="review-parties-caret">${TallyMigratorPage.caretIcon(false)}</span>
 			</div>
-			<div id="review-parties-body" style="display:none; margin-top:8px; max-height:360px; overflow-y:auto;
-				border:1px solid var(--border-color, #e0e6ed); border-radius:6px;">
-				<table class="table table-condensed" style="margin:0; font-size:13px;">
+			<div id="review-parties-body" class="tm-card tm-scroll" style="display:none; margin-top:var(--margin-sm);">
+				<table class="table table-condensed tm-table">
 					<thead>
 						<tr>
-							<th style="border-top:0; padding:6px 10px;">Party</th>
-							<th style="border-top:0; padding:6px 10px;">Type</th>
-							<th style="border-top:0; padding:6px 10px; text-align:right;">Docs</th>
-							<th style="border-top:0; padding:6px 10px; text-align:right;">Opening</th>
+							<th>Party</th>
+							<th>Type</th>
+							<th class="tm-num">Docs</th>
+							<th class="tm-num">Opening</th>
 						</tr>
 					</thead>
 					<tbody>${partyRows}</tbody>
@@ -1927,7 +1918,7 @@ class TallyMigratorPage {
 		// per-currency Debtors/Creditors account at Tally's stated rate), so note them
 		// for visibility rather than implying the doc count is short.
 		const foreignNote = p.foreign
-			? `<div style="margin-top:12px;">${TallyMigratorPage.callout(
+			? `<div style="margin-top:var(--margin-md);">${TallyMigratorPage.callout(
 					"info",
 					TallyMigratorPage.iconRow(
 						"info",
@@ -1939,13 +1930,13 @@ class TallyMigratorPage {
 			: "";
 
 		$("#review-parties").html(`
-			<h5 style="margin-bottom:8px;">Customer &amp; supplier opening balances</h5>
-			<p class="text-muted" style="margin-bottom:10px; font-size:13px;">
+			<h5>Customer &amp; supplier opening balances</h5>
+			<p class="text-muted" style="margin-bottom:var(--margin-sm); font-size:var(--text-md);">
 				${fmt(p.parties)} part${p.parties === 1 ? "y" : "ies"} with an opening balance -
 				posted bill-by-bill (${fmt(p.documents)} opening document${p.documents === 1 ? "" : "s"})
 				so you can reconcile future payments invoice-by-invoice.
 			</p>
-			<div style="display:flex; gap:10px;">${cards}</div>
+			<div class="tm-stats">${cards}</div>
 			${warn}
 			${foreignNote}
 			${partyBook}
