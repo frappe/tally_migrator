@@ -218,19 +218,19 @@ class TallyMigratorPage {
 					<h4>Migration</h4>
 					<p id="run-subtitle" class="text-muted"></p>
 
-					<div id="progress-section" style="display:none; margin-bottom:20px;">
-						<div class="progress" style="margin-bottom:6px;">
+					<div id="progress-section" class="tm-section" style="display:none;">
+						<div class="progress" style="margin-bottom:var(--margin-xs);">
 							<div id="progress-bar" class="progress-bar progress-bar-striped active" style="width:0%; min-width:2em;">0%</div>
 						</div>
-						<p id="progress-desc" class="text-muted" style="font-size:12px; margin:0;">Starting...</p>
+						<p id="progress-desc" class="text-muted" style="font-size:var(--text-sm); margin:0;">Starting...</p>
 					</div>
 
 					<div id="results-section" style="display:none;"></div>
 
-					<div id="error-section" style="display:none; background:var(--red-100, #fff0f0); border:1px solid var(--red-200, #fcd7d7); border-radius:8px; padding:12px 14px;"></div>
+					<div id="error-section" class="tm-callout tm-callout--error" style="display:none;"></div>
 
 					<div id="run-actions">
-						<div style="display:flex; justify-content:space-between; align-items:center;">
+						<div class="tm-footer" style="margin-top:0;">
 							<button id="btn-back-3" class="btn btn-default btn-sm">${TallyMigratorPage.navIcon("left")} Back</button>
 							<button id="btn-run" class="btn btn-primary btn-sm">Run Migration</button>
 						</div>
@@ -2172,7 +2172,7 @@ class TallyMigratorPage {
 
 		// Results table
 		html += `
-			<table class="table table-condensed" style="margin-top:12px;">
+			<table class="table table-condensed tm-table" style="margin-top:var(--margin-md);">
 				<thead>
 					<tr>
 						<th>Record type</th>
@@ -2204,7 +2204,7 @@ class TallyMigratorPage {
 
 		// Plain-English legend
 		html += `
-			<div class="text-muted small" style="margin-top:6px; line-height:1.6;">
+			<div class="text-muted small" style="margin-top:var(--margin-xs); line-height:1.6;">
 				<strong>Imported</strong> = newly created in ERPNext &nbsp;·&nbsp;
 				<strong>Already there</strong> = skipped because it already existed (safe, nothing changed) &nbsp;·&nbsp;
 				<strong>Warnings</strong> = imported, but a dependent piece (address, contact, opening balance...) was dropped${totalWarnings ? " - see the log" : ""} &nbsp;·&nbsp;
@@ -2215,15 +2215,15 @@ class TallyMigratorPage {
 		const logBtnLabel = logName
 			? `View migration log <strong>${frappe.utils.escape_html(logName)}</strong>`
 			: "View migration log";
-		html += `<div style="margin-top:22px;"><strong>What's next</strong>`;
-		html += `<div style="margin-top:10px; display:flex; flex-wrap:wrap; gap:8px;">
+		html += `<div style="margin-top:var(--margin-xl);"><strong>What's next</strong>`;
+		html += `<div style="margin-top:var(--margin-sm); display:flex; flex-wrap:wrap; gap:var(--margin-sm);">
 				<button class="btn btn-primary btn-sm" id="btn-view-log">${logBtnLabel}</button>
 			</div>`;
-		html += `<p class="text-muted small" style="margin-top:10px;">
+		html += `<p class="text-muted small" style="margin-top:var(--margin-sm);">
 				The migration log lists every record this run touched${hasErrors ? ", including exactly why each failed one didn't import" : ""}${totalWarnings ? ", and each warning where a record imported but a dependent piece was dropped" : ""}.
 				${hasErrors || totalWarnings ? "Fix the source in Tally (or in ERPNext), then upload again - records that already imported will simply be skipped." : ""}
 			</p>`;
-		html += `<div style="margin-top:16px;">
+		html += `<div style="margin-top:var(--margin-md);">
 				<button id="btn-restart" class="btn btn-default btn-sm">${TallyMigratorPage.navIcon("refresh")} Migrate another file</button>
 			</div></div>`;
 
@@ -2259,7 +2259,7 @@ class TallyMigratorPage {
 		$("#preview-box").hide().html("");
 		$("#btn-next-upload").prop("disabled", true);
 		$("#check-loading").show();
-		$("#check-clean").hide().removeClass("alert-warning").addClass("alert-success");
+		$("#check-clean").hide();
 		$("#check-issues").hide();
 		$("#uom-issue-list").html("");
 		this.setCoa("reuse");
