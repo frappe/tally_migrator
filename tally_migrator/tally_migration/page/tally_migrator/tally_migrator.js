@@ -50,25 +50,25 @@ class TallyMigratorPage {
 	render() {
 		$(this.wrapper).find(".page-content").html(`
 			${TallyMigratorPage.themeStyle()}
-			<div class="container tally-migrator" style="max-width:680px; padding-top: 24px; padding-bottom: 48px;">
+			<div class="container tally-migrator">
 
 				<!-- Persistent stepper -->
-				<div id="stepper" style="display:flex; align-items:center; margin-bottom:28px;"></div>
+				<div id="stepper" class="tm-stepper"></div>
 
 				<!-- STEP 1: Upload -->
 				<div id="section-upload">
 					<div id="resume-banner" style="display:none;"></div>
 					<h4>Bring your Tally data into ERPNext</h4>
-					<p class="text-muted" style="margin-bottom:18px;">
+					<p class="text-muted tm-lead">
 						This tool brings your Tally masters, accounts and opening balances into ERPNext. It
 						checks your file and shows you a preview first, so nothing changes until you are ready.
 					</p>
 
 					${TallyMigratorPage.callout("info", TallyMigratorPage.iconRow("success", `<strong>Your existing ERPNext data is safe.</strong> Nothing is ever overwritten or deleted. If a record already exists, the migrator skips it. You can run this as many times as you like.`))}
 
-					<div style="margin-top:18px;">
+					<div class="tm-section" style="margin-top:var(--margin-lg);">
 						<strong>First, export a file from Tally</strong>
-						<ol style="margin:10px 0 0 0; padding-left:20px; font-size:13px; line-height:1.7;">
+						<ol style="margin:var(--margin-sm) 0 0 0; padding-left:20px; font-size:var(--text-md); line-height:1.7;">
 							<li>Open your company in <strong>Tally Prime</strong>.</li>
 							<li>Go to <strong>Gateway of Tally → Import/Export → Export</strong>.</li>
 							<li>Choose <strong>Masters</strong> as the type.</li>
@@ -77,20 +77,20 @@ class TallyMigratorPage {
 						</ol>
 					</div>
 
-					<div style="margin-top:18px;">
+					<div class="tm-section" style="margin-top:var(--margin-lg);">
 						<strong>Then upload it here</strong>
-						<div style="margin-top:8px;">
+						<div style="margin-top:var(--margin-sm);">
 							<button id="btn-pick-file" class="btn btn-default btn-sm">
-								<i class="fa fa-upload"></i> &nbsp;Choose Tally XML file
+								${TallyMigratorPage.navIcon("upload")} &nbsp;Choose Tally XML file
 							</button>
 							<span id="file-status" style="margin-left:12px;" class="text-muted"></span>
 						</div>
 					</div>
 
 					<!-- Preview of what's inside the file -->
-					<div id="preview-box" style="display:none; margin-top:18px;"></div>
+					<div id="preview-box" style="display:none; margin-top:var(--margin-lg);"></div>
 
-					<div style="margin-top:24px;">
+					<div class="tm-footer" style="justify-content:flex-start;">
 						<button id="btn-next-upload" class="btn btn-primary btn-sm" disabled>Continue ${TallyMigratorPage.navIcon("right")}</button>
 					</div>
 				</div>
@@ -102,9 +102,8 @@ class TallyMigratorPage {
 
 					<div class="row">
 						<div class="form-group col-sm-6">
-							<label class="control-label">ERPNext Company</label>
-							<select id="erpnext-company" class="form-control" style="max-width:360px;"></select>
-							<div id="company-empty" style="display:none; margin-top:8px;" class="text-muted small">
+							<div id="company-control" class="tm-field"></div>
+							<div id="company-empty" style="display:none; margin-top:var(--margin-sm);" class="text-muted small">
 								No company found. <a href="/app/company/new">Create a Company in ERPNext</a> first,
 								then come back and refresh this page.
 							</div>
@@ -113,32 +112,27 @@ class TallyMigratorPage {
 
 					<div class="row">
 						<div class="form-group col-sm-6">
-							<label class="control-label">Chart of Accounts</label>
-							<select id="coa-mode" class="form-control" style="max-width:360px;">
-								<option value="reuse">Reuse ERPNext's standard accounts (recommended)</option>
-								<option value="mirror">Mirror Tally's group tree exactly</option>
-							</select>
-							<div class="text-muted small" style="margin-top:4px;">
+							<div id="coa-control" class="tm-field"></div>
+							<div class="text-muted small tm-field-hint">
 								<span id="coa-mode-hint">Tally's reserved groups map onto ERPNext's
 								built-in Chart of Accounts; only your custom groups and ledgers are created.</span>
 							</div>
 						</div>
 						<div class="form-group col-sm-6">
-							<label class="control-label">Opening-balance date</label>
-							<input type="date" id="opening-date" class="form-control" style="max-width:360px;" />
-							<div class="text-muted small" style="margin-top:4px;">
+							<div id="date-control" class="tm-field"></div>
+							<div class="text-muted small tm-field-hint">
 								Posting date for opening balances &amp; stock. Leave blank to use the
 								company's current fiscal-year start.
 							</div>
 						</div>
 					</div>
 
-					<div style="margin-top:16px; margin-bottom:20px;">
+					<div class="tm-section" style="margin-top:var(--margin-md);">
 						<strong>Here's what will be imported</strong>
-						<div id="configure-counts" style="margin-top:10px;"></div>
+						<div id="configure-counts" style="margin-top:var(--margin-sm);"></div>
 					</div>
 
-					<div style="margin-top:24px; display:flex; justify-content:space-between; align-items:center;">
+					<div class="tm-footer">
 						<button id="btn-back-2" class="btn btn-default btn-sm">${TallyMigratorPage.navIcon("left")} Back</button>
 						<button id="btn-next-2" class="btn btn-primary btn-sm">Continue ${TallyMigratorPage.navIcon("right")}</button>
 					</div>
@@ -152,37 +146,37 @@ class TallyMigratorPage {
 						decide how to handle anything that doesn't match - nothing is changed automatically.
 					</p>
 
-					<div id="check-loading" class="text-muted" style="margin:18px 0;">
-						<i class="fa fa-spinner fa-spin"></i> &nbsp;Checking your file against ERPNext...
+					<div id="check-loading" class="text-muted" style="margin:var(--margin-lg) 0;">
+						<span class="tm-spin"></span> &nbsp;Checking your file against ERPNext...
 					</div>
 
-					<div id="check-clean" style="display:none; margin-bottom:18px;">
+					<div id="check-clean" class="tm-section" style="display:none;">
 						${TallyMigratorPage.callout("success", TallyMigratorPage.iconRow("success", `<strong>Nothing to resolve.</strong> We found no data-quality issues (GST numbers, states, units, HSN codes) that need your input before importing.`))}
 					</div>
 
 					<!-- Data-quality report (read-only; informational + consent) -->
-					<div id="dq-section" style="display:none; margin-bottom:18px;">
-						<div id="dq-cards" style="display:flex; gap:10px; margin-bottom:12px;"></div>
+					<div id="dq-section" class="tm-section" style="display:none;">
+						<div id="dq-cards" class="tm-stats" style="margin-bottom:var(--margin-sm);"></div>
 						<div id="dq-list"></div>
 					</div>
 
 					<!-- Company-readiness gate (blockers stop the run) -->
-					<div id="readiness-section" style="display:none; margin-bottom:18px;"></div>
+					<div id="readiness-section" class="tm-section" style="display:none;"></div>
 
 					<!-- Field-coverage notice (read-only; informational) -->
-					<div id="coverage-section" style="display:none; margin-bottom:18px;"></div>
+					<div id="coverage-section" class="tm-section" style="display:none;"></div>
 
-					<div id="check-issues" style="display:none; margin-bottom:18px;">
-						<div style="margin-bottom:14px; background:var(--blue-100, #edf6fd); border:1px solid var(--blue-200, #e3f1fd); border-radius:8px; padding:12px 14px;">
+					<div id="check-issues" class="tm-section" style="display:none;">
+						<div class="tm-callout tm-callout--info" style="margin-bottom:var(--margin-md);">
 							${TallyMigratorPage.iconRow("info", `<strong>Some Units of Measure in your file don't exist in ERPNext yet.</strong> By default we'll create each one as a new unit. Change any row below if you'd rather map it to a unit you already use - then click Continue.`)}
 						</div>
 						<div id="uom-issue-list"></div>
 					</div>
 
 					<!-- Error consent (final gate; shown only when records have errors) -->
-					<div id="dq-consent" style="display:none; margin-bottom:18px; background:var(--blue-100, #edf6fd); border:1px solid var(--blue-200, #e3f1fd); border-radius:8px; padding:12px 14px;">
-						<label style="margin:0; font-weight:400; cursor:pointer; display:flex; align-items:flex-start; gap:8px;">
-							<span style="flex:0 0 auto; display:inline-flex; align-items:center; height:1.5em;">
+					<div id="dq-consent" class="tm-section tm-callout tm-callout--info" style="display:none;">
+						<label class="tm-consent">
+							<span class="tm-iconrow-icon">
 								<input type="checkbox" id="dq-consent-check" style="margin:0;" />
 							</span>
 							<span>Some records have errors and won't import. Continue with the rest - you can fix and re-import them later from the Migration Log.</span>
@@ -190,10 +184,9 @@ class TallyMigratorPage {
 					</div>
 
 
-					<div style="margin-top:24px; display:flex; justify-content:space-between; align-items:center;">
-						<div>
+					<div class="tm-footer">
+						<div class="tm-footer-group">
 							<button id="btn-back-check" class="btn btn-default btn-sm">${TallyMigratorPage.navIcon("left")} Back</button>
-							&nbsp;
 							<button id="btn-startover-check" class="btn btn-default btn-sm"
 								style="color:var(--text-muted, #8d99a6);">Start over</button>
 						</div>
@@ -209,12 +202,12 @@ class TallyMigratorPage {
 						accounts, with their opening balances. Nothing is changed automatically -
 						please check anything we've flagged below.
 					</p>
-					<div id="review-summary" style="margin-bottom:16px;"></div>
-					<div id="review-exceptions" style="margin-bottom:16px;"></div>
-					<div id="review-all" style="margin-bottom:16px;"></div>
+					<div id="review-summary" class="tm-section"></div>
+					<div id="review-exceptions" class="tm-section"></div>
+					<div id="review-all" class="tm-section"></div>
 					<div id="review-parties"></div>
 
-					<div style="margin-top:24px; display:flex; justify-content:space-between; align-items:center;">
+					<div class="tm-footer">
 						<button id="btn-back-review" class="btn btn-default btn-sm">${TallyMigratorPage.navIcon("left")} Back</button>
 						<button id="btn-next-review" class="btn btn-primary btn-sm">Continue ${TallyMigratorPage.navIcon("right")}</button>
 					</div>
@@ -225,19 +218,19 @@ class TallyMigratorPage {
 					<h4>Migration</h4>
 					<p id="run-subtitle" class="text-muted"></p>
 
-					<div id="progress-section" style="display:none; margin-bottom:20px;">
-						<div class="progress" style="margin-bottom:6px;">
+					<div id="progress-section" class="tm-section" style="display:none;">
+						<div class="progress" style="margin-bottom:var(--margin-xs);">
 							<div id="progress-bar" class="progress-bar progress-bar-striped active" style="width:0%; min-width:2em;">0%</div>
 						</div>
-						<p id="progress-desc" class="text-muted" style="font-size:12px; margin:0;">Starting...</p>
+						<p id="progress-desc" class="text-muted" style="font-size:var(--text-sm); margin:0;">Starting...</p>
 					</div>
 
 					<div id="results-section" style="display:none;"></div>
 
-					<div id="error-section" style="display:none; background:var(--red-100, #fff0f0); border:1px solid var(--red-200, #fcd7d7); border-radius:8px; padding:12px 14px;"></div>
+					<div id="error-section" class="tm-callout tm-callout--error" style="display:none;"></div>
 
 					<div id="run-actions">
-						<div style="display:flex; justify-content:space-between; align-items:center;">
+						<div class="tm-footer" style="margin-top:0;">
 							<button id="btn-back-3" class="btn btn-default btn-sm">${TallyMigratorPage.navIcon("left")} Back</button>
 							<button id="btn-run" class="btn btn-primary btn-sm">Run Migration</button>
 						</div>
@@ -248,7 +241,89 @@ class TallyMigratorPage {
 		`);
 
 		this.renderStepper("section-upload");
+		this.mountControls();
 		this.bindEvents();
+	}
+
+	// ── Step 2 form controls ─────────────────────────────────────────────────────
+	// Native Frappe field controls (make_control) replace raw <select>/<input>, so
+	// they pick up desk styling, dark mode and keyboard behaviour for free. Value
+	// access is centralised through get*/set* helpers below so the rest of the
+	// controller never touches the underlying inputs directly.
+	mountControls() {
+		this.companyControl = frappe.ui.form.make_control({
+			parent: $("#company-control")[0],
+			df: {
+				fieldtype: "Select",
+				fieldname: "erpnext_company",
+				label: __("ERPNext Company"),
+				options: [],
+				reqd: 1,
+				change: () => this.saveDraft(),
+			},
+			render_input: true,
+		});
+
+		this.coaControl = frappe.ui.form.make_control({
+			parent: $("#coa-control")[0],
+			df: {
+				fieldtype: "Select",
+				fieldname: "coa_mode",
+				label: __("Chart of Accounts"),
+				options: [
+					{ value: "reuse", label: __("Reuse ERPNext's standard accounts (recommended)") },
+					{ value: "mirror", label: __("Mirror Tally's group tree exactly") },
+				],
+				default: "reuse",
+				change: () => {
+					this.updateCoaHint();
+					this.saveDraft();
+				},
+			},
+			render_input: true,
+		});
+		this.coaControl.set_value("reuse");
+
+		this.dateControl = frappe.ui.form.make_control({
+			parent: $("#date-control")[0],
+			df: {
+				fieldtype: "Date",
+				fieldname: "posting_date",
+				label: __("Opening-balance date"),
+				change: () => this.saveDraft(),
+			},
+			render_input: true,
+		});
+	}
+
+	// Centralised accessors for the Step 2 controls. Date control stores/returns the
+	// system format (yyyy-mm-dd), matching what the API and draft expect.
+	getCompany() { return (this.companyControl && this.companyControl.get_value()) || ""; }
+	setCompany(v) { if (this.companyControl) this.companyControl.set_value(v || ""); }
+	getCoa() { return (this.coaControl && this.coaControl.get_value()) || ""; }
+	setCoa(v) { if (this.coaControl) this.coaControl.set_value(v || "reuse"); }
+	getDate() { return (this.dateControl && this.dateControl.get_value()) || ""; }
+	setDate(v) { if (this.dateControl) this.dateControl.set_value(v || ""); }
+
+	// Populate the company Select with a leading placeholder; an empty list clears it.
+	setCompanyOptions(names) {
+		if (!this.companyControl) return;
+		const opts = names.length
+			? [{ value: "", label: __("Select company...") }].concat(
+					names.map((n) => ({ value: n, label: n }))
+			  )
+			: [];
+		this.companyControl.df.options = opts;
+		this.companyControl.refresh();
+		this.companyControl.set_value("");
+	}
+
+	updateCoaHint() {
+		$("#coa-mode-hint").text(
+			this.getCoa() === "mirror"
+				? "Every Tally group is recreated verbatim in ERPNext, preserving your exact tree."
+				: "Tally's reserved groups map onto ERPNext's built-in Chart of Accounts; only your custom groups and ledgers are created."
+		);
 	}
 
 	// ── Persistent stepper ──────────────────────────────────────────────────────
@@ -276,38 +351,21 @@ class TallyMigratorPage {
 	renderStepper(activeId) {
 		const steps = this.visibleSteps();
 		const activeIdx = steps.findIndex((s) => s.id === activeId);
-		// Use Frappe design tokens (with hex fallbacks) so the stepper matches the
-		// active desk theme - including dark mode - instead of hardcoded colours.
-		const ACTIVE = "var(--text-color, #1f272e)";    // desk ink / near-black
-		const DONE = "var(--green-600, #30a66d)";       // standard success green
-		const PENDING = "var(--gray-300, #d1d8dd)";     // muted fill
+		const check =
+			'<svg width="12" height="12" viewBox="0 0 16 16" fill="none" aria-hidden="true" style="display:block;"><path d="M3.5 8.5l3 3 6-7" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg>';
 
 		const parts = steps.map((s, i) => {
-			const done = i < activeIdx;
-			const active = i === activeIdx;
-			const circleColor = done ? DONE : active ? ACTIVE : PENDING;
-			const textColor = active ? ACTIVE : done ? DONE : "var(--text-muted, #8d99a6)";
-			// The active circle is filled with --text-color (near-black in light,
-			// near-white in dark), so its number must use the opposite ink (--bg-color)
-			// to stay legible. Done/pending circles are mid/dark fills - white reads on
-			// both themes (the dark-mode --gray-300 fill is #343434).
-			const circleText = active ? "var(--bg-color, #fff)" : "#fff";
-			const circle = `
-				<div style="display:flex; align-items:center; gap:8px;">
-					<span style="display:inline-flex; align-items:center; justify-content:center;
-						width:24px; height:24px; border-radius:50%; background:${circleColor};
-						color:${circleText}; font-size:12px; font-weight:600;">
-						${done
-							? '<svg width="12" height="12" viewBox="0 0 16 16" fill="none" aria-hidden="true" style="display:block;"><path d="M3.5 8.5l3 3 6-7" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg>'
-							: i + 1}
-					</span>
-					<span style="color:${textColor}; font-weight:${active ? 600 : 400}; font-size:13px;">${s.label}</span>
+			const state = i < activeIdx ? "is-done" : i === activeIdx ? "is-active" : "is-pending";
+			const dot = i < activeIdx ? check : i + 1;
+			const step = `<div class="tm-step ${state}">
+					<span class="tm-step-dot">${dot}</span>
+					<span class="tm-step-label">${s.label}</span>
 				</div>`;
 			const connector =
 				i < steps.length - 1
-					? `<div style="flex:1; height:2px; background:${i < activeIdx ? DONE : "var(--border-color, #e0e6ed)"}; margin:0 12px;"></div>`
+					? `<div class="tm-step-line ${i < activeIdx ? "is-done" : ""}"></div>`
 					: "";
-			return circle + connector;
+			return step + connector;
 		});
 		$("#stepper").html(parts.join(""));
 	}
@@ -324,16 +382,11 @@ class TallyMigratorPage {
 		});
 
 		// Step 2
-		$("#coa-mode").on("change", function () {
-			$("#coa-mode-hint").text(
-				$(this).val() === "mirror"
-					? "Every Tally group is recreated verbatim in ERPNext, preserving your exact tree."
-					: "Tally's reserved groups map onto ERPNext's built-in Chart of Accounts; only your custom groups and ledgers are created."
-			);
-		});
+		// (COA hint + draft-on-change are wired via each control's df.change in
+		// mountControls(), so no jQuery change handlers are needed here.)
 		$("#btn-back-2").on("click", () => this.show("section-upload"));
 		$("#btn-next-2").on("click", () => {
-			const erpnext = $("#erpnext-company").val();
+			const erpnext = this.getCompany();
 			if (!erpnext) {
 				frappe.msgprint(__("Please select an ERPNext company."));
 				return;
@@ -362,9 +415,6 @@ class TallyMigratorPage {
 		$("#btn-back-3").on("click", () =>
 			this.show(this.hasAccounts() ? "section-review" : "section-check"));
 		$("#btn-run").on("click", () => this.runMigration());
-
-		// Persist option changes to the draft as the user makes them.
-		$("#erpnext-company, #coa-mode, #opening-date").on("change", () => this.saveDraft());
 	}
 
 	// ── Step 1: upload + preview ────────────────────────────────────────────────
@@ -387,7 +437,7 @@ class TallyMigratorPage {
 	loadPreview() {
 		$("#preview-box")
 			.show()
-			.html(`<span class="text-muted"><i class="fa fa-spinner fa-spin"></i> &nbsp;Reading your file...</span>`);
+			.html(`<span class="text-muted"><span class="tm-spin"></span> &nbsp;Reading your file...</span>`);
 		$("#btn-next-upload").prop("disabled", true);
 
 		frappe.call({
@@ -447,14 +497,9 @@ class TallyMigratorPage {
 		];
 		const chips = rows
 			.filter(([, , show]) => show)
-			.map(
-				([label, n]) =>
-					`<span style="display:inline-block; margin:6px 8px 0 0; padding:3px 10px;
-						background:var(--gray-100, #f4f5f6); border-radius:12px; font-size:12px;">
-						<strong>${n}</strong> ${label}</span>`
-			)
+			.map(([label, n]) => `<span class="tm-chip"><strong>${n}</strong> ${label}</span>`)
 			.join("");
-		return `<div style="margin-top:6px;">${chips}</div>`;
+		return `<div class="tm-chips">${chips}</div>`;
 	}
 
 	proceedToConfigure() {
@@ -484,9 +529,9 @@ class TallyMigratorPage {
 		this._draftPending = {
 			file_url: this.fileUrl,
 			file_name: this.fileName,
-			erpnext_company: $("#erpnext-company").val() || "",
-			coa_mode: $("#coa-mode").val() || "",
-			posting_date: $("#opening-date").val() || "",
+			erpnext_company: this.getCompany(),
+			coa_mode: this.getCoa(),
+			posting_date: this.getDate(),
 			step: this._currentStep || "section-upload",
 			uom_overrides: this.uomOverrides || {},
 			record_overrides: this.recordOverrides || {},
@@ -550,9 +595,9 @@ class TallyMigratorPage {
 				const when = d.modified ? frappe.datetime.comment_when(d.modified) : "";
 				$("#resume-banner")
 					.html(`
-						<div style="display:flex; gap:10px; align-items:center; justify-content:space-between; margin-bottom:18px; background:var(--blue-100, #edf6fd); border:1px solid var(--blue-200, #e3f1fd); border-radius:8px; padding:12px 14px;">
-							${TallyMigratorPage.iconRow("info", `<div style="font-size:13px;"><strong>You have an unfinished migration.</strong> File <strong>${frappe.utils.escape_html(d.file_name || d.file_url)}</strong>${when ? ` - last saved ${when}` : ""}. Your fixes are saved.</div>`)}
-							<div style="white-space:nowrap;">
+						<div class="tm-callout tm-callout--info tm-section" style="display:flex; gap:var(--margin-md); align-items:center; justify-content:space-between;">
+							${TallyMigratorPage.iconRow("info", `<div style="font-size:var(--text-md);"><strong>You have an unfinished migration.</strong> File <strong>${frappe.utils.escape_html(d.file_name || d.file_url)}</strong>${when ? ` - last saved ${when}` : ""}. Your fixes are saved.</div>`)}
+							<div class="tm-nowrap">
 								<button class="btn btn-primary btn-xs" id="btn-resume">Resume</button>
 								<button class="btn btn-default btn-xs" id="btn-discard">Start over</button>
 							</div>
@@ -587,8 +632,8 @@ class TallyMigratorPage {
 		);
 		this.loadPreview();        // refresh the counts for the file
 		this.proceedToConfigure(); // land on Configure, one click from where they were
-		if (this._restore.coa) $("#coa-mode").val(this._restore.coa).trigger("change");
-		if (this._restore.posting) $("#opening-date").val(this._restore.posting);
+		if (this._restore.coa) { this.setCoa(this._restore.coa); this.updateCoaHint(); }
+		if (this._restore.posting) this.setDate(this._restore.posting);
 		frappe.show_alert({
 			message: __("Resumed your in-progress migration - your fixes are saved."),
 			indicator: "green",
@@ -634,22 +679,18 @@ class TallyMigratorPage {
 			method: "tally_migrator.api.get_companies",
 			callback: (r) => {
 				const companies = r.message || [];
-				const $select = $("#erpnext-company").empty();
 				if (!companies.length) {
+					this.setCompanyOptions([]);
 					$("#company-empty").show();
 					$("#btn-next-2").prop("disabled", true);
 					return;
 				}
 				$("#company-empty").hide();
 				$("#btn-next-2").prop("disabled", false);
-				$select.append('<option value="">Select company...</option>');
-				companies.forEach((c) => {
-					const name = frappe.utils.escape_html(c.name);
-					$select.append(`<option value="${name}">${name}</option>`);
-				});
+				this.setCompanyOptions(companies.map((c) => c.name));
 				// Restore a resumed company, else auto-select when there is exactly one.
 				if (this._restore && this._restore.company) {
-					$select.val(this._restore.company);
+					this.setCompany(this._restore.company);
 					this.saveDraft();   // persist the restored selection
 					// Resume at the step the user actually left off on. Landing on
 					// Configure (step 1) every time forced them to re-walk the wizard
@@ -663,14 +704,14 @@ class TallyMigratorPage {
 						this.proceedToCheck();
 					}
 				} else if (companies.length === 1) {
-					$select.val(companies[0].name);
+					this.setCompany(companies[0].name);
 				}
 			},
 			error: () => {
 				// A failed load leaves the picker empty, which looks identical to "no
 				// companies exist" and silently strands the user on this step. Tell them
 				// what actually happened and offer a retry instead.
-				$("#erpnext-company").empty();
+				this.setCompanyOptions([]);
 				$("#btn-next-2").prop("disabled", true);
 				$("#company-empty")
 					.html(
@@ -745,12 +786,12 @@ class TallyMigratorPage {
 			method: "tally_migrator.api.validate_masters_data",
 			args: {
 				file_url: this.fileUrl,
-				erpnext_company: $("#erpnext-company").val(),
+				erpnext_company: this.getCompany(),
 				// Apply the user's saved inline fixes (e.g. a resumed draft) so the
 				// scan reflects them on first load - otherwise edits stay invisible
 				// until the user manually clicks Re-check. Mirrors recheck()'s args.
 				record_overrides: JSON.stringify(this.recordOverrides || {}),
-				posting_date: $("#opening-date").val() || "",
+				posting_date: this.getDate(),
 			},
 			callback: (r) => {
 				this.qualityReport = r.message || null;
@@ -834,7 +875,7 @@ class TallyMigratorPage {
 		$btn.prop("disabled", true);
 		frappe.call({
 			method: "tally_migrator.api.company_readiness",
-			args: { erpnext_company: $("#erpnext-company").val() },
+			args: { erpnext_company: this.getCompany() },
 			callback: (r) => {
 				this.readiness = r.message || null;
 				this.renderReadiness();
@@ -928,11 +969,8 @@ class TallyMigratorPage {
 		// one thing the coverage system exists to surface; the reassurance counts
 		// (noise / constants / duplicates / taxes) are deliberately NOT shown here -
 		// they are on the migration log's full audit.
-		$sec.html(`
-			<div style="margin:0; background:var(--blue-100, #edf6fd); border:1px solid var(--blue-200, #e3f1fd); border-radius:8px; padding:12px 14px;">
-				<div style="display:flex; align-items:flex-start; gap:8px;">
-					<span style="flex:0 0 auto; display:inline-flex; align-items:center; height:1.5em;">${TallyMigratorPage.statusIcon("info")}</span>
-					<div style="flex:1;">
+		$sec.html(
+			TallyMigratorPage.callout("info", TallyMigratorPage.iconRow("info", `
 						<strong>Most of your data imports fully - but ${plur(
 							lossCount,
 							"field"
@@ -944,11 +982,9 @@ class TallyMigratorPage {
 						} below: only you can tell whether a custom field matters for your
 						business. Nothing is changed automatically, and the full list is
 						saved on the migration log.
-						<div style="margin-top:10px;">${lossBlocks}</div>
-					</div>
-				</div>
-			</div>
-		`).show();
+						<div style="margin-top:var(--margin-sm);">${lossBlocks}</div>
+			`))
+		).show();
 	}
 
 	// ── Dark-mode theming ───────────────────────────────────────────────────────
@@ -968,27 +1004,139 @@ class TallyMigratorPage {
 				--red-100: #361515;    --red-200: #521515;
 				--gray-100: #232323;   --gray-200: #2b2b2b;   --gray-300: #343434;
 			}
-				/* Reusable info tooltip: an inline (i) revealing secondary explanation
-				   on hover/focus, so the screen stays terse. */
-				.tally-migrator .tm-tip {
-					position: relative; display: inline-flex; align-items: center;
-					vertical-align: middle; margin-left: 5px; position: relative; top: -1px;
-					color: var(--text-muted, #999); cursor: help;
-				}
-				.tally-migrator .tm-tip-icon { display: block; }
-				.tally-migrator .tm-tip:hover { color: var(--text-color, #1f272e); }
-				.tally-migrator .tm-tip-bubble {
-					visibility: hidden; opacity: 0;
-					position: absolute; bottom: 145%; left: 50%; transform: translateX(-50%);
-					width: 240px; max-width: 70vw;
-					background: var(--text-color, #1f272e); color: var(--bg-color, #fff);
-					text-align: left; font-size: 12px; line-height: 1.45; font-weight: 400;
-					padding: 8px 10px; border-radius: 6px;
-					box-shadow: 0 4px 14px rgba(0,0,0,0.18); z-index: 1000;
-					transition: opacity 0.12s ease; pointer-events: none; white-space: normal;
-				}
-				.tally-migrator .tm-tip:hover .tm-tip-bubble,
-				.tally-migrator .tm-tip:focus .tm-tip-bubble { visibility: visible; opacity: 1; }
+
+			/* ── Layout ─────────────────────────────────────────────────────────
+			   One scoped, token-driven stylesheet replaces ~180 inline styles. All
+			   colours/spacing/radii ride on Frappe desk tokens so light/dark mode and
+			   the active theme are honoured automatically. */
+			.tally-migrator { max-width: 680px; padding-top: var(--padding-lg); padding-bottom: var(--padding-2xl); }
+			.tally-migrator h4 { font-size: var(--text-xl); font-weight: 600; margin: 0 0 var(--margin-sm); }
+			.tally-migrator h5 { font-size: var(--text-md); font-weight: 600; margin: 0 0 var(--margin-sm); }
+			.tally-migrator p { line-height: 1.6; }
+			.tally-migrator .tm-lead { margin-bottom: var(--margin-lg); }
+
+			/* ── Stepper ────────────────────────────────────────────────────────── */
+			.tally-migrator .tm-stepper { display: flex; align-items: center; margin-bottom: var(--margin-xl); }
+			.tally-migrator .tm-step { display: flex; align-items: center; gap: var(--margin-sm); }
+			.tally-migrator .tm-step-dot {
+				display: inline-flex; align-items: center; justify-content: center;
+				width: 24px; height: 24px; border-radius: 50%;
+				font-size: var(--text-sm); font-weight: 600;
+			}
+			.tally-migrator .tm-step-label { font-size: var(--text-md); font-weight: 400; }
+			.tally-migrator .tm-step.is-active .tm-step-label { font-weight: 600; color: var(--text-color); }
+			.tally-migrator .tm-step.is-done .tm-step-label { color: var(--green-600, #30a66d); }
+			.tally-migrator .tm-step.is-pending .tm-step-label { color: var(--text-muted); }
+			.tally-migrator .tm-step.is-active .tm-step-dot { background: var(--text-color); color: var(--bg-color); }
+			.tally-migrator .tm-step.is-done .tm-step-dot { background: var(--green-600, #30a66d); color: #fff; }
+			.tally-migrator .tm-step.is-pending .tm-step-dot { background: var(--gray-300, #d1d8dd); color: #fff; }
+			.tally-migrator .tm-step-line { flex: 1; height: 2px; margin: 0 var(--margin-md); background: var(--border-color); }
+			.tally-migrator .tm-step-line.is-done { background: var(--green-600, #30a66d); }
+
+			/* ── Footer nav ─────────────────────────────────────────────────────── */
+			.tally-migrator .tm-footer {
+				margin-top: var(--margin-xl); display: flex;
+				justify-content: space-between; align-items: center;
+			}
+			.tally-migrator .tm-footer-group { display: flex; align-items: center; gap: var(--margin-sm); }
+
+			/* ── Cards & callouts ───────────────────────────────────────────────── */
+			.tally-migrator .tm-card {
+				border: 1px solid var(--border-color); border-radius: var(--border-radius);
+				background: var(--card-bg, #fff);
+			}
+			.tally-migrator .tm-callout {
+				border: 1px solid var(--border-color); border-radius: var(--border-radius);
+				padding: var(--padding-md) var(--padding-md); color: var(--text-color);
+			}
+			.tally-migrator .tm-callout--info { background: var(--blue-100, #edf6fd); border-color: var(--blue-200, #e3f1fd); }
+			.tally-migrator .tm-callout--success { background: var(--green-100, #e4f5e9); border-color: var(--green-200, #daf0e1); }
+			.tally-migrator .tm-callout--error { background: var(--red-100, #fff0f0); border-color: var(--red-200, #fcd7d7); }
+			.tally-migrator .tm-section { margin-bottom: var(--margin-lg); }
+
+			/* ── Icon + text row ────────────────────────────────────────────────── */
+			.tally-migrator .tm-iconrow { display: flex; align-items: flex-start; gap: var(--margin-sm); }
+			.tally-migrator .tm-iconrow > .tm-iconrow-icon {
+				flex: 0 0 auto; display: inline-flex; align-items: center; height: 1.5em;
+			}
+			.tally-migrator .tm-iconrow > .tm-iconrow-body { flex: 1; min-width: 0; }
+
+			/* ── Stat cards & pills ─────────────────────────────────────────────── */
+			.tally-migrator .tm-stats { display: flex; gap: var(--margin-md); }
+			.tally-migrator .tm-stat {
+				flex: 1; border: 1px solid var(--border-color);
+				border-radius: var(--border-radius); padding: var(--padding-sm) var(--padding-md);
+			}
+			.tally-migrator .tm-stat-num { font-size: var(--text-2xl); font-weight: 700; color: var(--text-color); }
+			.tally-migrator .tm-stat-sub { color: var(--text-muted); font-size: var(--text-sm); margin-top: 2px; }
+			.tally-migrator .tm-stat-label { margin-top: 5px; }
+			.tally-migrator .tm-pill {
+				display: inline-block; padding: 1px 12px; border-radius: 10px; font-size: var(--text-sm);
+			}
+			.tally-migrator .tm-pill--green { background: var(--green-200, #daf0e1); }
+			.tally-migrator .tm-pill--blue { background: var(--blue-200, #e3f1fd); }
+			.tally-migrator .tm-pill--gray { background: var(--gray-200, #f0f4f7); }
+			.tally-migrator .tm-pill--red { background: var(--red-200, #fcd7d7); }
+
+			/* ── Preview count chips ────────────────────────────────────────────── */
+			.tally-migrator .tm-chips { margin-top: var(--margin-xs); }
+			.tally-migrator .tm-chip {
+				display: inline-block; margin: var(--margin-xs) var(--margin-sm) 0 0;
+				padding: 3px 10px; background: var(--gray-100, #f4f5f6);
+				border-radius: 12px; font-size: var(--text-sm);
+			}
+
+			/* ── Tables ─────────────────────────────────────────────────────────── */
+			.tally-migrator .tm-table { margin: 0; font-size: var(--text-md); }
+			.tally-migrator .tm-table th { border-top: 0; padding: var(--padding-xs) var(--padding-sm); }
+			.tally-migrator .tm-table td { padding: var(--padding-xs) var(--padding-sm); }
+			.tally-migrator .tm-table .tm-num { text-align: right; white-space: nowrap; }
+			.tally-migrator .tm-scroll { max-height: 340px; overflow-y: auto; }
+			.tally-migrator .tm-nowrap { white-space: nowrap; }
+
+			/* ── Disclosure (collapsible) header ────────────────────────────────── */
+			.tally-migrator .tm-disclosure {
+				cursor: pointer; display: flex; align-items: center; justify-content: space-between;
+				border: 1px solid var(--border-color); border-radius: var(--border-radius);
+				padding: var(--padding-sm) var(--padding-md); color: var(--text-muted);
+			}
+
+			/* ── Form fields (Step 2) ───────────────────────────────────────────── */
+			.tally-migrator .tm-field { max-width: 360px; margin-bottom: var(--margin-md); }
+			.tally-migrator .tm-field-hint { margin-top: var(--margin-xs); }
+
+			/* ── Consent / checkbox row ─────────────────────────────────────────── */
+			.tally-migrator .tm-consent { display: flex; align-items: flex-start; gap: var(--margin-sm); margin: 0; font-weight: 400; cursor: pointer; }
+
+			/* ── Inline spinner (native, no FontAwesome dependency) ─────────────── */
+			.tally-migrator .tm-spin {
+				display: inline-block; width: 12px; height: 12px; vertical-align: -2px;
+				border: 2px solid var(--gray-300, #d1d8dd); border-top-color: var(--text-muted, #8d99a6);
+				border-radius: 50%; animation: tm-spin 0.7s linear infinite;
+			}
+			@keyframes tm-spin { to { transform: rotate(360deg); } }
+
+			/* Reusable info tooltip: an inline (i) revealing secondary explanation
+			   on hover/focus, so the screen stays terse. */
+			.tally-migrator .tm-tip {
+				position: relative; display: inline-flex; align-items: center;
+				vertical-align: middle; margin-left: 5px; top: -1px;
+				color: var(--text-muted, #999); cursor: help;
+			}
+			.tally-migrator .tm-tip-icon { display: block; }
+			.tally-migrator .tm-tip:hover { color: var(--text-color, #1f272e); }
+			.tally-migrator .tm-tip-bubble {
+				visibility: hidden; opacity: 0;
+				position: absolute; bottom: 145%; left: 50%; transform: translateX(-50%);
+				width: 240px; max-width: 70vw;
+				background: var(--text-color, #1f272e); color: var(--bg-color, #fff);
+				text-align: left; font-size: 12px; line-height: 1.45; font-weight: 400;
+				padding: 8px 10px; border-radius: 6px;
+				box-shadow: 0 4px 14px rgba(0,0,0,0.18); z-index: 1000;
+				transition: opacity 0.12s ease; pointer-events: none; white-space: normal;
+			}
+			.tally-migrator .tm-tip:hover .tm-tip-bubble,
+			.tally-migrator .tm-tip:focus .tm-tip-bubble { visibility: visible; opacity: 1; }
 		</style>`;
 	}
 
@@ -1025,11 +1173,9 @@ class TallyMigratorPage {
 	// line of text (not the top of a multi-line block). This is the single source
 	// of icon/text alignment for every notice, so they all line up identically.
 	static iconRow(kind, html) {
-		return `<div style="display:flex; align-items:flex-start; gap:8px;">
-			<span style="flex:0 0 auto; display:inline-flex; align-items:center; height:1.5em;">${TallyMigratorPage.statusIcon(
-				kind
-			)}</span>
-			<div style="flex:1; min-width:0;">${html}</div>
+		return `<div class="tm-iconrow">
+			<span class="tm-iconrow-icon">${TallyMigratorPage.statusIcon(kind)}</span>
+			<div class="tm-iconrow-body">${html}</div>
 		</div>`;
 	}
 
@@ -1039,14 +1185,9 @@ class TallyMigratorPage {
 	// do NOT swap in --text-on-* (e.g. --green-800), as those tints are not remapped for
 	// dark mode here and would render dark text on the dark box.
 	static callout(kind, inner, extraStyle = "") {
-		const t =
-			{
-				info: ["var(--blue-100, #edf6fd)", "var(--blue-200, #e3f1fd)"],
-				success: ["var(--green-100, #e4f5e9)", "var(--green-200, #daf0e1)"],
-				error: ["var(--red-100, #fff0f0)", "var(--red-200, #fcd7d7)"],
-			}[kind] || ["var(--blue-100, #edf6fd)", "var(--blue-200, #e3f1fd)"];
-		return `<div style="background:${t[0]}; border:1px solid ${t[1]}; border-radius:8px;
-			padding:12px 14px; color:var(--text-color, #1f272e);${extraStyle}">${inner}</div>`;
+		const variant = { info: "info", success: "success", error: "error" }[kind] || "info";
+		const style = extraStyle ? ` style="${extraStyle}"` : "";
+		return `<div class="tm-callout tm-callout--${variant}"${style}>${inner}</div>`;
 	}
 
 	// Soft status pill (tinted background, no border/icon) and the summary "stat
@@ -1054,14 +1195,15 @@ class TallyMigratorPage {
 	// party-openings panels so they stay pixel-identical. Background tints:
 	// green = good, blue = worth a look, grey = none.
 	static get STAT_BG() {
-		return {
-			green: "var(--green-200, #daf0e1)",
-			blue: "var(--blue-200, #e3f1fd)",
-			gray: "var(--gray-200, #f0f4f7)",
-		};
+		return { green: "green", blue: "blue", gray: "gray" };
 	}
-	static pill(text, bg) {
-		return `<span style="display:inline-block; padding:1px 12px; border-radius:10px; font-size:12px; background:${bg};">${text}</span>`;
+	// `tone` is a tm-pill colour keyword (green / blue / gray). For back-compat a raw
+	// CSS colour value still works via an inline fallback.
+	static pill(text, tone) {
+		if (["green", "blue", "gray", "red"].includes(tone)) {
+			return `<span class="tm-pill tm-pill--${tone}">${text}</span>`;
+		}
+		return `<span class="tm-pill" style="background:${tone};">${text}</span>`;
 	}
 	// Inline (i) that reveals `text` on hover/focus - for secondary explanation we
 	// don't want occupying a line of body copy. Keyboard-reachable (tabindex) and
@@ -1079,13 +1221,13 @@ class TallyMigratorPage {
 	}
 	// `tip` (optional) appends an info (i) beside the label - secondary explanation
 	// on hover instead of a paragraph below the cards.
-	static statCard(big, label, sub, bg, tip = "") {
+	static statCard(big, label, sub, tone, tip = "") {
 		const tipIcon = tip ? TallyMigratorPage.infoTip(tip) : "";
 		return `
-			<div style="flex:1; border:1px solid var(--border-color, #e0e6ed); border-radius:6px; padding:10px 12px;">
+			<div class="tm-stat">
 				<div class="text-muted small">${label}${tipIcon}</div>
-				<div style="font-size:20px; font-weight:700; color:var(--text-color, #1f272e); margin:2px 0 5px;">${big}</div>
-				<div>${TallyMigratorPage.pill(sub, bg)}</div>
+				<div class="tm-stat-num" style="margin:2px 0 5px;">${big}</div>
+				<div>${TallyMigratorPage.pill(sub, tone)}</div>
 			</div>`;
 	}
 
@@ -1158,12 +1300,10 @@ class TallyMigratorPage {
 		const esc = frappe.utils.escape_html;
 		// Number stays in the regular text colour; the label below carries a soft
 		// colour as a background pill (green = mapped, red = errors, blue = warnings).
-		const card = (n, label, bg) => `
-			<div style="flex:1; border:1px solid var(--border-color, #e0e6ed); border-radius:6px; padding:10px 12px;">
-				<div style="font-size:20px; font-weight:700; color:var(--text-color, #1f272e);">${n}</div>
-				<div style="margin-top:5px;">
-					<span style="display:inline-block; padding:1px 12px; border-radius:10px; font-size:12px; background:${bg};">${label}</span>
-				</div>
+		const card = (n, label, tone) => `
+			<div class="tm-stat">
+				<div class="tm-stat-num">${n}</div>
+				<div class="tm-stat-label">${TallyMigratorPage.pill(label, tone)}</div>
 			</div>`;
 		// Headline shows the number of distinct issue *types* (matching the rows
 		// below); the affected-record count is shown inside each group's row.
@@ -1172,15 +1312,15 @@ class TallyMigratorPage {
 		// "Mapped" = total records read from the file (customers + suppliers + items).
 		const mapped = Object.values(report.totals || {}).reduce((a, b) => a + (b || 0), 0);
 		$("#dq-cards").html(
-			card(mapped, "Mapped", "var(--green-200, #daf0e1)") +
-			card(errGroups, "Errors", "var(--red-200, #fcd7d7)") +
-			card(warnGroups, "Warnings", "var(--blue-200, #e3f1fd)")
+			card(mapped, "Mapped", "green") +
+			card(errGroups, "Errors", "red") +
+			card(warnGroups, "Warnings", "blue")
 		);
 
 		const rows = report.groups.map((g, idx) => this.dqGroupHtml(g, idx)).join("");
 		const hasEditable = report.groups.some((g) => (g.editable_fields || []).length);
 		const toolbar = hasEditable
-			? `<div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:8px;">
+			? `<div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:var(--margin-sm);">
 					<span class="text-muted small">Fix a value below, then re-check - or continue anyway.</span>
 					<button class="btn btn-default btn-xs" id="btn-dq-recheck">${TallyMigratorPage.navIcon("refresh")} Re-check</button>
 				</div>`
@@ -1188,7 +1328,7 @@ class TallyMigratorPage {
 
 		$("#dq-list").html(`
 			${toolbar}
-			<div style="border:1px solid var(--border-color, #e0e6ed); border-radius:6px; padding:6px 14px; max-height:340px; overflow-y:auto;">
+			<div class="tm-card tm-scroll" style="padding:var(--padding-xs) var(--padding-md);">
 				${rows}
 			</div>`);
 
@@ -1312,8 +1452,8 @@ class TallyMigratorPage {
 				record_overrides: JSON.stringify(this.recordOverrides),
 				// Pass the company + date so the readiness panel (incl. frozen-period
 				// checks) is recomputed alongside the data fixes, not left stale.
-				erpnext_company: $("#erpnext-company").val() || "",
-				posting_date: $("#opening-date").val() || "",
+				erpnext_company: this.getCompany(),
+				posting_date: this.getDate(),
 			},
 			callback: (r) => {
 				frappe.dom.unfreeze();
@@ -1375,17 +1515,17 @@ class TallyMigratorPage {
 
 		const n = this.uomIssues.length;
 		$("#uom-issue-list").html(`
-			<div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:8px;">
+			<div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:var(--margin-sm);">
 				<span class="text-muted small">${n} unit${n === 1 ? "" : "s"} to resolve</span>
 				<button class="btn btn-default btn-xs" id="btn-uom-all-create">Set all to "create as new"</button>
 			</div>
-			<div style="max-height:340px; overflow-y:auto; border:1px solid var(--border-color, #e0e6ed); border-radius:6px;">
-				<table class="table table-condensed" style="margin:0;">
+			<div class="tm-card tm-scroll">
+				<table class="table table-condensed tm-table">
 					<thead>
 						<tr>
-							<th style="border-top:0;">Tally unit</th>
-							<th style="border-top:0;"></th>
-							<th style="border-top:0;">What to do</th>
+							<th>Tally unit</th>
+							<th></th>
+							<th>What to do</th>
 						</tr>
 					</thead>
 					<tbody>${rows}</tbody>
@@ -1545,7 +1685,7 @@ class TallyMigratorPage {
 			  );
 
 		$("#review-summary").html(`
-			<div style="display:flex; gap:10px;">
+			<div class="tm-stats">
 				${card(fmt(confident), "Mapped by standard groups", "high confidence", GREEN_BG)}
 				${card(
 					fmt(inferred),
@@ -1569,36 +1709,34 @@ class TallyMigratorPage {
 				.map(
 					(r) => `
 					<tr>
-						<td style="padding:6px 10px;"><strong>${esc(r.name)}</strong></td>
-						<td style="padding:6px 10px;" class="text-muted">${classifiedAs(r)}</td>
-						<td style="padding:6px 10px; text-align:right;">${ob(r)}</td>
+						<td><strong>${esc(r.name)}</strong></td>
+						<td class="text-muted">${classifiedAs(r)}</td>
+						<td class="tm-num">${ob(r)}</td>
 					</tr>`
 				)
 				.join("");
-			$("#review-exceptions").html(`
-				<div style="margin:0; background:var(--blue-100, #edf6fd); border:1px solid var(--blue-200, #e3f1fd); border-radius:8px; padding:12px 14px;">
+			$("#review-exceptions").html(
+				TallyMigratorPage.callout("info", `
 					${TallyMigratorPage.iconRow("info", `<strong>${fmt(inferred)} account${inferred === 1 ? "" : "s"} we inferred - please confirm.</strong> These ledgers sit under a custom Tally group, so we inferred each type from the group's own nature (income/expense/asset/liability). A type shown as "--" is one we couldn't determine. Confirm these, or fix the group in Tally and re-upload.`)}
-					<div style="margin-top:10px; border:1px solid var(--border-color, #e0e6ed); border-radius:6px; background:var(--card-bg, #fff);">
-						<table class="table table-condensed" style="margin:0; font-size:13px; table-layout:fixed;">
+					<div class="tm-card" style="margin-top:var(--margin-sm);">
+						<table class="table table-condensed tm-table" style="table-layout:fixed;">
 							${REVIEW_COLGROUP}
 							<thead>
 								<tr>
-									<th style="border-top:0; padding:6px 10px;">Tally ledger</th>
-									<th style="border-top:0; padding:6px 10px;">Classified as</th>
-									<th style="border-top:0; padding:6px 10px; text-align:right;">Opening</th>
+									<th>Tally ledger</th>
+									<th>Classified as</th>
+									<th class="tm-num">Opening</th>
 								</tr>
 							</thead>
 							<tbody>${rows}</tbody>
 						</table>
 					</div>
-				</div>
-			`);
+				`)
+			);
 		} else {
-			$("#review-exceptions").html(`
-				<div style="margin:0; background:var(--green-100, #e4f5e9); border:1px solid var(--green-200, #daf0e1); border-radius:8px; padding:12px 14px;">
-					${TallyMigratorPage.iconRow("success", `<strong>All ${fmt(m.total_accounts)} accounts mapped using Tally's standard groups.</strong> Nothing needed guessing. Open the full list below if you'd like to review it.`)}
-				</div>
-			`);
+			$("#review-exceptions").html(
+				TallyMigratorPage.callout("success", TallyMigratorPage.iconRow("success", `<strong>All ${fmt(m.total_accounts)} accounts mapped using Tally's standard groups.</strong> Nothing needed guessing. Open the full list below if you'd like to review it.`))
+			);
 		}
 
 		// ── Full chart of accounts (collapsed) ─────────────────────────────────
@@ -1607,48 +1745,45 @@ class TallyMigratorPage {
 				// Each subtotal stays on its own line with the amount glued to its
 				// Dr/Cr suffix (nowrap), so a long mixed-sign group never orphans "Cr".
 				const sub = [];
-				if (g.subtotal_dr) sub.push(`<span style="white-space:nowrap;">${fmt(g.subtotal_dr)} Dr</span>`);
-				if (g.subtotal_cr) sub.push(`<span style="white-space:nowrap;">${fmt(g.subtotal_cr)} Cr</span>`);
+				if (g.subtotal_dr) sub.push(`<span class="tm-nowrap">${fmt(g.subtotal_dr)} Dr</span>`);
+				if (g.subtotal_cr) sub.push(`<span class="tm-nowrap">${fmt(g.subtotal_cr)} Cr</span>`);
 				const accRows = g.accounts
 					.map(
 						(r) => `
 						<tr>
-							<td style="padding:6px 10px;">${esc(r.name)}${
+							<td>${esc(r.name)}${
 							r.inferred
 								? ` ${TallyMigratorPage.statusIcon("info")}`
 								: ""
 						}</td>
-							<td style="padding:6px 10px;" class="text-muted">${esc(r.account_type || "-")}</td>
-							<td style="padding:6px 10px;" class="text-muted">${esc(r.parent || "-")}</td>
-							<td style="padding:6px 10px; text-align:right;">${ob(r)}</td>
+							<td class="text-muted">${esc(r.account_type || "-")}</td>
+							<td class="text-muted">${esc(r.parent || "-")}</td>
+							<td class="tm-num">${ob(r)}</td>
 						</tr>`
 					)
 					.join("");
 				return `
 					<tr style="background:var(--fg-color, #f7fafc);">
-						<td colspan="3" style="padding:6px 10px; font-weight:600;">${esc(g.root_type)}</td>
-						<td style="padding:6px 10px; text-align:right; font-weight:600;">${sub.join("<br>")}</td>
+						<td colspan="3" style="font-weight:600;">${esc(g.root_type)}</td>
+						<td class="tm-num" style="font-weight:600;">${sub.join("<br>")}</td>
 					</tr>
 					${accRows}`;
 			})
 			.join("");
 
 		$("#review-all").html(`
-			<div id="review-all-head" role="button" tabindex="0" aria-expanded="false" aria-controls="review-all-body"
-				style="cursor:pointer; display:flex; align-items:center; justify-content:space-between;
-				border:1px solid var(--border-color, #e0e6ed); border-radius:6px; padding:10px 12px;">
+			<div id="review-all-head" class="tm-disclosure" role="button" tabindex="0" aria-expanded="false" aria-controls="review-all-body">
 				<span class="text-muted">Show all ${fmt(m.total_accounts)} mapped accounts</span>
 				<span class="text-muted" id="review-all-caret">${TallyMigratorPage.caretIcon(false)}</span>
 			</div>
-			<div id="review-all-body" style="display:none; margin-top:8px; max-height:360px; overflow-y:auto;
-				border:1px solid var(--border-color, #e0e6ed); border-radius:6px;">
-				<table class="table table-condensed" style="margin:0; font-size:13px;">
+			<div id="review-all-body" class="tm-card tm-scroll" style="display:none; margin-top:var(--margin-sm);">
+				<table class="table table-condensed tm-table">
 					<thead>
 						<tr>
-							<th style="border-top:0; padding:6px 10px;">Tally ledger</th>
-							<th style="border-top:0; padding:6px 10px;">Account type</th>
-							<th style="border-top:0; padding:6px 10px;">Under group</th>
-							<th style="border-top:0; padding:6px 10px; text-align:right;">Opening</th>
+							<th>Tally ledger</th>
+							<th>Account type</th>
+							<th>Under group</th>
+							<th class="tm-num">Opening</th>
 						</tr>
 					</thead>
 					<tbody>${book}</tbody>
@@ -1707,27 +1842,26 @@ class TallyMigratorPage {
 				.map(
 					(m) => `
 					<tr>
-						<td style="padding:6px 10px;"><strong>${esc(m.name)}</strong></td>
-						<td style="padding:6px 10px;" class="text-muted">${esc(m.party_type)}</td>
-						<td style="padding:6px 10px; text-align:right;" class="text-muted">${
+						<td><strong>${esc(m.name)}</strong></td>
+						<td class="text-muted">${esc(m.party_type)}</td>
+						<td class="tm-num text-muted">${
 							m.opening ? `${fmt(m.opening)} ${esc(m.opening_dr_cr || "")}`.trim() : "-"
 						}</td>
-						<td style="padding:6px 10px; text-align:right;">${fmt(m.amount)}</td>
+						<td class="tm-num">${fmt(m.amount)}</td>
 					</tr>`
 				)
 				.join("");
-			warn = `
-				<div style="margin:12px 0 0; background:var(--blue-100, #edf6fd); border:1px solid var(--blue-200, #e3f1fd); border-radius:8px; padding:12px 14px;">
+			warn = `<div style="margin-top:var(--margin-md);">` + TallyMigratorPage.callout("info", `
 					${TallyMigratorPage.iconRow("info", `<strong>${fmt(p.on_account)} part${p.on_account === 1 ? "y's" : "ies'"} bills didn't add up to the ledger opening.</strong> The 'On Account' figure is the unreconciled gap between the party's bills and its ledger opening (not the total opening) - it posts as an 'On Account' opening so the party still ties to the trial balance. Review these in Tally; a bill may be missing or mis-dated.`)}
-					<div style="margin-top:10px; border:1px solid var(--border-color, #e0e6ed); border-radius:6px; background:var(--card-bg, #fff);">
-						<table class="table table-condensed" style="margin:0; font-size:13px; table-layout:fixed;">
+					<div class="tm-card" style="margin-top:var(--margin-sm);">
+						<table class="table table-condensed tm-table" style="table-layout:fixed;">
 							<colgroup><col style="width:32%;"><col style="width:16%;"><col style="width:24%;"><col style="width:28%;"></colgroup>
 							<thead>
 								<tr>
-									<th style="border-top:0; padding:6px 10px;">Party</th>
-									<th style="border-top:0; padding:6px 10px;">Type</th>
-									<th style="border-top:0; padding:6px 10px; text-align:right; white-space:nowrap;">Ledger opening</th>
-									<th style="border-top:0; padding:6px 10px; text-align:right; white-space:nowrap;">On Account (gap) ${TallyMigratorPage.infoTip(
+									<th>Party</th>
+									<th>Type</th>
+									<th class="tm-num">Ledger opening</th>
+									<th class="tm-num">On Account (gap) ${TallyMigratorPage.infoTip(
 										"When a party's bills don't add up to its ledger opening, we post the difference as an 'On Account' opening so the party still ties to the trial balance. A non-zero gap is worth checking in Tally - a bill may be missing or mis-dated."
 									)}</th>
 								</tr>
@@ -1735,7 +1869,7 @@ class TallyMigratorPage {
 							<tbody>${rows}</tbody>
 						</table>
 					</div>
-				</div>`;
+				`) + `</div>`;
 		}
 
 		// Collapsed per-party list - the twin of the COA book, so the user can drill
@@ -1752,30 +1886,27 @@ class TallyMigratorPage {
 					: "";
 				return `
 					<tr>
-						<td style="padding:6px 10px;">${esc(r.name)}${flag}</td>
-						<td style="padding:6px 10px;" class="text-muted">${esc(r.party_type)}</td>
-						<td style="padding:6px 10px; text-align:right;" class="text-muted">${fmt(r.documents)}</td>
-						<td style="padding:6px 10px; text-align:right;">${amt}</td>
+						<td>${esc(r.name)}${flag}</td>
+						<td class="text-muted">${esc(r.party_type)}</td>
+						<td class="tm-num text-muted">${fmt(r.documents)}</td>
+						<td class="tm-num">${amt}</td>
 					</tr>`;
 			})
 			.join("");
 		const partyBook = partyRows
 			? `
-			<div id="review-parties-head" role="button" tabindex="0" aria-expanded="false" aria-controls="review-parties-body"
-				style="cursor:pointer; display:flex; align-items:center; justify-content:space-between;
-				border:1px solid var(--border-color, #e0e6ed); border-radius:6px; padding:10px 12px; margin-top:12px;">
+			<div id="review-parties-head" class="tm-disclosure" role="button" tabindex="0" aria-expanded="false" aria-controls="review-parties-body" style="margin-top:var(--margin-md);">
 				<span class="text-muted">Show all ${fmt(p.parties)} part${p.parties === 1 ? "y" : "ies"}</span>
 				<span class="text-muted" id="review-parties-caret">${TallyMigratorPage.caretIcon(false)}</span>
 			</div>
-			<div id="review-parties-body" style="display:none; margin-top:8px; max-height:360px; overflow-y:auto;
-				border:1px solid var(--border-color, #e0e6ed); border-radius:6px;">
-				<table class="table table-condensed" style="margin:0; font-size:13px;">
+			<div id="review-parties-body" class="tm-card tm-scroll" style="display:none; margin-top:var(--margin-sm);">
+				<table class="table table-condensed tm-table">
 					<thead>
 						<tr>
-							<th style="border-top:0; padding:6px 10px;">Party</th>
-							<th style="border-top:0; padding:6px 10px;">Type</th>
-							<th style="border-top:0; padding:6px 10px; text-align:right;">Docs</th>
-							<th style="border-top:0; padding:6px 10px; text-align:right;">Opening</th>
+							<th>Party</th>
+							<th>Type</th>
+							<th class="tm-num">Docs</th>
+							<th class="tm-num">Opening</th>
 						</tr>
 					</thead>
 					<tbody>${partyRows}</tbody>
@@ -1787,7 +1918,7 @@ class TallyMigratorPage {
 		// per-currency Debtors/Creditors account at Tally's stated rate), so note them
 		// for visibility rather than implying the doc count is short.
 		const foreignNote = p.foreign
-			? `<div style="margin-top:12px;">${TallyMigratorPage.callout(
+			? `<div style="margin-top:var(--margin-md);">${TallyMigratorPage.callout(
 					"info",
 					TallyMigratorPage.iconRow(
 						"info",
@@ -1799,13 +1930,13 @@ class TallyMigratorPage {
 			: "";
 
 		$("#review-parties").html(`
-			<h5 style="margin-bottom:8px;">Customer &amp; supplier opening balances</h5>
-			<p class="text-muted" style="margin-bottom:10px; font-size:13px;">
+			<h5>Customer &amp; supplier opening balances</h5>
+			<p class="text-muted" style="margin-bottom:var(--margin-sm); font-size:var(--text-md);">
 				${fmt(p.parties)} part${p.parties === 1 ? "y" : "ies"} with an opening balance -
 				posted bill-by-bill (${fmt(p.documents)} opening document${p.documents === 1 ? "" : "s"})
 				so you can reconcile future payments invoice-by-invoice.
 			</p>
-			<div style="display:flex; gap:10px;">${cards}</div>
+			<div class="tm-stats">${cards}</div>
 			${warn}
 			${foreignNote}
 			${partyBook}
@@ -1814,7 +1945,7 @@ class TallyMigratorPage {
 	}
 
 	gotoRun() {
-		const erpnext = $("#erpnext-company").val();
+		const erpnext = this.getCompany();
 		$("#run-subtitle").html(
 			`Importing from <strong>${frappe.utils.escape_html(this.fileName || "your file")}</strong> ` +
 				`into <strong>${frappe.utils.escape_html(erpnext)}</strong>.`
@@ -1825,7 +1956,7 @@ class TallyMigratorPage {
 	// ── Step 5: run ──────────────────────────────────────────────────────────────
 
 	runMigration() {
-		const erpnext = $("#erpnext-company").val();
+		const erpnext = this.getCompany();
 		const overrides = this.uomOverrides || {};
 
 		$("#btn-run").prop("disabled", true);
@@ -1874,8 +2005,8 @@ class TallyMigratorPage {
 				uom_overrides: JSON.stringify(overrides),
 				validation_report: this.qualityReport ? JSON.stringify(this.qualityReport) : "",
 				record_overrides: JSON.stringify(this.recordOverrides || {}),
-				coa_mode: $("#coa-mode").val() || "reuse",
-				posting_date: $("#opening-date").val() || "",
+				coa_mode: this.getCoa() || "reuse",
+				posting_date: this.getDate(),
 				created_uoms: JSON.stringify(this.createdUoms || []),
 			},
 			callback: (r) => {
@@ -2041,7 +2172,7 @@ class TallyMigratorPage {
 
 		// Results table
 		html += `
-			<table class="table table-condensed" style="margin-top:12px;">
+			<table class="table table-condensed tm-table" style="margin-top:var(--margin-md);">
 				<thead>
 					<tr>
 						<th>Record type</th>
@@ -2073,7 +2204,7 @@ class TallyMigratorPage {
 
 		// Plain-English legend
 		html += `
-			<div class="text-muted small" style="margin-top:6px; line-height:1.6;">
+			<div class="text-muted small" style="margin-top:var(--margin-xs); line-height:1.6;">
 				<strong>Imported</strong> = newly created in ERPNext &nbsp;·&nbsp;
 				<strong>Already there</strong> = skipped because it already existed (safe, nothing changed) &nbsp;·&nbsp;
 				<strong>Warnings</strong> = imported, but a dependent piece (address, contact, opening balance...) was dropped${totalWarnings ? " - see the log" : ""} &nbsp;·&nbsp;
@@ -2084,15 +2215,15 @@ class TallyMigratorPage {
 		const logBtnLabel = logName
 			? `View migration log <strong>${frappe.utils.escape_html(logName)}</strong>`
 			: "View migration log";
-		html += `<div style="margin-top:22px;"><strong>What's next</strong>`;
-		html += `<div style="margin-top:10px; display:flex; flex-wrap:wrap; gap:8px;">
+		html += `<div style="margin-top:var(--margin-xl);"><strong>What's next</strong>`;
+		html += `<div style="margin-top:var(--margin-sm); display:flex; flex-wrap:wrap; gap:var(--margin-sm);">
 				<button class="btn btn-primary btn-sm" id="btn-view-log">${logBtnLabel}</button>
 			</div>`;
-		html += `<p class="text-muted small" style="margin-top:10px;">
+		html += `<p class="text-muted small" style="margin-top:var(--margin-sm);">
 				The migration log lists every record this run touched${hasErrors ? ", including exactly why each failed one didn't import" : ""}${totalWarnings ? ", and each warning where a record imported but a dependent piece was dropped" : ""}.
 				${hasErrors || totalWarnings ? "Fix the source in Tally (or in ERPNext), then upload again - records that already imported will simply be skipped." : ""}
 			</p>`;
-		html += `<div style="margin-top:16px;">
+		html += `<div style="margin-top:var(--margin-md);">
 				<button id="btn-restart" class="btn btn-default btn-sm">${TallyMigratorPage.navIcon("refresh")} Migrate another file</button>
 			</div></div>`;
 
@@ -2128,11 +2259,12 @@ class TallyMigratorPage {
 		$("#preview-box").hide().html("");
 		$("#btn-next-upload").prop("disabled", true);
 		$("#check-loading").show();
-		$("#check-clean").hide().removeClass("alert-warning").addClass("alert-success");
+		$("#check-clean").hide();
 		$("#check-issues").hide();
 		$("#uom-issue-list").html("");
-		$("#coa-mode").val("reuse");
-		$("#opening-date").val("");
+		this.setCoa("reuse");
+		this.updateCoaHint();
+		this.setDate("");
 		$("#dq-section").hide();
 		$("#readiness-section").hide().empty();
 		$("#coverage-section").hide().empty();

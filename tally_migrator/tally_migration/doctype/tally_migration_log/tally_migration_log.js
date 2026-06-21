@@ -31,6 +31,20 @@ function apply_dark_mode_theme(frm) {
 			--red-100: #361515;    --red-200: #521515;
 			--gray-100: #232323;   --gray-200: #2b2b2b;   --gray-300: #343434;
 		}
+		/* Shared component classes - identical names/values to the Tally Migrator
+		   wizard's stylesheet, so the two surfaces render the same. Token-driven, so
+		   spacing/colour follow the active desk theme. */
+		.tally-migration-log .tm-section { margin: var(--margin-sm) 0 var(--margin-lg); }
+		.tally-migration-log .tm-callout {
+			border: 1px solid var(--border-color); border-radius: var(--border-radius);
+			padding: var(--padding-md); color: var(--text-color);
+		}
+		.tally-migration-log .tm-callout--info { background: var(--blue-100, #edf6fd); border-color: var(--blue-200, #e3f1fd); }
+		.tally-migration-log .tm-callout--success { background: var(--green-100, #e4f5e9); border-color: var(--green-200, #daf0e1); }
+		.tally-migration-log .tm-callout--error { background: var(--red-100, #fff0f0); border-color: var(--red-200, #fcd7d7); }
+		.tally-migration-log .tm-iconrow { display: flex; align-items: flex-start; gap: var(--margin-sm); }
+		.tally-migration-log .tm-iconrow > .tm-iconrow-icon { flex: 0 0 auto; display: inline-flex; align-items: center; height: 1.5em; }
+		.tally-migration-log .tm-iconrow > .tm-iconrow-body { flex: 1; min-width: 0; }
 		/* Replace the browser's default <details> triangle with Frappe's SVG caret
 		   (a "right" icon that rotates to point down when open), so disclosure
 		   markers match the carets used elsewhere instead of a black glyph. */
@@ -91,7 +105,7 @@ const CARD = "";
 // a bare clean-state callout - is wrapped in this, so the gap above and below is
 // always identical and nothing ever touches the next section heading.
 function section(html) {
-	return `<div style="margin:8px 0 18px;">${html}</div>`;
+	return `<div class="tm-section">${html}</div>`;
 }
 
 function statusIcon(kind) {
@@ -139,20 +153,17 @@ const TEMP_OPENING_NOTE =
 // Icon + content, with the 16px icon optically centred on the first line of text
 // (a 1.5em flex box), so headings of any size sit level with their marker.
 function iconRow(kind, html) {
-	return `<div style="display:flex; align-items:flex-start; gap:8px;">
-		<span style="flex:0 0 auto; display:inline-flex; align-items:center; height:1.5em;">${statusIcon(kind)}</span>
-		<div style="flex:1; min-width:0;">${html}</div>
+	return `<div class="tm-iconrow">
+		<span class="tm-iconrow-icon">${statusIcon(kind)}</span>
+		<div class="tm-iconrow-body">${html}</div>
 	</div>`;
 }
 
 // Tinted notice box: blue=info (non-blocking), green=success, red=error.
 function callout(kind, inner, extraStyle = "") {
-	const t = {
-		info: ["var(--blue-100, #edf6fd)", "var(--blue-200, #e3f1fd)"],
-		success: ["var(--green-100, #e4f5e9)", "var(--green-200, #daf0e1)"],
-		error: ["var(--red-100, #fff0f0)", "var(--red-200, #fcd7d7)"],
-	}[kind] || ["var(--blue-100, #edf6fd)", "var(--blue-200, #e3f1fd)"];
-	return `<div style="background:${t[0]}; border:1px solid ${t[1]}; border-radius:8px; padding:11px 13px; color:${TEXT};${extraStyle}">${inner}</div>`;
+	const variant = { info: "info", success: "success", error: "error" }[kind] || "info";
+	const style = extraStyle ? ` style="${extraStyle}"` : "";
+	return `<div class="tm-callout tm-callout--${variant}"${style}>${inner}</div>`;
 }
 
 // Long record lists fold behind a count once they pass the threshold, mirroring
