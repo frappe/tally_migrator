@@ -139,15 +139,22 @@ def _opening_date_issues(company: str, posting_date: str) -> list:
     if not date:
         return []
     issues: list = []
-    frozen = frappe.db.get_single_value("Accounts Settings", "acc_frozen_upto")
+    # The accounts-frozen date moved from a single Accounts Settings field
+    # (acc_frozen_upto) to a per-company field (accounts_frozen_till_date) in
+    # ERPNext v16. Read whichever this ERPNext exposes, so the check works on both.
+    frozen = None
+    if frappe.db.has_column("Company", "accounts_frozen_till_date"):
+        frozen = frappe.db.get_value("Company", company, "accounts_frozen_till_date")
+    elif frappe.db.has_column("Accounts Settings", "acc_frozen_upto"):
+        frozen = frappe.db.get_single_value("Accounts Settings", "acc_frozen_upto")
     if frozen and str(date) <= str(frozen):
         issues.append(_issue(
             "DATE_FROZEN",
             f"Opening-balance date {date} is on or before the accounts-frozen date "
             f"{frozen} - the opening Journal Entry and Stock Reconciliation would be "
             "rejected.",
-            "Pick a date after the frozen period, or clear 'Accounts Frozen Upto' in "
-            "Accounts Settings."))
+            "Pick a date after the frozen period, or clear the accounts-frozen date "
+            "for this company."))
     try:
         from erpnext.accounts.utils import get_fiscal_year
         get_fiscal_year(date, company=company)
