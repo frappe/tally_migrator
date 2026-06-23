@@ -69,11 +69,17 @@ class TallyMigratorPage {
 					<div class="tm-section" style="margin-top:var(--margin-lg);">
 						<strong>First, export a file from Tally</strong>
 						<ol style="margin:var(--margin-sm) 0 0 0; padding-left:20px; font-size:var(--text-md); line-height:1.7;">
-							<li>Open your company in <strong>Tally Prime</strong>.</li>
-							<li>Go to <strong>Gateway of Tally → Import/Export → Export</strong>.</li>
-							<li>Choose <strong>Masters</strong> as the type.</li>
-							<li>Set <strong>Format</strong> to <strong>XML</strong>, and <strong>Show All Masters</strong> to <strong>Yes</strong>.</li>
-							<li>Export, and note where the <code>.xml</code> file is saved.</li>
+							<li>Open your company in Tally Prime.</li>
+							<li>Go to <strong>Gateway of Tally → Export → Masters</strong>, then open Configure.</li>
+							<li>Set these options:
+								<ul style="margin:var(--margin-xs) 0 0 0; padding-left:18px; list-style:disc;">
+									<li>Type of master: <strong>All Masters</strong></li>
+									<li>Include dependent masters: <strong>Yes</strong></li>
+									<li>Export closing balance as opening balance: <strong>Yes</strong> (this becomes your opening balances in ERPNext)</li>
+									<li>File Format: <strong>XML (Data Interchange)</strong></li>
+								</ul>
+							</li>
+							<li>Choose Export, and note where the <code>Master.xml</code> file is saved.</li>
 						</ol>
 					</div>
 

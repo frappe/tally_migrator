@@ -45,7 +45,24 @@ You need:
   tax rates, GST unit codes, GST registration type). It is optional: without it the
   core records still import, and anything GST-specific is skipped with a note in the
   log so nothing disappears silently.
-- Your data exported from Tally as **"Export Masters (XML)"**.
+- Your data exported from Tally as a **Masters XML** file (see below).
+
+### Exporting your data from Tally
+
+In Tally, go to **Gateway of Tally → Export → Masters → Configure**, set the
+following, then choose **Export**:
+
+| Setting | Value |
+|---|---|
+| Type of master | **All Masters** |
+| Include dependent masters | **Yes** |
+| Export closing balance as opening balance | **Yes** |
+| File Format | **XML (Data Interchange)** |
+
+"Export closing balance as opening balance" is what turns last year's closing
+figures into this year's opening balances in ERPNext, so don't skip it. Tally
+writes a `Master.xml` file (to the folder shown in the export screen) - that's the
+file you upload in step 1.
 
 ---
 
