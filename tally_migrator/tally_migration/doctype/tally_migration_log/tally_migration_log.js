@@ -682,6 +682,9 @@ function render_reconciliation(frm) {
 // migration inserted, grouped by entity, with deep links - including the opening
 // Journal Entry and Stock Reconciliation, so the run is reviewable / reversible.
 
+// Fallback only: older logs stored bare name strings keyed by import-step label,
+// with no per-doc doctype. Map the step label to the one doctype it created back
+// then, so those legacy logs still deep-link. New logs tag each doc directly.
 const CREATED_DOCTYPE = {
 	"Accounts": "Account",
 	"Cost Centres": "Cost Center",
@@ -695,6 +698,18 @@ const CREATED_DOCTYPE = {
 	"Opening Stock": "Stock Reconciliation",
 };
 
+// Display order for the by-doctype sections, roughly the migration flow (masters,
+// then parties, then commercial, then openings). Doctypes not listed sort after,
+// alphabetically, so a new importer's output still shows up sensibly.
+const CREATED_DOCTYPE_ORDER = [
+	"Account", "Cost Center", "Warehouse", "Item Group", "Item",
+	"UOM", "UOM Category", "Customer", "Customer Group",
+	"Supplier", "Supplier Group", "Bank", "Bank Account", "Batch",
+	"Item Price", "Pricing Rule", "BOM",
+	"Journal Entry", "Sales Invoice", "Purchase Invoice", "Payment Entry",
+	"Stock Reconciliation",
+];
+
 function render_created(frm) {
 	const field = frm.get_field("created_view");
 	if (!field) return;
@@ -707,35 +722,62 @@ function render_created(frm) {
 	} catch (e) {
 		created = {};
 	}
-	const entries = Object.entries(created).filter(([, names]) => (names || []).length);
-	if (!entries.length) return;
+	const stepEntries = Object.entries(created).filter(([, names]) => (names || []).length);
+	if (!stepEntries.length) return;
 
 	const esc = frappe.utils.escape_html;
-	const total = entries.reduce((n, [, names]) => n + names.length, 0);
 
-	const blocks = entries
-		.map(([label, names]) => {
-			const links = names
-				.map((item) => {
-					// New logs store {name, doctype}; old logs store a bare name string
-					// (linked via the label map). A doctype on the item wins, because
-					// one label can hold several doctypes (party openings, bank accounts).
-					const nm = typeof item === "string" ? item : item.name;
-					const dt = (typeof item === "object" && item.doctype) || CREATED_DOCTYPE[label];
-					const safe = esc(nm);
-					return dt
-						? `<a href="/app/${encodeURIComponent(
-								frappe.router.slug(dt)
-						  )}/${encodeURIComponent(nm)}" target="_blank">${safe}</a>`
-						: safe;
-				})
+	// Regroup by actual document type rather than by import step. One import step
+	// can create several doctypes (Customers also creates Customer Groups; Prices
+	// creates both Item Prices and Pricing Rules; party openings create invoices,
+	// payment entries and currency control accounts), so grouping by step lumped
+	// unrelated records under a misleading header. Each created doc already carries
+	// its doctype, so we fold everything into per-doctype buckets.
+	const byDoctype = {};
+	const linkable = {};
+	let total = 0;
+	for (const [label, names] of stepEntries) {
+		for (const item of names || []) {
+			// New logs store {name, doctype, label?}; old logs store a bare name
+			// string (its doctype inferred from the import-step label). When neither
+			// resolves a doctype, fall back to the step label so nothing is lost - but
+			// don't fabricate a deep link to a non-doctype (it would 404).
+			const nm = typeof item === "string" ? item : item.name;
+			if (!nm) continue;
+			const resolved = (typeof item === "object" && item.doctype) || CREATED_DOCTYPE[label];
+			const dt = resolved || label;
+			const text = (typeof item === "object" && item.label) || nm;
+			(byDoctype[dt] = byDoctype[dt] || []).push({ name: nm, text: text });
+			linkable[dt] = Boolean(resolved);
+			total += 1;
+		}
+	}
+
+	const rank = (dt) => {
+		const i = CREATED_DOCTYPE_ORDER.indexOf(dt);
+		return i === -1 ? CREATED_DOCTYPE_ORDER.length : i;
+	};
+	const doctypes = Object.keys(byDoctype).sort(
+		(a, b) => rank(a) - rank(b) || a.localeCompare(b));
+
+	const blocks = doctypes
+		.map((dt) => {
+			const docs = byDoctype[dt];
+			const slug = frappe.router.slug(dt);
+			const links = docs
+				.map(({ name, text }) =>
+					linkable[dt]
+						? `<a href="/app/${encodeURIComponent(slug)}/${encodeURIComponent(
+								name
+						  )}" target="_blank">${esc(text)}</a>`
+						: esc(text))
 				.join(", ");
-			// One collapsible per category so each entity's documents fold
-			// independently, instead of one giant list of everything.
+			// One collapsible per doctype so each document type folds independently,
+			// instead of one giant list of everything.
 			return `
 				<details style="border-top:1px solid var(--gray-200, #f0f4f7); padding:8px 0;">
 					<summary style="cursor:pointer; user-select:none; font-weight:500;">
-						${caretMarker()}<span style="margin-left:6px;">${esc(label)} <span class="text-muted" style="font-weight:400;">(${names.length})</span></span>
+						${caretMarker()}<span style="margin-left:6px;">${esc(dt)} <span class="text-muted" style="font-weight:400;">(${docs.length})</span></span>
 					</summary>
 					<div class="small" style="line-height:1.8; margin:6px 0 0 14px;">${links}</div>
 				</details>`;
