@@ -11,6 +11,10 @@ and you can undo a whole migration if you need to.
 It works from an **uploaded Tally export file**, not a live connection, so it works
 even when your ERPNext is hosted in the cloud and your Tally is on an office PC.
 
+> **Full documentation:** the [complete user guide](docs/tally-migrator-documentation.md)
+> walks through every step, explains every screen, card, term, warning and error,
+> covers the edge cases, and includes a troubleshooting section and glossary.
+
 > _Screenshot: the migration wizard._ <!-- add image: ![Wizard](docs/images/wizard.png) -->
 
 ---
@@ -72,7 +76,7 @@ From inside your bench:
 
 ```bash
 # 1. Download the app into your bench
-bench get-app https://github.com/parthgarachh/tally_migrator
+bench get-app https://github.com/frappe/tally_migrator
 
 # 2. Install it on your site (the site must already have ERPNext)
 bench --site your-site-name install-app tally_migrator
@@ -157,4 +161,4 @@ existing ones.
 
 ## License
 
-MIT. Copyright Parth Garachh.
+GNU General Public License v3.0 (GPLv3). Copyright (c) Frappe Technologies Pvt. Ltd. and contributors. See [LICENSE](LICENSE).
