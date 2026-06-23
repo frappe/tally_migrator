@@ -72,7 +72,7 @@ From inside your bench:
 
 ```bash
 # 1. Download the app into your bench
-bench get-app https://github.com/parthgarachh/tally_migrator
+bench get-app https://github.com/frappe/tally_migrator
 
 # 2. Install it on your site (the site must already have ERPNext)
 bench --site your-site-name install-app tally_migrator
@@ -157,4 +157,4 @@ existing ones.
 
 ## License
 
-MIT. Copyright Parth Garachh.
+GNU General Public License v3.0 (GPLv3). Copyright (c) Frappe Technologies Pvt. Ltd. and contributors. See [LICENSE](LICENSE).

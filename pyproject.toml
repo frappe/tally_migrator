@@ -1,7 +1,7 @@
 [project]
 name = "tally_migrator"
 version = "1.0.0"
-authors = [{ name = "Parth Garachh", email = "parth1garachh@gmail.com" }]
+authors = [{ name = "Frappe Technologies Pvt. Ltd.", email = "developers@frappe.io" }]
 description = "Migrate masters and transactions from Tally to ERPNext"
 requires-python = ">=3.10"
 readme = "README.md"
