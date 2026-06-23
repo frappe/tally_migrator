@@ -3,7 +3,7 @@ app_title       = "Tally Migrator"
 app_publisher   = "Parth Garachh"
 app_description = "Migrate masters and opening balances from Tally to ERPNext"
 app_email       = "parth@frappe.io"
-app_license     = "MIT"
+app_license     = "GNU General Public License (v3)"
 app_version     = "1.0.0"
 
 required_apps = ["frappe", "erpnext"]
