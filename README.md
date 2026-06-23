@@ -11,6 +11,10 @@ and you can undo a whole migration if you need to.
 It works from an **uploaded Tally export file**, not a live connection, so it works
 even when your ERPNext is hosted in the cloud and your Tally is on an office PC.
 
+> **Full documentation:** the [complete user guide](docs/tally-migrator-documentation.md)
+> walks through every step, explains every screen, card, term, warning and error,
+> covers the edge cases, and includes a troubleshooting section and glossary.
+
 > _Screenshot: the migration wizard._ <!-- add image: ![Wizard](docs/images/wizard.png) -->
 
 ---
