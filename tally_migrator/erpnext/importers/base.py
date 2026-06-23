@@ -44,11 +44,17 @@ class ImportResult:
     # Account), so the doctype can't be inferred from the importer's label alone.
     created_docs: list[dict] = field(default_factory=list)
 
-    def add_created(self, name: str, doctype: str = "") -> None:
+    def add_created(self, name: str, doctype: str = "", label: str = "") -> None:
         self.created += 1
         if name:
             self.created_names.append(name)
-            self.created_docs.append({"name": name, "doctype": doctype or self.doctype})
+            entry = {"name": name, "doctype": doctype or self.doctype}
+            # A human-readable label for docs whose `name` is an opaque autoname (e.g.
+            # an Item Price hashes to "ajq2cf6vcn"); the log shows `label` but still
+            # links via `name`. Omitted when the name is already meaningful.
+            if label:
+                entry["label"] = label
+            self.created_docs.append(entry)
 
     @staticmethod
     def _sentence(reason) -> str:

@@ -119,9 +119,11 @@ class MigrationSummary:
         includes the opening Journal Entry and Stock Reconciliation names, so the
         run can be reviewed or reversed by inspection. Empty entities are omitted.
 
-        Each entry is ``{name, doctype}`` so the log can deep-link it, since one
-        importer can create several doctypes (party openings -> Sales/Purchase
-        Invoice + Payment Entry; an account -> its Bank Account)."""
+        Each entry is ``{name, doctype}`` (plus an optional ``label`` when the
+        doc's ``name`` is an opaque autoname, e.g. an Item Price) so the log can
+        deep-link it, since one importer can create several doctypes (party
+        openings -> Sales/Purchase Invoice + Payment Entry; an account -> its
+        Bank Account)."""
         return {
             label: result.created_docs
             for label, result in self.results.items()

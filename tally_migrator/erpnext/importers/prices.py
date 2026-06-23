@@ -123,7 +123,11 @@ class PriceImporter:
         })
         doc.insert(ignore_permissions=True)
         frappe.db.commit()
-        result.add_created(doc.name, "Item Price")
+        # Item Price autonames to an opaque hash, so log a readable label
+        # ("Notebook @ Retail (398)") while still linking via the real name.
+        result.add_created(
+            doc.name, "Item Price",
+            label=f"{item_code} @ {price_list} ({rate:g})")
 
     def _ensure_pricing_rule(self, result, item_code, price_list, discount,
                              valid_from, ending):
@@ -159,7 +163,11 @@ class PriceImporter:
         doc = frappe.get_doc(rule)
         doc.insert(ignore_permissions=True)
         frappe.db.commit()
-        result.add_created(doc.name, "Pricing Rule")
+        # Pricing Rule autonames to PRLE-####, so log what the rule actually does
+        # ("10% off Retail - NB200") while still linking via the real name.
+        result.add_created(
+            doc.name, "Pricing Rule",
+            label=f"{discount:g}% off {price_list} - {item_code}")
 
     # ── parsing ─────────────────────────────────────────────────────────────────
     @staticmethod
