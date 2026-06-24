@@ -6,7 +6,7 @@ import frappe
 from tally_migrator.tally.config import TallyConfig
 from tally_migrator.tally.extractors import TallyExtractor, ExtractedMasters
 from tally_migrator.erpnext.importers import ERPNextImporter, ImportResult
-from tally_migrator.migration.overrides import apply_record_overrides
+from tally_migrator.migration.overrides import apply_record_overrides, uom_edits
 
 
 def _collapse_identical(rows: list[dict], sample: int = 5) -> list[dict]:
@@ -237,6 +237,7 @@ class MasterMigrator:
             self._progress(10)
             masters = self.extractor.extract_all()
             apply_record_overrides(masters, self.record_overrides, self.applied_edits)
+            self._record_uom_edits()
             coa = self.extractor.extract_coa()
             # Bill-wise party opening detail (BILLALLOCATIONS) - empty when the
             # source can't supply child lists, so party openings then degrade to a
@@ -368,6 +369,19 @@ class MasterMigrator:
             },
             user=frappe.session.user,
         )
+
+    def _record_uom_edits(self) -> None:
+        """Fold the pre-flight UOM resolutions into the applied-edits audit trail.
+
+        Resolving a unit on the Check screen is a real pre-flight decision, like a
+        per-record field fix, but UOM choices travel on their own channel
+        (``uom_overrides`` / ``created_uoms``) and so were absent from the audit
+        table. We append them here (after the field edits) so the log shows every
+        change the user made. On a re-run ``created_uoms`` isn't replayed, but by then
+        those units exist, so they read as "Mapped to existing unit" - accurate for
+        that run. See :func:`uom_edits` for the row shape and exclusions.
+        """
+        self.applied_edits.extend(uom_edits(self.uom_overrides, self.created_uoms))
 
     # ── Migration log lifecycle ──────────────────────────────────────────────────
 

@@ -4,7 +4,7 @@
 import unittest
 
 from tally_migrator.tally.extractors import ExtractedMasters
-from tally_migrator.migration.overrides import apply_record_overrides
+from tally_migrator.migration.overrides import apply_record_overrides, uom_edits
 from tally_migrator.validation.engine import (
     validate_masters, group_report, records_by_key, erpnext_states, EDITABLE_FIELDS,
 )
@@ -101,6 +101,30 @@ class TestEditableReport(unittest.TestCase):
 
     def test_duplicate_party_is_not_editable(self):
         self.assertNotIn("DUPLICATE_PARTY", EDITABLE_FIELDS)
+
+
+class TestUomEdits(unittest.TestCase):
+    def test_map_to_existing_is_labelled(self):
+        rows = uom_edits({"Carton": "Box"}, created_uoms=[])
+        self.assertEqual(rows, [{
+            "entity_type": "Unit", "record_name": "Carton",
+            "field": "Mapped to existing unit", "old": "Carton", "new": "Box",
+        }])
+
+    def test_create_as_new_is_labelled_and_shows_rename(self):
+        rows = uom_edits({"Pkt": "Packet"}, created_uoms=["Packet"])
+        self.assertEqual(rows[0]["field"], "Created as new unit")
+        self.assertEqual((rows[0]["old"], rows[0]["new"]), ("Pkt", "Packet"))
+
+    def test_empty_overrides_yield_no_rows(self):
+        self.assertEqual(uom_edits({}, []), [])
+        self.assertEqual(uom_edits(None, None), [])
+
+    def test_rerun_without_created_list_reads_as_mapped(self):
+        # On a re-run created_uoms isn't replayed; the unit exists by then, so the
+        # "mapped to existing" label is the accurate one for that run.
+        rows = uom_edits({"Pkt": "Packet"}, created_uoms=[])
+        self.assertEqual(rows[0]["field"], "Mapped to existing unit")
 
 
 if __name__ == "__main__":

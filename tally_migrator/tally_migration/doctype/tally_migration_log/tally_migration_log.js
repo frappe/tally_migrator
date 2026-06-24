@@ -796,9 +796,11 @@ function render_created(frm) {
 }
 
 // ── Applied-edits audit trail ───────────────────────────────────────────────
-// Renders the exact pre-flight (step 3) edits that were applied to the data
-// before import: which field on which record changed, old → new. The source
-// XML is never modified, so this is the authoritative record of what changed.
+// Renders the exact pre-flight (step 3) changes that were applied to the data
+// before import: per-record field fixes (which field on which record changed,
+// old → new) and unit-of-measure resolutions (each Tally unit mapped to an
+// existing UOM or created as a new one). The source XML is never modified, so
+// this is the authoritative record of what changed.
 
 function render_edits(frm) {
 	const field = frm.get_field("edits_view");
@@ -846,7 +848,7 @@ function render_edits(frm) {
 	wrapper.html(section(`
 		<div style="${CARD}">
 			<div class="text-muted small" style="margin-bottom:6px;">
-				<strong>${edits.length}</strong> field edit(s) were applied on the pre-flight
+				<strong>${edits.length}</strong> change(s) were applied on the pre-flight
 				screen before this run. The uploaded file was not modified.
 			</div>
 			${collapsible(edits.length, `Show all ${edits.length} edit(s)`, table)}

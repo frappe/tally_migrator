@@ -59,3 +59,32 @@ def apply_record_overrides(masters, overrides: dict | None, changelog: list | No
                     })
                 record[field] = value
     return masters
+
+
+def uom_edits(uom_overrides: dict | None,
+              created_uoms: list | None = None) -> list[dict]:
+    """Audit-trail rows for the pre-flight UOM resolutions, in the same shape as the
+    field-edit changelog so they can be folded into the same "Applied edits" table.
+
+    A unit resolved on the Check screen is either *mapped to an existing* ERPNext UOM
+    (e.g. Carton -> Box) or *created as a new* unit; ``created_uoms`` (the units the
+    user chose to create) decides which label a row gets. ``old`` is the Tally unit
+    and ``new`` the resulting ERPNext unit, so a create-with-rename (e.g. Pkt ->
+    Packet) reads correctly too.
+
+    Pure: automatic ``UOM_MAP`` normalisations never reach ``uom_overrides`` (only
+    user-resolved units do), so they are naturally excluded - this lists user
+    decisions only, exactly like the record overrides above.
+    """
+    created = set(created_uoms or [])
+    return [
+        {
+            "entity_type": "Unit",
+            "record_name": tally_uom,
+            "field": ("Created as new unit" if erpnext_uom in created
+                      else "Mapped to existing unit"),
+            "old": tally_uom,
+            "new": erpnext_uom,
+        }
+        for tally_uom, erpnext_uom in (uom_overrides or {}).items()
+    ]
