@@ -540,9 +540,18 @@ Check step), kept for the record, grouped by type with the affected records.
 
 ### Applied edits
 
-If you fixed any values on the Check step, this lists each one: which field on which
-record changed, and its old and new values. The uploaded file itself was never
-modified, so this is the authoritative record of what you changed.
+If you changed anything on the Check step, this lists each change so you have an
+authoritative record of what you adjusted. It covers two kinds of edit:
+
+- **Field fixes** - which field on which record changed, with its old and new values
+  (for example a customer's PIN code or GSTIN).
+- **Unit resolutions** - each Tally unit you resolved, shown as either "Mapped to
+  existing unit" (for example Carton to Box) or "Created as new unit", with the Tally
+  name and the resulting ERPNext unit.
+
+The uploaded file itself is never modified, so this table is the authoritative record
+of what you changed before import. (Automatic unit normalisations the app does on its
+own, such as "Kgs" to "Kg", are not listed here because they are not your edits.)
 
 ### Accounts mapping
 
