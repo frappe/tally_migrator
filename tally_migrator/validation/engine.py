@@ -223,12 +223,28 @@ def _phone_digits(rec: dict) -> str:
     return "".join(filter(str.isdigit, raw))[-10:]  # last 10 digits
 
 
-def find_duplicate_groups(parties: list[dict], threshold: float = 0.80) -> list[list[str]]:
+# Above this many parties the fuzzy (look-alike) pass is skipped - see
+# find_duplicate_groups. That pass compares every pair, so it grows quadratically
+# (~14 min at 13k parties) and on books that large its near-matches are mostly false
+# positives nobody can review anyway. Exact duplicates are always caught, at any size.
+_FUZZY_DEDUPE_MAX = 2000
+
+
+def find_duplicate_groups(parties: list[dict], threshold: float = 0.80,
+                          fuzzy_max: int = _FUZZY_DEDUPE_MAX) -> list[list[str]]:
     """Group party names that are likely the same real entity.
 
-    A pair groups when: identical normalized name, OR same non-empty GSTIN, OR
-    same 10-digit phone, OR fuzzy name ratio >= threshold. Returns groups of size
-    >= 2 (the singletons are not duplicates).
+    Two tiers, so it scales to large books:
+
+    - **Exact** (always, O(n)): identical normalized name, OR same non-empty GSTIN,
+      OR same 10-digit phone. Grouped by hashing each key into buckets (blanks
+      skipped, so empty-normalised names never clump together) - linear, runs at any
+      file size.
+    - **Look-alike** (only when party count <= ``fuzzy_max``): fuzzy name ratio >=
+      ``threshold``, an O(n^2) pairwise pass. Skipped on very large files, where it is
+      both far too slow and dominated by false positives.
+
+    Returns groups of size >= 2 (singletons are not duplicates).
     """
     n = len(parties)
     norm = [normalize_party_name(p["_name"]) for p in parties]
@@ -246,16 +262,28 @@ def find_duplicate_groups(parties: list[dict], threshold: float = 0.80) -> list[
     def union(a: int, b: int) -> None:
         parent[find(a)] = find(b)
 
-    for i in range(n):
-        for j in range(i + 1, n):
-            same = (
-                (norm[i] and norm[i] == norm[j])
-                or (gst[i] and gst[i] == gst[j])
-                or (phone[i] and phone[i] == phone[j])
-                or SequenceMatcher(None, norm[i], norm[j]).ratio() >= threshold
-            )
-            if same:
-                union(i, j)
+    # Exact tier: bucket indices by each key (skipping blanks) and union each bucket.
+    # O(n) per key - no pairwise comparison - so this is independent of file size.
+    for keys in (norm, gst, phone):
+        first: dict[str, int] = {}
+        for i, k in enumerate(keys):
+            if not k:
+                continue
+            if k in first:
+                union(i, first[k])
+            else:
+                first[k] = i
+
+    # Look-alike tier: quadratic, so only for small enough party sets. Already-grouped
+    # pairs are skipped, and empty normalised names are never fuzzy-matched.
+    if n <= fuzzy_max:
+        for i in range(n):
+            for j in range(i + 1, n):
+                if find(i) == find(j):
+                    continue
+                if (norm[i] and norm[j]
+                        and SequenceMatcher(None, norm[i], norm[j]).ratio() >= threshold):
+                    union(i, j)
 
     groups: dict[int, list[str]] = {}
     for i in range(n):
@@ -360,7 +388,8 @@ def _validate_duplicates(parties: list[dict], report: ValidationReport,
             report.add(ValidationIssue(
                 entity_of.get(dupe, "Customer"), dupe, WARNING, "DUPLICATE_PARTY",
                 f"Looks like a duplicate of '{primary}'.",
-                "Merge if it's the same party, or leave it as is."))
+                "Each imports as its own party - the migration never merges or "
+                "drops them. If they are the same, merge them yourself in ERPNext."))
 
 
 def _validate_name_collisions(masters, report: ValidationReport) -> None:

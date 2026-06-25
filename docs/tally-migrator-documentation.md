@@ -314,7 +314,7 @@ The issue types you may see (each is explained in full in the
 | PIN and state to verify | Warning | The PIN code looks like a different state |
 | Imports without the email | Warning | The email address is malformed |
 | Imports without HSN | Warning | An item has no HSN/SAC code |
-| Possible duplicate to review | Warning | Two parties look like the same real entity |
+| Possible duplicate to review | Warning | Two or more parties look like the same real entity |
 | Will merge into one | Warning | Two items / warehouses / units share a name and will merge |
 | Hierarchy loop simplified | Warning | A parent chain forms a loop |
 
@@ -722,8 +722,12 @@ Migrator handles a real-world wrinkle in Tally data.
   created, the party falls back to the standard default group, with a warning so the
   lost grouping is visible.
 - **Duplicate parties.** Two parties that look like the same real entity (by
-  normalised name, shared GSTIN, shared phone, or close name match) are flagged for
-  review. They still import; you decide whether to merge them.
+  normalised name, shared GSTIN, shared phone, or close name match) are **flagged for
+  review only**. The migration never merges or drops them - every distinctly named
+  party is imported as its own record exactly as it is in Tally. Merging, if you want
+  it, is something you do yourself in ERPNext afterwards. (On very large files the
+  close-name-match check is skipped for speed - exact matches by name, GSTIN, or phone
+  are still flagged at any size.)
 - **GST category.** Tally's explicit registration type wins when set (it is the only
   thing that distinguishes Composition or SEZ). Otherwise, a party outside India is
   "Overseas", and an Indian party's category is inferred from its GSTIN.
@@ -853,7 +857,7 @@ These appear on the Check step and in the log's data-quality section.
 | **PIN and state to verify** | Warning | The PIN code's region does not match the state | Check it; the PIN or the state may be a typo |
 | **Imports without the email** | Warning | The email is not a valid address; the party's contact would lose it | Fix or clear the email; the party imports with its other contact details either way |
 | **Imports without HSN** | Warning | An item has no HSN/SAC code | Add an HSN when ready; needed only for GST-compliant invoices |
-| **Possible duplicate to review** | Warning | Two parties look like the same real entity | Merge if it is the same party, or leave it |
+| **Possible duplicate to review** | Warning | Two or more parties look like the same real entity | Each imports as its own party - never merged or dropped; merge them yourself in ERPNext if they are the same |
 | **Will merge into one** | Warning | Two items, warehouses, or units share a name and will merge into one record on import | Rename in Tally first if that is not intended |
 | **Hierarchy loop simplified** | Warning | A record's parent chain forms a loop, so its hierarchy cannot be built faithfully | Fix the parent loop in Tally if the hierarchy matters |
 

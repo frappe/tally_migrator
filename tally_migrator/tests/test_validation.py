@@ -134,6 +134,33 @@ class TestDedup(unittest.TestCase):
         parties = [_party("Tata Steel"), _party("Infosys")]
         self.assertEqual(find_duplicate_groups(parties), [])
 
+    def test_exact_dupes_still_caught_when_fuzzy_skipped(self):
+        # fuzzy_max=0 forces the large-file path (no fuzzy pass). Identical names,
+        # GSTINs and phones must still be caught by the O(n) exact tier.
+        g = _valid_gstin()
+        parties = [
+            _party("Acme"), _party("Acme"),                       # same normalized name
+            _party("Beta", GSTRegistrationNumber=g),
+            _party("Beta Trading Co", GSTRegistrationNumber=g),   # same GSTIN
+            _party("Delta", LedgerMobile="9876543210"),
+            _party("Delta Corp", LedgerMobile="9876543210"),      # same phone
+            _party("Gamma"),                                       # unique
+        ]
+        groups = find_duplicate_groups(parties, fuzzy_max=0)
+        self.assertEqual(len(groups), 3)
+
+    def test_lookalike_skipped_when_above_cutoff(self):
+        # Names that only *look* alike (don't normalize equal) are grouped by the
+        # fuzzy pass for small sets, but skipped once above the cutoff.
+        parties = [_party("Reliance Industries"), _party("Reliance Ind.")]
+        self.assertEqual(len(find_duplicate_groups(parties)), 1)          # fuzzy on
+        self.assertEqual(find_duplicate_groups(parties, fuzzy_max=0), [])  # fuzzy off
+
+    def test_empty_normalized_names_do_not_clump(self):
+        # Names that normalize to "" (all suffixes/punctuation) must NOT all group.
+        parties = [_party("Ltd"), _party("& Co"), _party("Pvt Ltd")]
+        self.assertEqual(find_duplicate_groups(parties), [])
+
 
 # ── Master-level rules ────────────────────────────────────────────────────────
 
