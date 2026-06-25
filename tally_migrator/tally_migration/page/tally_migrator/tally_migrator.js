@@ -224,7 +224,7 @@ class TallyMigratorPage {
 					<h4>Migration</h4>
 					<p id="run-subtitle" class="text-muted"></p>
 
-					<div id="run-banner" class="tm-callout" style="display:none;"></div>
+					<div id="run-banner" class="tm-callout tm-section" style="display:none;"></div>
 
 					<div id="progress-section" class="tm-section" style="display:none;">
 						<div class="progress" style="margin-bottom:var(--margin-xs);">
@@ -2153,6 +2153,7 @@ class TallyMigratorPage {
 			error: (err) => {
 				frappe.realtime.off("tally_migration_progress", this._onProgress);
 				this.stopHeartbeat();
+				$("#progress-section").hide();   // the run failed; don't leave a stuck 0% bar above the error
 				$("#btn-run").prop("disabled", false);
 				$("#btn-back-3").prop("disabled", false);
 				const detail =
@@ -2196,6 +2197,7 @@ class TallyMigratorPage {
 			this.stopHeartbeat();
 			$("#progress-bar").removeClass("active progress-bar-striped").css("width", "100%").text("100%");
 			if (doc.status === "Failed") {
+				$("#progress-section").hide();   // the run failed; don't leave a stuck bar above the error
 				// A reconnected run hides #run-actions (see attachToActiveRun); re-show it
 				// so the user can actually retry, not just find a re-enabled-but-hidden button.
 				$("#run-actions").show();
@@ -2254,18 +2256,31 @@ class TallyMigratorPage {
 		const poll = () => {
 			if (Date.now() - start > POLL_CAP_MS) { stalled(); return; }
 			frappe.call({
-				method: "frappe.client.get_value",
-				args: { doctype: "Tally Migration Log", filters: { name: logName }, fieldname: ["status", "import_summary"] },
+				method: "tally_migrator.api.run_progress",
+				args: { log_name: logName },
 				callback: (r) => {
 					const doc = r.message;
 					if (!doc) { setTimeout(poll, 3000); return; }
-					if (doc.status === "Running" || !doc.status) { setTimeout(poll, 3000); return; }
+					if (doc.status === "Running" || !doc.status) {
+						// Drive the bar from the persisted progress so a reconnected page
+						// advances even when it missed the realtime events (which is what
+						// otherwise left it stuck at 0%). Realtime stays the fast-path.
+						if (typeof doc.percent === "number") {
+							this._lastProgress = Date.now();
+							$("#progress-bar").css("width", doc.percent + "%").text(doc.percent + "%");
+							if (doc.description) $("#progress-desc").text(doc.description);
+						}
+						setTimeout(poll, 3000);
+						return;
+					}
 					finishFromLog(doc);
 				},
 				error: () => setTimeout(poll, 5000),
 			});
 		};
-		setTimeout(poll, 3000);
+		// Poll immediately so a reconnected bar paints the real percent within a tick,
+		// not after the first 3s interval.
+		poll();
 	}
 
 	renderResults(summary) {
