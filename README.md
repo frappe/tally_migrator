@@ -15,7 +15,9 @@ even when your ERPNext is hosted in the cloud and your Tally is on an office PC.
 > walks through every step, explains every screen, card, term, warning and error,
 > covers the edge cases, and includes a troubleshooting section and glossary.
 
-> _Screenshot: the migration wizard._ <!-- add image: ![Wizard](docs/images/wizard.png) -->
+**▶ [Watch the walkthrough on YouTube](https://youtu.be/rg74gza9IqU)**
+
+[![Watch the Tally Migrator walkthrough on YouTube](docs/images/video-thumbnail.png)](https://youtu.be/rg74gza9IqU)
 
 ---
 
@@ -92,18 +94,26 @@ Manager) to anyone who should be allowed to run a migration.
 Open the **Tally Migrator** page from the ERPNext desk (search "Tally Migrator" in
 the awesomebar). The wizard walks you through a few guided steps:
 
-> _Screenshot: the wizard steps._ <!-- add image: ![Steps](docs/images/steps.png) -->
-
 1. **Upload** - drop in your Tally export file. The app reads it and tells you what
    it found.
+
+   ![Step 1 - Upload](docs/images/wizard-1-upload.png)
 2. **Configure** - pick the ERPNext company the data should go into, choose how to
    handle the chart of accounts, and set the opening-balance date.
+
+   ![Step 2 - Configure](docs/images/wizard-2-configure.png)
 3. **Check** - the app validates everything *before* writing: missing states,
    invalid GSTINs, broken account links, and so on. You can fix many issues right
    here, in place, without touching Tally.
+
+   ![Step 3 - Check](docs/images/wizard-3-check.png)
 4. **Preview** - see a summary of exactly what will be created. (This step appears
    when your file includes a chart of accounts or opening balances.)
+
+   ![Step 4 - Preview](docs/images/wizard-4-preview.png)
 5. **Migrate** - the app imports the records and opens a **Migration Log**.
+
+   ![Step 5 - Migrate](docs/images/wizard-5-migrate.png)
 
 The Migration Log is your record of the run. It shows what was created (grouped by
 type, with clickable links to each record), what was skipped and why, and the
