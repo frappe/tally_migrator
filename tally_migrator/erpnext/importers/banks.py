@@ -24,7 +24,7 @@ from tally_migrator.tally.extractors import TallyExtractor
 from tally_migrator.validation.engine import (
     infer_gst_category, validate_gstin, GSTIN_STATE_CODES,
 )
-from .base import ImportResult
+from .base import ImportResult, atomic
 
 # ── Bank Account helpers (shared by party + company bank accounts) ─────────────
 
@@ -46,13 +46,17 @@ def _ensure_bank(bank_name: str, result: "ImportResult | None" = None) -> str:
     if frappe.db.exists("Bank", name):
         return name
     try:
-        frappe.get_doc({"doctype": "Bank", "bank_name": name}).insert(ignore_permissions=True)
+        # Savepoint (not full rollback) so a failure here can't wipe a caller's
+        # uncommitted batch (the party importer commits in batches). The commit keeps
+        # the Bank durable for the non-batched company-account path, whose later
+        # per-record rollback must not lose it.
+        with atomic():
+            frappe.get_doc({"doctype": "Bank", "bank_name": name}).insert(ignore_permissions=True)
         frappe.db.commit()
         if result is not None:
             result.add_created(name, "Bank")
         return name
     except Exception:
-        frappe.db.rollback()
         return ""
 
 
@@ -71,19 +75,23 @@ def _insert_bank_account(*, account_name: str, bank: str, account_no: str,
     Account quirk never aborts the party/account that was just created.
     """
     try:
-        ba = frappe.new_doc("Bank Account")
-        ba.account_name = account_name
-        ba.bank = bank
-        ba.bank_account_no = account_no
-        if ifsc:
-            ba.branch_code = ifsc
-        if is_company:
-            ba.account = gl_account
-            ba.is_company_account = 1
-        else:
-            ba.party_type = party_type
-            ba.party = party
-        ba.insert(ignore_permissions=True)
+        # Savepoint-isolated (see _ensure_bank): a failure rolls back only this Bank
+        # Account, never a caller's uncommitted batch. The commit keeps it durable for
+        # the non-batched company path.
+        with atomic():
+            ba = frappe.new_doc("Bank Account")
+            ba.account_name = account_name
+            ba.bank = bank
+            ba.bank_account_no = account_no
+            if ifsc:
+                ba.branch_code = ifsc
+            if is_company:
+                ba.account = gl_account
+                ba.is_company_account = 1
+            else:
+                ba.party_type = party_type
+                ba.party = party
+            ba.insert(ignore_permissions=True)
         frappe.db.commit()
         if count_created:
             result.add_created(ba.name, "Bank Account")
@@ -91,5 +99,4 @@ def _insert_bank_account(*, account_name: str, bank: str, account_no: str,
     except Exception as exc:
         frappe.log_error("Tally Migrator", f"Bank account save failed for {warn_name}: {exc}")
         result.add_warning(warn_name, f"bank account not created: {exc}")
-        frappe.db.rollback()
         return ""

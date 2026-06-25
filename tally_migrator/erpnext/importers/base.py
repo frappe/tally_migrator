@@ -1,6 +1,7 @@
 """Result tracking and the BaseImporter template (shared by all importers)."""
 
 import contextlib
+import itertools
 import unicodedata
 from collections import Counter
 from dataclasses import dataclass, field
@@ -25,6 +26,37 @@ from tally_migrator.tally.extractors import TallyExtractor
 from tally_migrator.validation.engine import (
     infer_gst_category, validate_gstin, GSTIN_STATE_CODES,
 )
+
+# Monotonic source of unique savepoint names within a run, so nested/sequential
+# units never collide on a name.
+_savepoint_seq = itertools.count()
+
+
+@contextlib.contextmanager
+def atomic():
+    """Run one unit of work as a DB SAVEPOINT inside the current transaction.
+
+    On success the work stays pending and is flushed by the surrounding batch
+    ``commit`` (see ``BaseImporter.run``); on error ONLY this unit is rolled back -
+    the rest of the uncommitted batch is preserved - and the error is re-raised for
+    the caller's existing handler to warn/recover.
+
+    This is what makes commit-batching safe: it replaces the old per-record
+    ``frappe.db.commit()`` / full ``frappe.db.rollback()`` (a full rollback would
+    wipe the whole uncommitted batch), giving the exact same per-record isolation
+    while collapsing tens of thousands of fsyncs into a handful. A partially-written
+    multi-row doc (parent + child rows) is rolled back cleanly as a unit, so a failed
+    insert can never leave a half-written record in the batch."""
+    sp = f"tm_sp_{next(_savepoint_seq)}"
+    frappe.db.savepoint(sp)
+    try:
+        yield
+    except Exception:
+        frappe.db.rollback(save_point=sp)
+        raise
+    else:
+        frappe.db.release_savepoint(sp)
+
 
 # ── Result tracking ───────────────────────────────────────────────────────────
 
@@ -127,6 +159,13 @@ class BaseImporter:
         whose Tally ledger leaves country blank, instead of assuming India."""
         return frappe.get_cached_value("Company", self.company, "country") or "India"
 
+    # Commit once per this many newly-created records instead of once per record.
+    # Each record is still isolated by its own SAVEPOINT (see ``atomic``), so a bad
+    # row rolls back only itself; this only changes how often we fsync. A crash now
+    # loses at most the last uncommitted batch, which the idempotent skip-on-re-run
+    # refills - the deliberate (and only) behavioural trade for the speed-up.
+    _COMMIT_BATCH_SIZE = 500
+
     # ── Template method ─────────────────────────────────────────────────────
     def run(self, records: list[dict], on_progress=None) -> ImportResult:
         result = ImportResult(self.doctype)
@@ -138,6 +177,7 @@ class BaseImporter:
         # is the input count; ``iter_records`` only filters, never multiplies, so
         # ``done`` never exceeds it. Optional: tests and direct callers pass nothing.
         total = len(records)
+        pending = 0   # newly-written records not yet committed
         for done, record in enumerate(self.iter_records(records), 1):
             name, created = self._upsert(result, self.build_doc(record))
             # after_insert (e.g. address creation) must run ONLY for newly
@@ -145,8 +185,17 @@ class BaseImporter:
             # records that were skipped because they already exist.
             if name and created:
                 self.after_insert(name, record, result)
+                pending += 1
+                if pending >= self._COMMIT_BATCH_SIZE:
+                    frappe.db.commit()
+                    pending = 0
             if on_progress:
                 on_progress(done, total)
+        # Flush the final partial batch (and make every phase end on a clean commit,
+        # so the next phase - and the openings that resolve parties by DB lookup -
+        # always sees this phase fully persisted).
+        if pending:
+            frappe.db.commit()
         return result
 
     # ── Overridable hooks ────────────────────────────────────────────────────
@@ -261,14 +310,17 @@ class BaseImporter:
 
         Throughput vs. atomicity (deliberate)
         -------------------------------------
-        This commits once per record, so a run is *not* one transaction: an
-        interrupted run leaves every record committed so far in place. That is
-        intentional - the import is idempotent (existing records are skipped), so
-        a resumed/re-run picks up exactly where it stopped instead of redoing
-        thousands of rows or rolling them all back. The cost is one COMMIT plus a
-        duplicate-check round-trip per record, which is the dominant per-row cost
-        at scale; batching commits would trade resumability for speed and is a
-        deliberate non-goal here.
+        The insert is isolated by a per-record SAVEPOINT (see ``atomic``) but
+        committed in batches by ``run`` (every ``_COMMIT_BATCH_SIZE`` records), not
+        once per record. A run is therefore *not* one transaction: an interrupted run
+        leaves every committed batch in place. That is safe because the import is
+        idempotent (existing records are skipped), so a resumed/re-run picks up where
+        it stopped instead of redoing thousands of rows. Batching collapses the fsync
+        per record - the dominant per-row cost at scale - into one per batch, while
+        the savepoint keeps the exact per-record failure isolation a per-record commit
+        gave (a bad row rolls back only itself). The single trade vs. per-record
+        commit: a hard crash can lose up to the last uncommitted batch instead of the
+        last row - refilled by re-running.
         """
         key_value = data.get(self.key_field, "")
         try:
@@ -279,30 +331,34 @@ class BaseImporter:
             if existing:
                 result.skipped += 1
                 return existing, False
-            doc = frappe.get_doc(data)
-            doc.insert(ignore_permissions=True)
-            frappe.db.commit()
+            # The insert is savepointed (not committed here): the batch commit in
+            # run() flushes it, and a failure rolls back only this record, never the
+            # batch. _remember_inserted runs only after a clean release, so the dedup
+            # snapshot never records a rolled-back key.
+            with atomic():
+                doc = frappe.get_doc(data)
+                doc.insert(ignore_permissions=True)
             self._remember_inserted(key_value, doc.name)
             result.add_created(doc.name)
             return doc.name, True
         except Exception as exc:
-            frappe.db.rollback()
-            # Give the importer one chance to salvage the row (e.g. drop an
-            # India-Compliance-rejected HSN code) rather than lose it outright.
+            # The savepoint already rolled this record back. Give the importer one
+            # chance to salvage the row (e.g. drop an India-Compliance-rejected HSN
+            # code) rather than lose it outright.
             recovered = self.recover_insert(data, exc)
             if recovered is not None:
                 retry_data, warning = recovered
                 try:
-                    doc = frappe.get_doc(retry_data)
-                    doc.insert(ignore_permissions=True)
-                    frappe.db.commit()
+                    with atomic():
+                        doc = frappe.get_doc(retry_data)
+                        doc.insert(ignore_permissions=True)
                     self._remember_inserted(retry_data.get(self.key_field, key_value), doc.name)
                     result.add_created(doc.name)
                     if warning:
                         result.add_warning(retry_data.get(self.key_field, key_value), warning)
                     return doc.name, True
                 except Exception:
-                    frappe.db.rollback()
+                    pass   # savepoint already rolled the retry back
             result.add_error(key_value, exc)
             return None, False
 
