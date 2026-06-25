@@ -17,7 +17,7 @@ even when your ERPNext is hosted in the cloud and your Tally is on an office PC.
 
 **▶ [Watch the walkthrough on YouTube](https://youtu.be/GxL9xwnOD-k)**
 
-[![Watch the Tally Migrator walkthrough on YouTube](docs/images/video-thumbnail.png)](https://youtu.be/GxL9xwnOD-k)
+[![Watch the Tally Migrator walkthrough on YouTube](https://img.youtube.com/vi/GxL9xwnOD-k/maxresdefault.jpg)](https://youtu.be/GxL9xwnOD-k)
 
 ---
 
@@ -39,6 +39,18 @@ even when your ERPNext is hosted in the cloud and your Tally is on an office PC.
 
 After a run, the app produces a **reconciliation report** that puts Tally's opening
 trial balance next to what landed in ERPNext, so you can confirm the books match.
+
+---
+
+## Current Limitations
+
+Tally Migrator focuses on migrating masters and opening balances, not historical
+transactions such as Sales Invoices, Purchase Invoices, Payments, or Journal Entries.
+GST-specific fields require the India Compliance app. The app is currently built and
+tested for Indian users on ERPNext v16 and Tally Prime. Features such as TDS/TCS,
+HR/Payroll, and BOM co-products, by-products, and scrap are not yet supported.
+Foreign-currency advances and custom fields (UDFs) are also left out. Anything that is
+skipped is recorded in the Migration Log, so nothing disappears silently.
 
 ---
 
