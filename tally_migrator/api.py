@@ -1,11 +1,13 @@
 import json
+import re
 import threading
 from collections import OrderedDict
+from urllib.parse import urlparse
 
 import frappe
 
 from tally_migrator.tally.config import TallyConfig
-from tally_migrator.tally.file_source import FileTallySource, decode_tally_bytes
+from tally_migrator.tally.file_source import FileTallySource, decode_tally_bytes, unzip_if_zip
 from tally_migrator.tally.extractors import TallyExtractor, ITEM_FIELDS, ITEM_TAGS
 from tally_migrator.erpnext.uom_resolver import UomResolver
 from tally_migrator.validation.engine import (
@@ -497,7 +499,11 @@ def _source_from_file(file_url):
         if source is not None:
             _SOURCE_CACHE.move_to_end(cache_key)     # mark most-recently used
             return file_doc, source
-        source = FileTallySource(_decode(_raw_file_bytes(file_doc)))
+        # A zipped XML is accepted transparently: unzip (with the uncompressed
+        # size held to the same cap) before decoding, so the parser only ever
+        # sees plain XML bytes regardless of how the file was uploaded.
+        raw = unzip_if_zip(_raw_file_bytes(file_doc), _max_upload_bytes())
+        source = FileTallySource(_decode(raw))
         _SOURCE_CACHE[cache_key] = source            # inserts as most-recently used
         while len(_SOURCE_CACHE) > _SOURCE_CACHE_MAX:
             _SOURCE_CACHE.popitem(last=False)        # evict least-recently used
@@ -512,7 +518,15 @@ def _raw_file_bytes(file_doc) -> bytes:
     mark on a genuine UTF-16 Tally export, so our own encoding detection in
     ``decode_tally_bytes`` never runs and the parser dies at byte 0. Reading binary
     keeps the real bytes - and the BOM - intact.
+
+    A "Link" upload (Frappe's FileUploader web-link tab) stores the URL as the
+    File's ``file_url`` and downloads nothing, so ``get_content()`` has no local
+    bytes to read. We support exactly one remote source - a public Google Drive
+    link - and fetch it here, so a too-large export shared via Drive flows through
+    the identical pipeline (a zipped XML on Drive is unpacked downstream as usual).
     """
+    if getattr(file_doc, "is_remote_file", False):
+        return _download_drive_file(_parse_drive_id(file_doc.file_url))
     content = file_doc.get_content()
     raw = bytes(content) if isinstance(content, (bytes, bytearray)) else None
     if raw is not None:
@@ -550,10 +564,118 @@ def _raw_file_bytes(file_doc) -> bytes:
         return encoded
 
 
+# A Google Drive file id as it appears in the common share-link shapes:
+#   https://drive.google.com/file/d/<ID>/view?usp=sharing
+#   https://drive.google.com/open?id=<ID>
+#   https://drive.google.com/uc?export=download&id=<ID>
+#   https://docs.google.com/spreadsheets/d/<ID>/edit
+# The id alphabet is URL-safe base64 ([A-Za-z0-9_-]); we match the longest run.
+_DRIVE_ID_PATTERNS = (
+    re.compile(r"/file/d/([A-Za-z0-9_-]{10,})"),
+    re.compile(r"/d/([A-Za-z0-9_-]{10,})"),
+    re.compile(r"[?&]id=([A-Za-z0-9_-]{10,})"),
+)
+_BARE_DRIVE_ID = re.compile(r"^[A-Za-z0-9_-]{10,}$")
+
+
+def _parse_drive_id(url: str) -> str:
+    """Extract the Drive file id from a share link (or accept a bare id).
+
+    Rejects anything that is not a Google Drive / Docs link so this endpoint can
+    only ever reach Google - it is not a general URL fetcher."""
+    url = (url or "").strip()
+    if not url:
+        frappe.throw(frappe._("Paste a Google Drive link first."))
+    if _BARE_DRIVE_ID.match(url):
+        return url
+    if not re.match(r"^https?://", url, re.IGNORECASE):
+        frappe.throw(frappe._("That doesn't look like a link. Paste the full Google Drive share URL."))
+    host = (urlparse(url).hostname or "").lower()
+    if not (host == "google.com" or host.endswith(".google.com")):
+        frappe.throw(frappe._(
+            "Only Google Drive links are supported here. Share your file on "
+            "Google Drive as 'Anyone with the link' and paste that link."
+        ))
+    for pat in _DRIVE_ID_PATTERNS:
+        m = pat.search(url)
+        if m:
+            return m.group(1)
+    frappe.throw(frappe._(
+        "Could not find a file id in that Google Drive link. Open the file in "
+        "Drive, choose Share, copy the link, and paste it here."
+    ))
+
+
+def _download_drive_file(file_id: str) -> bytes:
+    """Stream a public Drive file's bytes, capped at the upload size limit.
+
+    Uses the ``drive.usercontent.google.com`` download endpoint with
+    ``confirm=t`` so Drive's large-file "can't scan for viruses" interstitial is
+    skipped and the real bytes are returned. If Drive serves an HTML page
+    instead (the file isn't shared publicly, or the link is wrong) we detect that
+    and raise an actionable error rather than importing a web page as XML.
+    """
+    import requests
+
+    max_bytes = _max_upload_bytes()
+    try:
+        resp = requests.get(
+            "https://drive.usercontent.google.com/download",
+            params={"id": file_id, "export": "download", "confirm": "t"},
+            stream=True,
+            timeout=(10, 180),
+        )
+        resp.raise_for_status()
+    except requests.RequestException as e:
+        frappe.throw(frappe._(
+            "Could not reach Google Drive to download the file ({0}). Check the "
+            "link and your network, then try again."
+        ).format(type(e).__name__))
+
+    chunks, total = [], 0
+    try:
+        for chunk in resp.iter_content(chunk_size=262144):
+            if not chunk:
+                continue
+            total += len(chunk)
+            if total > max_bytes:
+                frappe.throw(frappe._(
+                    "The Drive file is larger than the {0} MB limit for a single "
+                    "import. Export your Tally masters in smaller batches, or ask "
+                    "your administrator to raise tally_migrator_max_upload_mb."
+                ).format(max_bytes // (1024 * 1024)))
+            chunks.append(chunk)
+    finally:
+        resp.close()
+
+    raw = b"".join(chunks)
+    if not raw:
+        frappe.throw(frappe._("Google Drive returned an empty file. Check the link and sharing settings."))
+    # Drive serves the sharing-blocked / not-found case as an HTML page.
+    head = raw[:512].lstrip().lower()
+    if head.startswith(b"<!doctype html") or head.startswith(b"<html"):
+        frappe.throw(frappe._(
+            "Google Drive returned a web page instead of your file. Make sure the "
+            "file is shared as 'Anyone with the link' and the link points to a "
+            "single file (not a folder)."
+        ))
+    return raw
+
+
+def _max_upload_bytes() -> int:
+    """The single-import size ceiling in bytes (site-config overridable).
+
+    Applied to a raw upload, to a Drive download, and - as the zip-bomb guard -
+    to the *uncompressed* size of a zipped XML, so every ingestion path is held
+    to the same limit."""
+    max_mb = frappe.conf.get("tally_migrator_max_upload_mb") or _DEFAULT_MAX_UPLOAD_MB
+    return max_mb * 1024 * 1024
+
+
 def _assert_within_size_limit(num_bytes: int) -> None:
     """Reject an oversized upload before parsing, with an actionable message."""
     max_mb = frappe.conf.get("tally_migrator_max_upload_mb") or _DEFAULT_MAX_UPLOAD_MB
-    if num_bytes > max_mb * 1024 * 1024:
+    if num_bytes > _max_upload_bytes():
         frappe.throw(
             frappe._(
                 "This file is {0} MB, above the {1} MB limit for a single import. "

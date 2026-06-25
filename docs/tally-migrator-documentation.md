@@ -214,11 +214,26 @@ that run and tracks its progress to completion - it never starts a second one.
 
 ### Step 1 - Upload
 
-Click **Choose Tally XML file** and pick the `Master.xml` you exported. The app
-reads it and shows you what it found, as a row of count chips: Customers,
+Click **Choose Tally XML or .zip file** and pick the `Master.xml` you exported. The
+app reads it and shows you what it found, as a row of count chips: Customers,
 Suppliers, Items, Warehouses, and (when present) Accounts and Cost Centres.
 
 > _Screenshot placeholder: step 1 after a successful upload, showing the count chips._
+
+**Importing a large file.** The browser upload is capped (commonly around 25 MB),
+but a Masters XML compresses by roughly 90%, so a big export has two easy routes:
+
+- **Upload a zip.** Zip the `Master.xml` and choose the `.zip` - the app unpacks it
+  automatically and reads the XML inside. The zip must contain exactly one `.xml`
+  file. (The uncompressed XML is still held to the same size limit, so a zip cannot
+  be used to slip an over-limit file past the cap.)
+- **Import from a Google Drive link.** In the upload dialog, choose the **Link**
+  option and paste the share link to your file. In Drive, the file must be shared as
+  **Anyone with the link** - otherwise Google returns a sign-in page instead of the
+  file and the import is refused with a clear message. The app downloads the file on
+  the server, so nothing has to pass through your browser. A zipped XML on Drive
+  works the same way. Only Google Drive links are accepted; any other link is
+  rejected.
 
 This preview is your first and best check that you exported the right thing. Read
 the counts carefully.

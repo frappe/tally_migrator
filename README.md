@@ -82,6 +82,15 @@ figures into this year's opening balances in ERPNext, so don't skip it. Tally
 writes a `Master.xml` file (to the folder shown in the export screen) - that's the
 file you upload in step 1.
 
+**Large export?** A Masters XML compresses ~90%, so if your file is too big to
+upload (the browser upload is capped, commonly around 25 MB), you have two
+options in step 1:
+
+- **Zip it first** and upload the `.zip` - the app unpacks the XML automatically.
+- **Import from a Google Drive link** - share the file in Drive as "Anyone with
+  the link", then in the upload dialog choose **Link** and paste the link; the app
+  downloads it server-side. A zipped XML on Drive works too.
+
 ---
 
 ## Installation
@@ -106,8 +115,9 @@ Manager) to anyone who should be allowed to run a migration.
 Open the **Tally Migrator** page from the ERPNext desk (search "Tally Migrator" in
 the awesomebar). The wizard walks you through a few guided steps:
 
-1. **Upload** - drop in your Tally export file. The app reads it and tells you what
-   it found.
+1. **Upload** - drop in your Tally export file (`.xml`, or a `.zip` of it). For a
+   file too large to upload, use the dialog's **Link** option to paste a public
+   Google Drive link instead. The app reads it and tells you what it found.
 
    ![Step 1 - Upload](docs/images/wizard-1-upload.png)
 2. **Configure** - pick the ERPNext company the data should go into, choose how to
