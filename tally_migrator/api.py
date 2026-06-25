@@ -355,38 +355,66 @@ def _is_job_alive(job_id: str) -> bool:
         return True
 
 
-def _assert_no_active_run(company: str) -> None:
-    """Refuse to start a second migration while one is already running for the
-    same company. A stale run (crashed worker) is ignored so re-runs aren't locked
+def _active_run_log(company: str) -> dict | None:
+    """The live 'Running' migration log for a company, or None when none is active.
+
+    A stale run (crashed worker) is treated as not-active so re-runs aren't locked
     out. For an async run we ask RQ whether the worker is genuinely still alive; for
-    a sync run (no job id, request-bound) we fall back to an age cap. Best-effort UX
-    guard - the opening lock in the importer is what actually protects the books."""
+    a sync run (no job id, request-bound) we fall back to an age cap. Shared by the
+    start guard and the ``active_run`` endpoint so both judge "is a run live" the
+    same way."""
     if not company:
-        return
+        return None
     rows = frappe.get_all(
         "Tally Migration Log",
         filters={"company": company, "status": "Running"},
         fields=["name", "modified", "job_id"], order_by="modified desc", limit=1,
     )
     if not rows:
-        return
-    modified = rows[0].modified
+        return None
     job_id = rows[0].get("job_id")
     if job_id:
-        # Liveness, not age: an enqueued run blocks only while its RQ job is actually
+        # Liveness, not age: an enqueued run is live only while its RQ job is actually
         # queued or running. A crashed/finished/missing job leaves a 'Running' log
         # behind, but is_job_enqueued() returns False, so it never locks out a re-run -
-        # and a legitimately long (>2h) job keeps blocking, which the age cap couldn't.
+        # and a legitimately long (>2h) job stays live, which the age cap couldn't.
         if not _is_job_alive(job_id):
-            return
-    elif frappe.utils.time_diff_in_seconds(frappe.utils.now(), modified) >= _ACTIVE_RUN_STALE_SECONDS:
-        return
-    frappe.throw(
-        frappe._(
-            "A migration for '{0}' is already running (started {1}). Please wait "
-            "for it to finish, or open the migration log to check its status."
-        ).format(company, frappe.utils.pretty_date(modified))
-    )
+            return None
+    elif frappe.utils.time_diff_in_seconds(
+            frappe.utils.now(), rows[0].modified) >= _ACTIVE_RUN_STALE_SECONDS:
+        return None
+    return rows[0]
+
+
+def _assert_no_active_run(company: str) -> None:
+    """Refuse to start a second migration while one is already running for the same
+    company. Best-effort UX guard - the opening lock in the importer is what actually
+    protects the books. The wizard avoids hitting this by reconnecting to a live run
+    (see ``active_run``); this stays as the server-side backstop."""
+    row = _active_run_log(company)
+    if row:
+        frappe.throw(
+            frappe._(
+                "A migration for '{0}' is already running (started {1}). Please wait "
+                "for it to finish, or open the migration log to check its status."
+            ).format(company, frappe.utils.pretty_date(row.modified))
+        )
+
+
+@frappe.whitelist(methods=["GET", "POST"])
+def active_run(erpnext_company: str = "") -> dict:
+    """Return the live migration run for a company, so the wizard can reconnect to a
+    run already in progress (e.g. after a page reload) instead of offering to start a
+    second one. ``{}`` when nothing is running. Read-only."""
+    frappe.only_for(ALLOWED_ROLES)
+    row = _active_run_log(erpnext_company)
+    if not row:
+        return {}
+    return {
+        "log_name": row.name,
+        "status": row.get("status") or "Running",
+        "started": frappe.utils.pretty_date(row.modified),
+    }
 
 
 def _assert_file_access(file_doc) -> None:

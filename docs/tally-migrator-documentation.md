@@ -208,7 +208,9 @@ masters-only file (just customers, items, and so on) shows a clean four-step flo
 
 You can leave at any point and come back. Your progress, and every fix you make
 along the way, is saved automatically. When you return, a banner offers to **resume
-your unfinished migration** or **start over**.
+your unfinished migration** or **start over**. If a migration was already running
+when you left (for example you reloaded the page mid-import), resuming reconnects to
+that run and tracks its progress to completion - it never starts a second one.
 
 ### Step 1 - Upload
 
