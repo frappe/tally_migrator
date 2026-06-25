@@ -417,6 +417,33 @@ def active_run(erpnext_company: str = "") -> dict:
     }
 
 
+@frappe.whitelist(methods=["GET", "POST"])
+def run_progress(log_name: str = "") -> dict:
+    """Status + latest progress percent/description for a migration run.
+
+    The progress bar is driven over realtime, but realtime is best-effort: a page
+    that reloads mid-run misses the events already sent and would otherwise sit at
+    0%. This lets the wizard poll the persisted progress (written by
+    MasterMigrator._progress) so a reconnected bar advances reliably. ``import_summary``
+    is returned too so the existing poll can render results from a single call once
+    the run finishes. ``{}`` when the log is unknown. Read-only."""
+    frappe.only_for(ALLOWED_ROLES)
+    if not log_name:
+        return {}
+    row = frappe.db.get_value(
+        "Tally Migration Log", log_name, ["status", "import_summary"], as_dict=True
+    )
+    if not row:
+        return {}
+    cached = frappe.cache().get_value(f"tally_migration_progress:{log_name}") or {}
+    return {
+        "status": row.status,
+        "import_summary": row.import_summary,
+        "percent": cached.get("percent"),
+        "description": cached.get("description"),
+    }
+
+
 def _assert_file_access(file_doc) -> None:
     """Refuse to read a File the current user has no claim to.
 

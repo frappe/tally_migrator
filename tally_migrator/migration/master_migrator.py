@@ -360,15 +360,31 @@ class MasterMigrator:
         # A custom realtime event (not frappe.publish_progress) so only the wizard's
         # own step-5 bar updates - publish_progress also triggers Frappe's native
         # progress dialog, which double-rendered on top of our bar.
+        desc = description or self.STEPS.get(pct, "")
         frappe.publish_realtime(
             "tally_migration_progress",
             {
                 "title": "Tally Masters Migration",
                 "percent": pct,
-                "description": description or self.STEPS.get(pct, ""),
+                "description": desc,
             },
             user=frappe.session.user,
         )
+        # Persist the latest progress so a reloaded/reconnected page can recover it by
+        # polling (see api.run_progress). Realtime is best-effort - a page that reloads
+        # mid-run misses past events - so the poll is the reliable source of truth and
+        # this is what stops the reconnected bar from sitting at 0%.
+        # Best-effort: progress reporting is cosmetic and runs inside the migration's
+        # critical path, so a cache/Redis hiccup must never abort an otherwise-good run.
+        if self.log:
+            try:
+                frappe.cache().set_value(
+                    f"tally_migration_progress:{self.log.name}",
+                    {"percent": pct, "description": desc},
+                    expires_in_sec=6 * 60 * 60,
+                )
+            except Exception:
+                pass
 
     def _record_uom_edits(self) -> None:
         """Fold the pre-flight UOM resolutions into the applied-edits audit trail.
