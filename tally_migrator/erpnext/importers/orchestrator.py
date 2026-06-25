@@ -56,6 +56,10 @@ class ERPNextImporter:
         self.abbr = frappe.get_value("Company", erpnext_company, "abbr") or ""
         self._uom_overrides = uom_overrides or {}
         self._coa_mode = coa_mode
+        # Per-phase progress callback ``(done, total)``, set by the migrator before
+        # each step so the wizard bar moves *within* a phase. None = no reporting
+        # (the default for tests and standalone use).
+        self.on_progress = None
 
     def import_accounts(self, accounts: list) -> ImportResult:
         return AccountImporter(self.company, self.abbr, mode=self._coa_mode).run(accounts)
@@ -97,7 +101,7 @@ class ERPNextImporter:
                 return result
             return PartyOpeningImporter(
                 self.company, self.abbr, self._opening_date(posting_date)).run(
-                    bills, customers, suppliers)
+                    bills, customers, suppliers, on_progress=self.on_progress)
 
     def import_opening_stock(self, items: list, posting_date: str = "") -> ImportResult:
         with _company_opening_lock(self.company) as got:
@@ -129,13 +133,16 @@ class ERPNextImporter:
         return BatchImporter(self.company, self.abbr).run(items)
 
     def import_warehouses(self, warehouses: list[dict]) -> ImportResult:
-        return WarehouseImporter(self.company, self.abbr).run(warehouses)
+        return WarehouseImporter(self.company, self.abbr).run(
+            warehouses, on_progress=self.on_progress)
 
     def import_customers(self, customers: list[dict]) -> ImportResult:
-        return CustomerImporter(self.company, self.abbr).run(customers)
+        return CustomerImporter(self.company, self.abbr).run(
+            customers, on_progress=self.on_progress)
 
     def import_suppliers(self, suppliers: list[dict]) -> ImportResult:
-        return SupplierImporter(self.company, self.abbr).run(suppliers)
+        return SupplierImporter(self.company, self.abbr).run(
+            suppliers, on_progress=self.on_progress)
 
     def import_items(self, items: list[dict]) -> ImportResult:
         # Heal a prior hard-killed run before reading the setting, then suspend
@@ -143,7 +150,8 @@ class ERPNextImporter:
         _restore_hsn_validation()
         with _hsn_validation_suspended():
             return ItemImporter(
-                self.company, self.abbr, uom_overrides=self._uom_overrides).run(items)
+                self.company, self.abbr, uom_overrides=self._uom_overrides).run(
+                    items, on_progress=self.on_progress)
 
     def _opening_date(self, posting_date: str = "") -> str:
         """Posting date for opening entries.

@@ -128,17 +128,25 @@ class BaseImporter:
         return frappe.get_cached_value("Company", self.company, "country") or "India"
 
     # ── Template method ─────────────────────────────────────────────────────
-    def run(self, records: list[dict]) -> ImportResult:
+    def run(self, records: list[dict], on_progress=None) -> ImportResult:
         result = ImportResult(self.doctype)
         self.before_run(records, result)
         self._existing = self._prefetch_existing()
-        for record in self.iter_records(records):
+        # ``on_progress(done, total)`` lets the caller draw a live progress bar that
+        # moves *within* this phase (not just between phases). Called once per record
+        # - skips included - so the bar advances even on an all-skip re-run. ``total``
+        # is the input count; ``iter_records`` only filters, never multiplies, so
+        # ``done`` never exceeds it. Optional: tests and direct callers pass nothing.
+        total = len(records)
+        for done, record in enumerate(self.iter_records(records), 1):
             name, created = self._upsert(result, self.build_doc(record))
             # after_insert (e.g. address creation) must run ONLY for newly
             # created records - otherwise a re-run duplicates side effects for
             # records that were skipped because they already exist.
             if name and created:
                 self.after_insert(name, record, result)
+            if on_progress:
+                on_progress(done, total)
         return result
 
     # ── Overridable hooks ────────────────────────────────────────────────────

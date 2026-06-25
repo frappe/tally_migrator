@@ -443,8 +443,10 @@ The final step imports the records.
 
 Click **Run Migration**. A progress bar shows the stages (reading the file,
 extracting masters, importing each entity type, posting opening balances, saving the
-log). For a large file, the import keeps running in the background and you can leave
-the page; the result still appears here and in the log.
+log). It advances continuously within a stage and shows a live count (for example,
+"Importing suppliers 8,432 of 13,088"), so a large stage never looks stuck. For a
+large file, the import keeps running in the background and you can leave the page; the
+result still appears here and in the log.
 
 When it finishes, you see a results table with one row per record type and these
 columns:

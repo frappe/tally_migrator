@@ -255,10 +255,20 @@ class MasterMigrator:
                 f"| bills: {len(bills)} | extract {self._timings['Extract']}s")
 
             results: dict[str, ImportResult] = {}
-            for step in self._pipeline(masters, coa, bills):
+            steps = self._pipeline(masters, coa, bills)
+            for i, step in enumerate(steps):
                 self._progress(step.percent, f"Importing {len(step.records)} {step.label.lower()}...")
+                # The bar fills from this step's percent up to (but not reaching) the
+                # next step's percent, so a long phase keeps moving instead of sitting
+                # frozen. The finalize milestone (95) caps the last step's band.
+                band_end = steps[i + 1].percent if i + 1 < len(steps) else 95
+                self.importer.on_progress = self._step_progress_cb(
+                    step.label, step.percent, band_end)
                 _t = _time.monotonic()
-                results[step.label] = step.importer(step.records)
+                try:
+                    results[step.label] = step.importer(step.records)
+                finally:
+                    self.importer.on_progress = None
                 self._timings[step.label] = round(_time.monotonic() - _t, 2)
                 frappe.logger().info(
                     f"[Tally Migrator] Phase '{step.label}': {len(step.records)} records "
@@ -368,6 +378,43 @@ class MasterMigrator:
         results["Accounts"] = acc
 
     # ── Progress ────────────────────────────────────────────────────────────────
+
+    # Emit an intra-phase progress update at most every this many records (or
+    # whenever the whole-number percent ticks up). Bounds the realtime/Redis writes
+    # to roughly a hundred over a full run - cheap enough to never dent throughput -
+    # while still moving the counter often enough to read as continuous.
+    _PROGRESS_EVERY = 250
+
+    def _step_progress_cb(self, label: str, start: int, end: int):
+        """Build an ``on_progress(done, total)`` callback for one phase.
+
+        Maps the phase's record progress onto the bar band ``[start, end)`` and emits
+        a throttled update carrying a live "x of N" count. Whole side-channel: wrapped
+        so a progress hiccup can never interrupt the import, and monotonic so the bar
+        only ever moves forward."""
+        state = {"pct": start, "done": 0}
+
+        def cb(done: int, total: int) -> None:
+            try:
+                if not total:
+                    return
+                # Clamp into the band; the end is reserved for the next phase's start.
+                pct = start + (end - start) * done // total
+                if pct >= end:
+                    pct = end - 1
+                advanced = pct > state["pct"]
+                stepped = done - state["done"] >= self._PROGRESS_EVERY
+                if not advanced and not stepped:
+                    return
+                state["pct"] = max(pct, state["pct"])
+                state["done"] = done
+                self._progress(
+                    state["pct"],
+                    f"Importing {label.lower()} {done:,} of {total:,}...")
+            except Exception:
+                pass
+
+        return cb
 
     def _progress(self, pct: int, description: str = "") -> None:
         # A custom realtime event (not frappe.publish_progress) so only the wizard's
