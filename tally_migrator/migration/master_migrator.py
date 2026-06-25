@@ -222,6 +222,10 @@ class MasterMigrator:
         self.applied_edits: list[dict] = []   # audit trail of effective pre-flight edits
         self.posting_date = getattr(config, "posting_date", "") or ""
         self.log = log
+        # Wall-time (seconds) per phase, for the performance baseline / before-after
+        # comparison. Folded into the log's extracted_counts under "_phase_seconds" at
+        # finalize and logged. Pure measurement - no effect on what gets imported.
+        self._timings: dict[str, float] = {}
 
     # ── Public ────────────────────────────────────────────────────────────────
 
@@ -230,11 +234,13 @@ class MasterMigrator:
         # create one now so an interrupted run is still recorded.
         self.log = self.log or self._create_log()
         try:
+            import time as _time
             self._progress(0)
             if not self.client.ping():
                 frappe.throw("Could not read the uploaded file. Please re-upload a valid Tally Masters XML export.")
 
             self._progress(10)
+            _t = _time.monotonic()
             masters = self.extractor.extract_all()
             apply_record_overrides(masters, self.record_overrides, self.applied_edits)
             self._record_uom_edits()
@@ -243,14 +249,20 @@ class MasterMigrator:
             # source can't supply child lists, so party openings then degrade to a
             # single lump opening invoice per party (no bill breakdown).
             bills = self.extractor.extract_bill_allocations()
+            self._timings["Extract"] = round(_time.monotonic() - _t, 2)
             frappe.logger().info(
                 f"[Tally Migrator] Extracted: {masters.summary} | COA: {coa.summary} "
-                f"| bills: {len(bills)}")
+                f"| bills: {len(bills)} | extract {self._timings['Extract']}s")
 
             results: dict[str, ImportResult] = {}
             for step in self._pipeline(masters, coa, bills):
                 self._progress(step.percent, f"Importing {len(step.records)} {step.label.lower()}...")
+                _t = _time.monotonic()
                 results[step.label] = step.importer(step.records)
+                self._timings[step.label] = round(_time.monotonic() - _t, 2)
+                frappe.logger().info(
+                    f"[Tally Migrator] Phase '{step.label}': {len(step.records)} records "
+                    f"in {self._timings[step.label]}s")
             self._record_excluded(results, coa)
             summary = MigrationSummary(results)
 
@@ -258,6 +270,7 @@ class MasterMigrator:
             self._finalize_log(masters, coa, summary)
 
             self._progress(100)
+            frappe.logger().info(f"[Tally Migrator] Phase timings (s): {self._timings}")
             return summary
         except Exception as exc:
             self._fail_log(exc)
@@ -435,7 +448,8 @@ class MasterMigrator:
         try:
             self.log.reload()
             self.log.status = "Completed with Errors" if summary.has_errors else "Completed"
-            self.log.extracted_counts = frappe.as_json({**masters.summary, **coa.summary})
+            self.log.extracted_counts = frappe.as_json(
+                {**masters.summary, **coa.summary, "_phase_seconds": self._timings})
             self.log.import_summary = frappe.as_json(summary.as_dict())
             self.log.applied_edits = frappe.as_json(self.applied_edits)
             manifest = summary.created_records()
