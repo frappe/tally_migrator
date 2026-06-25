@@ -224,6 +224,8 @@ class TallyMigratorPage {
 					<h4>Migration</h4>
 					<p id="run-subtitle" class="text-muted"></p>
 
+					<div id="run-banner" class="tm-callout" style="display:none;"></div>
+
 					<div id="progress-section" class="tm-section" style="display:none;">
 						<div class="progress" style="margin-bottom:var(--margin-xs);">
 							<div id="progress-bar" class="progress-bar progress-bar-striped active" style="width:0%; min-width:2em;">0%</div>
@@ -636,6 +638,19 @@ class TallyMigratorPage {
 		$("#file-status").html(
 			`<span class="indicator green">${frappe.utils.escape_html(this.fileName || this.fileUrl)}</span>`
 		);
+		// If the user left off on the Migrate step, a job may still be running. Try to
+		// reconnect to it directly instead of re-scanning the file first - on a large
+		// file that scan is ~minute-long dead time before we'd even discover the run.
+		if (d.step === "section-run") {
+			this.reconnectOnResume(d);
+			return;
+		}
+		this._resumeNormally(d);
+	}
+
+	// Normal resume: re-scan the file, rebuild the wizard, and land the user at the
+	// step they left off on (gotoRun auto-attaches to a live run once it gets there).
+	_resumeNormally(d) {
 		this.loadPreview();        // refresh the counts for the file
 		this.proceedToConfigure(); // land on Configure, one click from where they were
 		if (this._restore.coa) { this.setCoa(this._restore.coa); this.updateCoaHint(); }
@@ -643,6 +658,43 @@ class TallyMigratorPage {
 		frappe.show_alert({
 			message: __("Resumed your in-progress migration - your fixes are saved."),
 			indicator: "green",
+		});
+	}
+
+	// Fast path for resuming on the Migrate step: ask the server if a run is live and,
+	// if so, jump straight to tracking it - skipping the heavy file re-scan, which the
+	// tracking view doesn't need (results come from the log). If no run is live, fall
+	// back to a normal resume.
+	reconnectOnResume(d) {
+		frappe.call({
+			method: "tally_migrator.api.active_run",
+			args: { erpnext_company: d.erpnext_company },
+			callback: (r) => {
+				const live = r && r.message;
+				if (!live || !live.log_name) {
+					this._resumeNormally(d);
+					return;
+				}
+				// Populate the company picker in the background so the Back button still
+				// lands on a usable Configure step. Drop 'step' from _restore so the
+				// company-load callback doesn't re-trigger the scan we're skipping.
+				this._restore = { company: d.erpnext_company };
+				this.loadERPNextCompanies();
+				if (d.coa_mode) { this.setCoa(d.coa_mode); this.updateCoaHint(); }
+				if (d.posting_date) this.setDate(d.posting_date);
+				$("#run-subtitle").html(
+					`Importing from <strong>${frappe.utils.escape_html(this.fileName || "your file")}</strong> ` +
+						`into <strong>${frappe.utils.escape_html(d.erpnext_company)}</strong>.`
+				);
+				this.show("section-run");
+				this.attachToActiveRun(live);
+				frappe.show_alert({
+					message: __("Reconnected to your running migration."),
+					indicator: "green",
+				});
+			},
+			// On error, don't strand the user on a blank step 5 - fall back to a full resume.
+			error: () => this._resumeNormally(d),
 		});
 	}
 
@@ -1957,24 +2009,48 @@ class TallyMigratorPage {
 				`into <strong>${frappe.utils.escape_html(erpnext)}</strong>.`
 		);
 		this.show("section-run");
+		// If a migration for this company is already running (e.g. the user reloaded
+		// or resumed mid-run), reconnect to it and track its progress instead of
+		// offering to start a second one - which would collide with the live job.
+		this.checkActiveRun(erpnext);
 	}
 
-	// ── Step 5: run ──────────────────────────────────────────────────────────────
+	// Ask the server whether a migration is already live for this company; if so,
+	// attach to it (track its progress) rather than showing the Run button.
+	checkActiveRun(company) {
+		if (!company) return;
+		frappe.call({
+			method: "tally_migrator.api.active_run",
+			args: { erpnext_company: company },
+			callback: (r) => {
+				const live = r && r.message;
+				if (live && live.log_name && this._currentStep === "section-run") {
+					this.attachToActiveRun(live);
+				}
+			},
+		});
+	}
 
-	runMigration() {
-		const erpnext = this.getCompany();
-		const overrides = this.uomOverrides || {};
-
-		$("#btn-run").prop("disabled", true);
-		$("#btn-back-3").prop("disabled", true);
+	// Switch step 5 into "tracking" mode for an already-running migration: no Run
+	// button, a calm banner, and the same progress stream + log poll a fresh run uses.
+	attachToActiveRun(live) {
+		$("#run-banner")
+			.html(
+				`A migration for this company is already running (started ${frappe.utils.escape_html(live.started || "a moment ago")}) - ` +
+					`tracking its progress below. You can leave this page; it also updates in the migration log.`
+			)
+			.show();
+		$("#run-actions").hide();
 		$("#error-section").hide();
 		$("#results-section").hide();
 		$("#progress-section").show();
+		this._setupProgressStream();
+		this.pollLog(live.log_name);
+	}
 
-		// One stable handler reference, registered once and removed by reference, so
-		// repeated runs don't stack duplicate listeners. Listens on our own
-		// "tally_migration_progress" event (not Frappe's "progress", which also pops
-		// the native dialog) so only the step-5 bar reflects the run.
+	// Register the realtime progress handler + heartbeat for a run we are tracking
+	// (a fresh run or a reconnected one). Idempotent - safe to call repeatedly.
+	_setupProgressStream() {
 		if (!this._onProgress) {
 			this._onProgress = (data) => {
 				if (data.title !== "Tally Masters Migration") return;
@@ -1986,11 +2062,6 @@ class TallyMigratorPage {
 		}
 		frappe.realtime.off("tally_migration_progress", this._onProgress);
 		frappe.realtime.on("tally_migration_progress", this._onProgress);
-
-		// Heartbeat: if no progress event arrives for a while (e.g. the realtime
-		// socket dropped), the striped bar would look frozen even though the run is
-		// still going. Show an "elapsed" reassurance so the user isn't left guessing;
-		// the authoritative result still arrives via the call's callback / log poll.
 		this._lastProgress = Date.now();
 		this._runStart = Date.now();
 		this.stopHeartbeat();
@@ -2002,6 +2073,42 @@ class TallyMigratorPage {
 				`result will appear here when the migration finishes.`
 			);
 		}, 5000);
+	}
+
+	// ── Step 5: run ──────────────────────────────────────────────────────────────
+
+	runMigration() {
+		const erpnext = this.getCompany();
+		const overrides = this.uomOverrides || {};
+
+		// Disable immediately so a fast double-click can't fire two starts.
+		$("#btn-run").prop("disabled", true);
+		$("#btn-back-3").prop("disabled", true);
+		$("#error-section").hide();
+		$("#results-section").hide();
+		$("#run-banner").hide();
+		$("#progress-section").show();
+		$("#progress-desc").text("Starting...");
+
+		// Re-check for a live run right before starting (covers two open tabs, a stale
+		// page, or a click that races the guard). If one is already going, attach to
+		// it instead of starting a second; the server guard remains the backstop.
+		frappe.call({
+			method: "tally_migrator.api.active_run",
+			args: { erpnext_company: erpnext },
+			callback: (r) => {
+				if (r && r.message && r.message.log_name) {
+					this.attachToActiveRun(r.message);
+					return;
+				}
+				this._startMigration(erpnext, overrides);
+			},
+			error: () => this._startMigration(erpnext, overrides),
+		});
+	}
+
+	_startMigration(erpnext, overrides) {
+		this._setupProgressStream();
 
 		frappe.call({
 			method: "tally_migrator.api.run_masters_migration_from_file",
@@ -2076,11 +2183,22 @@ class TallyMigratorPage {
 	// Track a backgrounded run by polling its log until it leaves 'Running',
 	// then render the same results table from the log's stored summary.
 	pollLog(logName) {
+		// Guard against duplicate poll loops for the same log. checkActiveRun (and the
+		// fast-path resume reconnect) can call this more than once if the user re-enters
+		// step 5 during a live run; without this we'd spawn parallel poll chains and
+		// render the result multiple times. Cleared on every terminal state below so
+		// "Keep checking" and a post-failure retry can re-arm.
+		if (this._trackingLog === logName) return;
+		this._trackingLog = logName;
 		const finishFromLog = (doc) => {
+			this._trackingLog = null;
 			frappe.realtime.off("tally_migration_progress", this._onProgress);
 			this.stopHeartbeat();
 			$("#progress-bar").removeClass("active progress-bar-striped").css("width", "100%").text("100%");
 			if (doc.status === "Failed") {
+				// A reconnected run hides #run-actions (see attachToActiveRun); re-show it
+				// so the user can actually retry, not just find a re-enabled-but-hidden button.
+				$("#run-actions").show();
 				$("#btn-run").prop("disabled", false);
 				$("#btn-back-3").prop("disabled", false);
 				$("#error-section")
@@ -2115,8 +2233,10 @@ class TallyMigratorPage {
 		const start = Date.now();
 
 		const stalled = () => {
+			this._trackingLog = null;
 			frappe.realtime.off("tally_migration_progress", this._onProgress);
 			this.stopHeartbeat();
+			$("#run-actions").show();
 			$("#btn-run").prop("disabled", false);
 			$("#btn-back-3").prop("disabled", false);
 			$("#progress-desc").html(
