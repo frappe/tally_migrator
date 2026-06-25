@@ -15,9 +15,9 @@ even when your ERPNext is hosted in the cloud and your Tally is on an office PC.
 > walks through every step, explains every screen, card, term, warning and error,
 > covers the edge cases, and includes a troubleshooting section and glossary.
 
-**▶ [Watch the walkthrough on YouTube](https://youtu.be/rg74gza9IqU)**
+**▶ [Watch the walkthrough on YouTube](https://youtu.be/GxL9xwnOD-k)**
 
-[![Watch the Tally Migrator walkthrough on YouTube](docs/images/video-thumbnail.png)](https://youtu.be/rg74gza9IqU)
+[![Watch the Tally Migrator walkthrough on YouTube](docs/images/video-thumbnail.png)](https://youtu.be/GxL9xwnOD-k)
 
 ---
 
