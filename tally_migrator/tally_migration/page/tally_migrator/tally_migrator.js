@@ -84,13 +84,18 @@ class TallyMigratorPage {
 					</div>
 
 					<div class="tm-section" style="margin-top:var(--margin-lg);">
-						<strong>Then upload it here</strong>
+						<strong>Then bring it in here</strong>
 						<div style="margin-top:var(--margin-sm);">
 							<button id="btn-pick-file" class="btn btn-default btn-sm">
-								${TallyMigratorPage.navIcon("upload")} &nbsp;Choose Tally XML file
+								${TallyMigratorPage.navIcon("upload")} &nbsp;Choose Tally XML or .zip file
 							</button>
 							<span id="file-status" style="margin-left:12px;" class="text-muted"></span>
 						</div>
+						<p class="text-muted" style="margin:var(--margin-sm) 0 0 0; font-size:var(--text-sm);">
+							A large export can be zipped first (XML compresses ~90%) to keep it under the upload
+							limit. Too big even zipped? Share it on Google Drive as <strong>Anyone with the
+							link</strong>, then in the upload dialog choose <strong>Link</strong> and paste the link.
+						</p>
 					</div>
 
 					<!-- Preview of what's inside the file -->
@@ -430,7 +435,9 @@ class TallyMigratorPage {
 	pickFile() {
 		new frappe.ui.FileUploader({
 			folder: "Home/Attachments",
-			restrictions: { allowed_file_types: [".xml", "text/xml", "application/xml"] },
+			restrictions: {
+				allowed_file_types: [".xml", "text/xml", "application/xml", ".zip", "application/zip"],
+			},
 			on_success: (file_doc) => {
 				this.fileUrl = file_doc.file_url;
 				this.fileName = file_doc.file_name || file_doc.file_url;

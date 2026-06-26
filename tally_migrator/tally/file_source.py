@@ -3,8 +3,14 @@ from __future__ import annotations
 import io
 import re
 import xml.etree.ElementTree as ET
+import zipfile
 
 import frappe
+
+# A ZIP local-file-header magic. A Tally export is plain XML, but a large export
+# zips ~90% (verbose UTF-16 XML), so we accept a zipped XML to slip under the
+# upload size cap. Detected by these first bytes, not the file extension.
+_ZIP_MAGIC = b"PK\x03\x04"
 
 # The Tally master record elements we extract. The streaming parser keeps only
 # these (every other element - TALLYMESSAGE wrappers, COMPANY headers, voucher
@@ -75,6 +81,82 @@ def decode_tally_bytes(raw) -> str:
         if b"\x00" in raw[:64]:
             return raw.decode("utf-16", errors="replace")
         return raw.decode("latin-1")
+
+
+def unzip_if_zip(raw, max_uncompressed_bytes: int):
+    """If ``raw`` is a ZIP archive, return the bytes of its single XML member;
+    otherwise return ``raw`` unchanged.
+
+    A genuine Tally Masters export is plain XML, but it compresses ~90%, so a
+    large export can be zipped to fit under the upload size cap. We accept that
+    transparently here - whether the bytes arrived from an upload or a Drive
+    download - so the rest of the pipeline only ever sees decoded XML bytes.
+
+    The archive must contain exactly one ``.xml`` member (ignoring directory
+    entries and the ``__MACOSX``/``._*`` resource forks the macOS Finder adds).
+
+    Zip-bomb guard: the member is rejected if its *declared* uncompressed size
+    exceeds ``max_uncompressed_bytes``, and extraction is hard-capped at that
+    many bytes in case the header under-reports - so a crafted archive can never
+    inflate past the same ceiling a raw upload is held to.
+    """
+    if not isinstance(raw, (bytes, bytearray)) or raw[:4] != _ZIP_MAGIC:
+        return raw
+    try:
+        archive = zipfile.ZipFile(io.BytesIO(raw))
+    except zipfile.BadZipFile:
+        frappe.throw(
+            "The uploaded .zip could not be opened - it may be corrupt. Re-zip "
+            "your Tally Masters XML and try again."
+        )
+    members = [
+        zi for zi in archive.infolist()
+        if not zi.is_dir()
+        and not zi.filename.startswith("__MACOSX/")
+        and not zi.filename.rsplit("/", 1)[-1].startswith("._")
+    ]
+    xml_members = [zi for zi in members if zi.filename.lower().endswith(".xml")]
+    if not xml_members:
+        frappe.throw(
+            "The .zip contains no .xml file. Zip exactly one Tally Masters XML "
+            "export (the Master.xml you exported from Tally) and try again."
+        )
+    if len(xml_members) > 1:
+        names = ", ".join(zi.filename for zi in xml_members[:5])
+        frappe.throw(
+            f"The .zip contains more than one .xml file ({names}). Zip exactly "
+            "one Tally Masters XML export and try again."
+        )
+    member = xml_members[0]
+    if member.file_size > max_uncompressed_bytes:
+        max_mb = max_uncompressed_bytes / (1024 * 1024)
+        frappe.throw(
+            f"The XML inside the .zip is {member.file_size / (1024 * 1024):.0f} MB "
+            f"uncompressed, above the {max_mb:.0f} MB limit. Split the export or "
+            "ask your administrator to raise tally_migrator_max_upload_mb."
+        )
+    try:
+        with archive.open(member) as fh:
+            # Read one byte past the cap so an under-reported header is still caught.
+            data = fh.read(max_uncompressed_bytes + 1)
+    except (zipfile.BadZipFile, RuntimeError):
+        # The central directory opened fine but the member itself can't be read -
+        # a bad CRC (truncated/corrupt entry) raises BadZipFile, an encrypted member
+        # raises RuntimeError("File is encrypted"). Either way it's not a usable
+        # export; surface the same actionable message instead of a raw 500.
+        frappe.throw(
+            "The .xml inside the .zip could not be extracted - the archive may be "
+            "corrupt or password-protected. Re-zip your Tally Masters XML (no "
+            "password) and try again."
+        )
+    if len(data) > max_uncompressed_bytes:
+        max_mb = max_uncompressed_bytes / (1024 * 1024)
+        frappe.throw(
+            f"The XML inside the .zip expands beyond the {max_mb:.0f} MB limit and "
+            "was rejected. Split the export or ask your administrator to raise "
+            "tally_migrator_max_upload_mb."
+        )
+    return data
 
 
 def _drop_illegal_ref(match: "re.Match") -> str:
