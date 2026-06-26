@@ -925,6 +925,11 @@ migration.
   be saved. The party still imported.
 - **"bank account not created"** - usually because the ledger had no bank name. The
   party or account still imported.
+- **"reused existing account ... and converted it to a group"** - a Tally group had
+  the same name as an account ERPNext already ships as a ledger (for example a
+  "Office Equipment" or "TDS Payable" group over the standard ledger of that name).
+  The existing ledger was promoted to a group so the Tally sub-accounts under it could
+  be created. Nothing for you to do.
 - **"item not imported - its code collides with ..."** - an item code collision (see
   above). Rename one item and re-run.
 - **"GST type ... not recognised - item imported as taxable"** - set the item's GST

@@ -136,8 +136,20 @@ class AccountImporter:
 
     def _upsert(self, result: ImportResult, node, parent: str) -> None:
         try:
-            if frappe.db.exists("Account", self._erp_name(node.name)):
-                result.skipped += 1
+            existing = frappe.db.get_value(
+                "Account", self._erp_name(node.name), ["name", "is_group"], as_dict=True)
+            if existing:
+                # The name is already taken. MariaDB's default collation is
+                # case-insensitive, so a Tally custom group ("OFFICE EQUIPMENT")
+                # collides with a standard-CoA *ledger* of the same name
+                # ("Office Equipment", a Fixed Asset ledger). Skipping would leave a
+                # ledger where a group is needed, and every child would then fail with
+                # "Parent account ... can not be a ledger". When we need a group but the
+                # existing account is a ledger, promote it so the children can nest.
+                if node.is_group and not existing.is_group:
+                    self._promote_to_group(result, existing.name, node)
+                else:
+                    result.skipped += 1
                 return
             doc = {
                 "doctype": "Account",
@@ -162,6 +174,41 @@ class AccountImporter:
         # a Bank-Account quirk can't roll back the account that was just created.
         if not node.is_group and node.account_type == "Bank" and node.bank_account_no:
             self._save_company_bank_account(node, d.name, result)
+
+    def _promote_to_group(self, result: ImportResult, account_name: str, node) -> None:
+        """Convert an existing ledger Account to a group so Tally's children can nest.
+
+        Reached only when a Tally group's name collides (case-insensitively) with an
+        existing ledger - typically an empty standard-CoA placeholder ledger. The
+        ledger is converted in place; ERPNext rebuilds the tree. A converted account
+        is reported as created (it is now the group the migration needs) plus a warning
+        so the reuse is visible in the log.
+        """
+        try:
+            acc = frappe.get_doc("Account", account_name)
+            if acc.check_gle_exists():
+                # Only possible on a re-run after transactions posted; ERPNext (rightly)
+                # forbids converting a transacting account. Surface it instead of crashing.
+                result.add_error(
+                    node.name,
+                    f"could not create group '{node.name}': an account named "
+                    f"'{account_name}' already exists and has transactions, so it "
+                    "cannot be converted to a group")
+                return
+            # These placeholder ledgers carry an account_type (e.g. Fixed Asset, Tax);
+            # the flag lets a typed account become a group, which ERPNext otherwise blocks.
+            acc.flags.exclude_account_type_check = True
+            acc.flags.ignore_permissions = True
+            acc.convert_ledger_to_group()
+            frappe.db.commit()
+            result.add_created(acc.name)
+            result.add_warning(
+                node.name,
+                f"reused existing account '{account_name}' and converted it to a group "
+                "so the Tally sub-accounts under it could be created")
+        except Exception as exc:
+            frappe.db.rollback()
+            result.add_error(node.name, exc)
 
     def _save_company_bank_account(self, node, account_name: str,
                                    result: ImportResult) -> None:

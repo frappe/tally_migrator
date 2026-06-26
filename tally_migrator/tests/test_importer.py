@@ -486,6 +486,54 @@ class TestERPNextImporter(unittest.TestCase):
         self.assertEqual(
             frappe.db.get_value("Warehouse", f"_TMTest Child WH - {abbr}", "is_group"), 0)
 
+    def test_account_group_promotes_colliding_ledger(self):
+        """A Tally custom group whose name collides (case-insensitively) with an
+        existing ledger must promote that ledger to a group so its children nest.
+
+        Regression for the Frontier failures where a Tally group ("OFFICE EQUIPMENT")
+        collided with a standard-CoA Fixed-Asset *ledger* ("Office Equipment"): the
+        importer skipped the group, leaving a ledger, and every child failed with
+        "Parent account ... can not be a ledger"."""
+        require_company()
+        from tally_migrator.erpnext.importers.accounts import AccountImporter
+        from tally_migrator.tally.extractors import AccountNode
+
+        abbr = frappe.get_value("Company", self.company, "abbr")
+        root = frappe.db.get_value(
+            "Account", {"company": self.company, "root_type": "Asset",
+                        "is_group": 1, "parent_account": ["is", "not set"]}, "name")
+        placeholder = f"_TMTest Equip - {abbr}"
+        # Reset any state left by a prior run so the promotion path is always exercised
+        # (child first - a group with children can't be deleted).
+        for nm in (f"_TMTest Camera - {abbr}", placeholder):
+            if frappe.db.exists("Account", nm):
+                frappe.delete_doc("Account", nm, force=True, ignore_permissions=True)
+        # A pre-existing typed ledger placeholder, like ERPNext's standard CoA ships.
+        frappe.get_doc({
+            "doctype": "Account", "account_name": "_TMTest Equip",
+            "company": self.company, "parent_account": root,
+            "is_group": 0, "root_type": "Asset", "account_type": "Fixed Asset",
+        }).insert(ignore_permissions=True)
+
+        imp = AccountImporter(self.company, abbr, mode="reuse")
+        # Same name in a different case (the collision is case-insensitive in MariaDB),
+        # plus a child ledger that can only be created if the parent becomes a group.
+        group = AccountNode(name="_TMTEST EQUIP", parent="", is_group=True,
+                            root_type="Asset", account_type="", is_reserved=False)
+        child = AccountNode(name="_TMTest Camera", parent="_TMTEST EQUIP",
+                            is_group=False, root_type="Asset", account_type="",
+                            is_reserved=False)
+        result = imp.run([group, child])
+
+        self.assertEqual(result.failed, 0, msg=str(result.errors))
+        self.assertEqual(
+            frappe.db.get_value("Account", placeholder, "is_group"), 1,
+            "the colliding ledger should have been promoted to a group")
+        self.assertTrue(frappe.db.exists("Account", f"_TMTest Camera - {abbr}"),
+                        "the child must be created once its parent is a group")
+        self.assertTrue(any("converted it to a group" in w["reason"]
+                            for w in result.warnings))
+
     # ── Stock Groups → nested Item Groups ───────────────────────────────────────
 
     def test_stock_groups_create_nested_item_groups(self):
