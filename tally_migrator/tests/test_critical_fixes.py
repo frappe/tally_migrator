@@ -274,6 +274,48 @@ class TestActiveRunGuard(unittest.TestCase):
             self._api()._assert_no_active_run("Acme")   # dead job -> must not raise
 
 
+class TestRunLiveness(unittest.TestCase):
+    """The log form asks run_liveness whether a 'Running' log's worker is alive, so a
+    hard-killed run shows a 'stopped' state instead of 'still running' forever."""
+
+    def _api(self):
+        from tally_migrator import api
+        return api
+
+    def test_terminal_status_is_not_alive(self):
+        row = frappe._dict({"status": "Completed", "job_id": "j", "modified": "x"})
+        with mock.patch("frappe.db.get_value", return_value=row):
+            out = self._api().run_liveness("LOG-1")
+        self.assertEqual(out, {"status": "Completed", "alive": False})
+
+    def test_running_with_live_job_is_alive(self):
+        row = frappe._dict({"status": "Running", "job_id": "tally-masters-LOG-1", "modified": "x"})
+        with mock.patch("frappe.db.get_value", return_value=row), \
+                mock.patch.object(self._api(), "_is_job_alive", return_value=True):
+            out = self._api().run_liveness("LOG-1")
+        self.assertEqual(out, {"status": "Running", "alive": True})
+
+    def test_running_with_dead_job_is_not_alive(self):
+        row = frappe._dict({"status": "Running", "job_id": "tally-masters-LOG-1", "modified": "x"})
+        with mock.patch("frappe.db.get_value", return_value=row), \
+                mock.patch.object(self._api(), "_is_job_alive", return_value=False):
+            out = self._api().run_liveness("LOG-1")
+        self.assertEqual(out, {"status": "Running", "alive": False})
+
+    def test_jobless_running_uses_age_cap(self):
+        # A legacy/sync run with no job id falls back to the staleness age cap.
+        row = frappe._dict({"status": "Running", "job_id": None, "modified": "2026-01-01 00:00:00"})
+        with mock.patch("frappe.db.get_value", return_value=row), \
+                mock.patch("frappe.utils.now", return_value="ignored"), \
+                mock.patch("frappe.utils.time_diff_in_seconds", return_value=10 * 3600):
+            out = self._api().run_liveness("LOG-1")
+        self.assertEqual(out["alive"], False)
+
+    def test_unknown_log_returns_empty(self):
+        with mock.patch("frappe.db.get_value", return_value=None):
+            self.assertEqual(self._api().run_liveness("NOPE"), {})
+
+
 class TestItemHsnRecovery(unittest.TestCase):
     """An India-Compliance HSN rejection must not lose the item: the importer
     retries once with the HSN cleared so the item still lands (HSN filled later)."""

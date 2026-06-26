@@ -491,13 +491,44 @@ class MasterMigrator:
         return log
 
     def _finalize_log(self, masters: ExtractedMasters, coa, summary: MigrationSummary) -> None:
-        """Record extraction/import results. Must never abort the migration."""
+        """Record extraction/import results. Must never abort the migration.
+
+        Split into two writes so a large/async run always reaches a *terminal* state:
+
+        1. Terminal state - status + import_summary - committed first. This is all the
+           wizard needs to stop polling and render the results table. It is small and
+           bounded (per-entity counts), so it is the write most likely to succeed.
+        2. Enrichment - the heavy, optional reports (created_records manifest,
+           reconciliation, per-record errors) - committed after, each guarded so one
+           failure cannot lose the others *and never reverts the status*.
+
+        Previously everything rode on a single trailing save(): if any heavy step threw
+        (a big serialization, an errors child-row, or the large save itself) the whole
+        save was lost, the status stayed "Running" forever, yet run() still published
+        100% - leaving the page frozen at a full bar with no results. Committing the
+        terminal state up front removes that failure mode."""
+        status = "Completed with Errors" if summary.has_errors else "Completed"
+        # 1. Terminal state - guaranteed. A bare db_set fallback ensures the page never
+        # hangs on "Running" even if the document save itself fails.
         try:
             self.log.reload()
-            self.log.status = "Completed with Errors" if summary.has_errors else "Completed"
+            self.log.status = status
+            self.log.import_summary = frappe.as_json(summary.as_dict())
+            self.log.save(ignore_permissions=True)
+            frappe.db.commit()
+        except Exception as exc:
+            frappe.log_error(f"Migration log finalize (status) failed: {exc}", "Tally Migrator")
+            try:
+                frappe.db.rollback()
+                self.log.db_set("status", status, commit=True)
+            except Exception as exc2:
+                frappe.log_error(f"Migration log status fallback failed: {exc2}", "Tally Migrator")
+
+        # 2. Enrichment - best-effort, must never revert the terminal state above.
+        try:
+            self.log.reload()
             self.log.extracted_counts = frappe.as_json(
                 {**masters.summary, **coa.summary, "_phase_seconds": self._timings})
-            self.log.import_summary = frappe.as_json(summary.as_dict())
             self.log.applied_edits = frappe.as_json(self.applied_edits)
             manifest = summary.created_records()
             self._track_wizard_uoms(manifest)
@@ -511,7 +542,7 @@ class MasterMigrator:
             self.log.save(ignore_permissions=True)
             frappe.db.commit()
         except Exception as exc:
-            frappe.log_error(f"Migration log finalize failed: {exc}", "Tally Migrator")
+            frappe.log_error(f"Migration log enrichment failed: {exc}", "Tally Migrator")
 
     def _track_wizard_uoms(self, manifest: dict) -> None:
         """Fold the pre-flight "create as new" UOMs into the manifest's Units entry so
