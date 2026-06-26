@@ -222,6 +222,10 @@ class MasterMigrator:
         self.applied_edits: list[dict] = []   # audit trail of effective pre-flight edits
         self.posting_date = getattr(config, "posting_date", "") or ""
         self.log = log
+        # Wall-time (seconds) per phase, for the performance baseline / before-after
+        # comparison. Folded into the log's extracted_counts under "_phase_seconds" at
+        # finalize and logged. Pure measurement - no effect on what gets imported.
+        self._timings: dict[str, float] = {}
 
     # ── Public ────────────────────────────────────────────────────────────────
 
@@ -230,11 +234,13 @@ class MasterMigrator:
         # create one now so an interrupted run is still recorded.
         self.log = self.log or self._create_log()
         try:
+            import time as _time
             self._progress(0)
             if not self.client.ping():
                 frappe.throw("Could not read the uploaded file. Please re-upload a valid Tally Masters XML export.")
 
             self._progress(10)
+            _t = _time.monotonic()
             masters = self.extractor.extract_all()
             apply_record_overrides(masters, self.record_overrides, self.applied_edits)
             self._record_uom_edits()
@@ -243,14 +249,30 @@ class MasterMigrator:
             # source can't supply child lists, so party openings then degrade to a
             # single lump opening invoice per party (no bill breakdown).
             bills = self.extractor.extract_bill_allocations()
+            self._timings["Extract"] = round(_time.monotonic() - _t, 2)
             frappe.logger().info(
                 f"[Tally Migrator] Extracted: {masters.summary} | COA: {coa.summary} "
-                f"| bills: {len(bills)}")
+                f"| bills: {len(bills)} | extract {self._timings['Extract']}s")
 
             results: dict[str, ImportResult] = {}
-            for step in self._pipeline(masters, coa, bills):
+            steps = self._pipeline(masters, coa, bills)
+            for i, step in enumerate(steps):
                 self._progress(step.percent, f"Importing {len(step.records)} {step.label.lower()}...")
-                results[step.label] = step.importer(step.records)
+                # The bar fills from this step's percent up to (but not reaching) the
+                # next step's percent, so a long phase keeps moving instead of sitting
+                # frozen. The finalize milestone (95) caps the last step's band.
+                band_end = steps[i + 1].percent if i + 1 < len(steps) else 95
+                self.importer.on_progress = self._step_progress_cb(
+                    step.label, step.percent, band_end)
+                _t = _time.monotonic()
+                try:
+                    results[step.label] = step.importer(step.records)
+                finally:
+                    self.importer.on_progress = None
+                self._timings[step.label] = round(_time.monotonic() - _t, 2)
+                frappe.logger().info(
+                    f"[Tally Migrator] Phase '{step.label}': {len(step.records)} records "
+                    f"in {self._timings[step.label]}s")
             self._record_excluded(results, coa)
             summary = MigrationSummary(results)
 
@@ -258,6 +280,7 @@ class MasterMigrator:
             self._finalize_log(masters, coa, summary)
 
             self._progress(100)
+            frappe.logger().info(f"[Tally Migrator] Phase timings (s): {self._timings}")
             return summary
         except Exception as exc:
             self._fail_log(exc)
@@ -356,6 +379,43 @@ class MasterMigrator:
 
     # ── Progress ────────────────────────────────────────────────────────────────
 
+    # Emit an intra-phase progress update at most every this many records (or
+    # whenever the whole-number percent ticks up). Bounds the realtime/Redis writes
+    # to roughly a hundred over a full run - cheap enough to never dent throughput -
+    # while still moving the counter often enough to read as continuous.
+    _PROGRESS_EVERY = 250
+
+    def _step_progress_cb(self, label: str, start: int, end: int):
+        """Build an ``on_progress(done, total)`` callback for one phase.
+
+        Maps the phase's record progress onto the bar band ``[start, end)`` and emits
+        a throttled update carrying a live "x of N" count. Whole side-channel: wrapped
+        so a progress hiccup can never interrupt the import, and monotonic so the bar
+        only ever moves forward."""
+        state = {"pct": start, "done": 0}
+
+        def cb(done: int, total: int) -> None:
+            try:
+                if not total:
+                    return
+                # Clamp into the band; the end is reserved for the next phase's start.
+                pct = start + (end - start) * done // total
+                if pct >= end:
+                    pct = end - 1
+                advanced = pct > state["pct"]
+                stepped = done - state["done"] >= self._PROGRESS_EVERY
+                if not advanced and not stepped:
+                    return
+                state["pct"] = max(pct, state["pct"])
+                state["done"] = done
+                self._progress(
+                    state["pct"],
+                    f"Importing {label.lower()} {done:,} of {total:,}...")
+            except Exception:
+                pass
+
+        return cb
+
     def _progress(self, pct: int, description: str = "") -> None:
         # A custom realtime event (not frappe.publish_progress) so only the wizard's
         # own step-5 bar updates - publish_progress also triggers Frappe's native
@@ -435,7 +495,8 @@ class MasterMigrator:
         try:
             self.log.reload()
             self.log.status = "Completed with Errors" if summary.has_errors else "Completed"
-            self.log.extracted_counts = frappe.as_json({**masters.summary, **coa.summary})
+            self.log.extracted_counts = frappe.as_json(
+                {**masters.summary, **coa.summary, "_phase_seconds": self._timings})
             self.log.import_summary = frappe.as_json(summary.as_dict())
             self.log.applied_edits = frappe.as_json(self.applied_edits)
             manifest = summary.created_records()

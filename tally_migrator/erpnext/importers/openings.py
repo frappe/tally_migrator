@@ -419,22 +419,36 @@ class PartyOpeningImporter:
 
     # ── Orchestration ─────────────────────────────────────────────────────────
     def run(self, bills: list, customers: list[dict],
-            suppliers: list[dict]) -> ImportResult:
+            suppliers: list[dict], on_progress=None) -> ImportResult:
         result = ImportResult("Opening Invoice")
         by_party: dict[str, list] = {}
         for b in bills or []:
             by_party.setdefault(b.party, []).append(b)
         seen = self._existing_markers()
-        self._process(customers, "Customer", by_party, seen, result)
-        self._process(suppliers, "Supplier", by_party, seen, result)
+        # Live progress across both party lists: this is the heavy phase (one
+        # submitted invoice per bill), so the bar must move within it. ``tick`` fires
+        # once per party - posted or skipped - so ``done`` reaches ``total``.
+        total = len(customers or []) + len(suppliers or [])
+        progress = {"done": 0}
+
+        def tick():
+            progress["done"] += 1
+            if on_progress:
+                on_progress(progress["done"], total)
+
+        self._process(customers, "Customer", by_party, seen, result, tick)
+        self._process(suppliers, "Supplier", by_party, seen, result, tick)
         return result
 
     def _process(self, parties: list[dict], party_type: str,
-                 by_party: dict, seen: set, result: ImportResult) -> None:
+                 by_party: dict, seen: set, result: ImportResult,
+                 tick=None) -> None:
         if not parties:
             return
         key_field = self._PARTY_KEY_FIELD[party_type]
         for record in parties:
+            if tick:
+                tick()
             tally_name = record["_name"]
             ledger_amt, ledger_drcr = TallyExtractor._parse_opening(
                 record.get("OpeningBalance", ""))
