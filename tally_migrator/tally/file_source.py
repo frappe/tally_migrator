@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import codecs
 import io
 import re
 import xml.etree.ElementTree as ET
@@ -191,6 +192,85 @@ def reject_unsafe_xml(text: str) -> None:
         )
 
 
+def _streaming_reader(source):
+    """A text file-like that decodes + sanitizes raw Tally ``bytes`` in chunks for
+    incremental parsing, or ``None`` when streaming isn't safe - ``source`` is a
+    ``str``, or bytes in an encoding we can't confidently stream-decode - so the
+    caller falls back to the original whole-document path.
+
+    We stream only the encodings a real export actually uses and that a streaming
+    decoder can detect up front: UTF-16 / UTF-8 with a BOM, and headerless UTF-16
+    (interleaved NULs). A plain BOM-less UTF-8 / latin-1 file is left to the
+    whole-document fallback, where ``decode_tally_bytes``'s try-then-fall-back logic
+    still applies - correctness over the memory win for that rarer case."""
+    if not isinstance(source, (bytes, bytearray)):
+        return None
+    raw = bytes(source)
+    if raw[:2] in (b"\xff\xfe", b"\xfe\xff"):
+        return _SanitizingReader(raw, "utf-16", "strict")
+    if raw[:3] == b"\xef\xbb\xbf":
+        return _SanitizingReader(raw, "utf-8-sig", "strict")
+    if b"\x00" in raw[:64]:
+        return _SanitizingReader(raw, "utf-16", "replace")   # mirrors decode_tally_bytes
+    return None
+
+
+class _SanitizingReader:
+    """File-like over raw Tally bytes: incrementally decodes (``enc``/``errors``) and
+    applies the *exact* sanitisation of :func:`sanitize_tally_xml` plus the
+    :func:`reject_unsafe_xml` DTD guard, one chunk at a time, so ``iterparse`` pulls a
+    stream and no full-size copy of the document is ever materialised. A trailing
+    partial char reference and the DTD-guard token are both buffered across chunk
+    boundaries, so a split can never let either escape its check - the streamed output
+    is byte-identical to sanitising the whole decoded document at once."""
+
+    _CHUNK = 1 << 20   # 1 MiB of raw bytes per pull
+
+    def __init__(self, raw: bytes, enc: str, errors: str):
+        self._buf = io.BytesIO(raw)
+        self._dec = codecs.getincrementaldecoder(enc)(errors)
+        self._carry = ""      # trailing partial char-ref held for the next read
+        self._dtd_tail = ""   # last chars of the previous chunk (catch a split token)
+        self._first = True
+
+    def read(self, size: int = -1) -> str:
+        # Loop until we have something to hand back, or we hit true end-of-input.
+        # A single raw chunk can sanitise down to nothing (e.g. it was all held back
+        # as a partial char reference); returning "" then would falsely signal EOF to
+        # iterparse and truncate the document ("unclosed token"). So only "" at real
+        # EOF is ever returned.
+        while True:
+            chunk = self._buf.read(self._CHUNK)
+            final = not chunk
+            text = self._carry + self._dec.decode(chunk, final)
+            if self._first and text[:1] == "﻿":
+                text = text[1:]
+            self._first = False
+            if _DTD_DECL.search(self._dtd_tail + text):
+                frappe.throw(
+                    "Uploaded file contains an XML DOCTYPE or entity declaration, which "
+                    "a genuine Tally Masters export never does. It was rejected as "
+                    "unsafe. Re-export the masters from Tally (XML format) and try again."
+                )
+            # Keep a rolling window of recent chars (not just this chunk's tail) so a
+            # DTD token split across several tiny reads is still seen whole next time.
+            self._dtd_tail = (self._dtd_tail + text)[-16:]
+            if not final:
+                # Hold back a trailing partial char reference ("&#12" with no ";") so
+                # the next chunk completes it - only when the '&' is near the end, so a
+                # stray '&' can never grow the carry without bound.
+                amp = text.rfind("&")
+                if amp != -1 and amp >= len(text) - 16 and ";" not in text[amp:]:
+                    self._carry, text = text[amp:], text[:amp]
+                else:
+                    self._carry = ""
+            else:
+                self._carry = ""
+            out = _ILLEGAL_CHARS.sub("", _CHAR_REF.sub(_drop_illegal_ref, text))
+            if out or final:
+                return out
+
+
 class FileTallySource:
     """Offline master source: reads a Tally Prime *Masters* XML export.
 
@@ -212,42 +292,67 @@ class FileTallySource:
     so the same tag derivation works for both sources.
     """
 
-    def __init__(self, xml_text: str, record_tags=MASTER_RECORD_TAGS):
-        cleaned = sanitize_tally_xml(xml_text)
-        reject_unsafe_xml(cleaned)
+    def __init__(self, source, record_tags=MASTER_RECORD_TAGS):
+        """``source`` is the raw uploaded bytes (preferred) or an already-decoded str.
+
+        Passing the raw *bytes* lets us decode, sanitize and parse the document in
+        small streaming chunks, so a large export (hundreds of MB) never has the
+        whole file - let alone the 2-3 transient full-size copies the old
+        decode-then-sanitize-then-parse made - resident at once. A str is still
+        accepted unchanged for the small/in-memory callers (tests, direct use); it
+        takes the same parse path, just fed from memory.
+        """
         self._keep = {t.upper().replace(" ", "") for t in record_tags}
+        reader = _streaming_reader(source)
+        if reader is None:
+            # str, or bytes in an encoding we can't confidently stream-decode: fall
+            # back to the original whole-document path (sanitize + reject up front).
+            text = source if isinstance(source, str) else decode_tally_bytes(source)
+            cleaned = sanitize_tally_xml(text)
+            reject_unsafe_xml(cleaned)
+            reader = io.StringIO(cleaned)
         # Stream the document once, retaining only the master record elements
         # (bucketed by tag) and dropping everything else as it is parsed. Avoids
         # building - and holding - the whole DOM the way ET.fromstring would.
-        self._by_tag = self._stream_records(cleaned, self._keep)
+        self._by_tag = self._stream_records(reader, self._keep)
         # extract_all() and extract_coa() both ask for the Group and Ledger
         # collections, so memoise each (obj_type, fields) result to avoid
         # re-walking the retained records on every call.
         self._collection_cache: dict = {}
 
     @staticmethod
-    def _stream_records(cleaned: str, keep: set) -> dict:
+    def _stream_records(reader, keep: set) -> dict:
         """Single streaming pass → ``{TAG: [element, ...]}`` for kept record tags.
 
-        Uses ``iterparse`` and clears the parser's root after each captured record
-        so already-seen wrappers/chrome are freed immediately; the captured record
-        survives because the bucket holds a direct reference to it. Peak memory is
-        therefore bounded by the retained records plus one in-progress subtree,
-        not the size of the whole file.
+        ``reader`` is any text file-like (a sanitizing streaming reader over the raw
+        bytes, or an ``io.StringIO`` over already-cleaned text). ``iterparse`` pulls
+        it incrementally, and after each record we clear the **repeating container**
+        (the parent of the record wrapper - e.g. ``REQUESTDATA`` above
+        ``TALLYMESSAGE``), not the document root. Tally nests every record four
+        levels deep (``ENVELOPE>BODY>IMPORTDATA>REQUESTDATA>TALLYMESSAGE>LEDGER``),
+        so clearing the root left the records piling up under that still-open
+        container; clearing the container itself frees the processed wrappers as we
+        go. The captured records survive because the bucket holds a direct reference
+        to each, so clearing their (now-detached) wrappers never touches them. Peak
+        memory is therefore bounded by the retained records plus one record's
+        wrapper, not the size of the whole file.
         """
         buckets: dict = {tag: [] for tag in keep}
+        stack: list = []
         try:
-            context = _ITERPARSE(io.StringIO(cleaned), events=("start", "end"))
-            _, root = next(context)   # grab the root so we can clear it as we go
+            context = _ITERPARSE(reader, events=("start", "end"))
             for event, elem in context:
-                if event != "end":
+                if event == "start":
+                    stack.append(elem)
                     continue
+                stack.pop()
                 if elem.tag.split("}")[-1].upper() in keep:
                     buckets.setdefault(elem.tag.split("}")[-1].upper(), []).append(elem)
-                    # Drop everything iterparse has accumulated on root so far; the
-                    # record just captured is safe (referenced from its bucket).
-                    root.clear()
-            root.clear()
+                    # Clear the repeating container two levels up (the wrapper's
+                    # parent), freeing every processed wrapper at once; the record we
+                    # just captured is safe (referenced from its bucket).
+                    if len(stack) >= 2:
+                        stack[-2].clear()
         except ET.ParseError as e:
             frappe.throw(f"Uploaded file is not valid Tally XML: {e}")
         except StopIteration:

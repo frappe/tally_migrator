@@ -505,9 +505,12 @@ def _source_from_file(file_url):
             return file_doc, source
         # A zipped XML is accepted transparently: unzip (with the uncompressed
         # size held to the same cap) before decoding, so the parser only ever
-        # sees plain XML bytes regardless of how the file was uploaded.
+        # sees plain XML bytes regardless of how the file was uploaded. The raw
+        # bytes are handed to FileTallySource as-is so it can decode + sanitize +
+        # parse them in a single streaming pass, instead of us materialising the
+        # whole decoded document here first.
         raw = unzip_if_zip(_raw_file_bytes(file_doc), _max_upload_bytes())
-        source = FileTallySource(_decode(raw))
+        source = FileTallySource(raw)
         _SOURCE_CACHE[cache_key] = source            # inserts as most-recently used
         while len(_SOURCE_CACHE) > _SOURCE_CACHE_MAX:
             _SOURCE_CACHE.popitem(last=False)        # evict least-recently used
