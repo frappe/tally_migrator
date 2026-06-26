@@ -24,8 +24,42 @@ from tally_migrator.tally.extractors import TallyExtractor
 from tally_migrator.validation.engine import (
     infer_gst_category, validate_gstin, GSTIN_STATE_CODES,
 )
-from .base import BaseImporter, ImportResult
+from .base import BaseImporter, ImportResult, atomic
 from .banks import _ensure_bank, _insert_bank_account
+
+# ── Gravatar lookup suspension ─────────────────────────────────────────────────
+# Frappe's Contact.validate fills a blank avatar by calling has_gravatar(email),
+# which makes a live HTTPS GET to gravatar.com *per contact that carries an email*.
+# On a real Tally book (tens of thousands of parties) that one network round-trip
+# (~35ms each) dominates the party import - measured at ~50% of the whole phase -
+# and contributes nothing to the imported data: the avatar URL is purely cosmetic,
+# and Frappe itself skips the lookup during bulk import (see has_gravatar's
+# `frappe.flags.in_import` guard). We suspend just that lookup for the party phase,
+# rather than setting the blunt `in_import` flag (which would also skip doctype
+# default-value population and link validation - a real data-quality change). The
+# contact still saves identically; it simply gets no gravatar-guessed avatar, the
+# same outcome Frappe gives every bulk-imported contact.
+@contextlib.contextmanager
+def _gravatar_lookup_suspended():
+    """Neutralise the per-contact gravatar network lookup for the duration of the
+    party import, then restore it. No-op-safe: if the symbol ever moves, we leave
+    Frappe untouched. Migrations are serialised by the single-active-run guard, so
+    the process-local patch can't bleed into a concurrent migration."""
+    try:
+        import frappe.contacts.doctype.contact.contact as _contact_mod
+    except Exception:
+        yield
+        return
+    original = getattr(_contact_mod, "has_gravatar", None)
+    if original is None:
+        yield
+        return
+    _contact_mod.has_gravatar = lambda *args, **kwargs: ""
+    try:
+        yield
+    finally:
+        _contact_mod.has_gravatar = original
+
 
 # ── Party importers (Customer / Supplier) ──────────────────────────────────────
 
@@ -44,6 +78,13 @@ class PartyImporter(BaseImporter):
     group_parent_field: str = ""   # "parent_customer_group" / "parent_supplier_group"
     group_root: str = ""           # standard root group to nest new leaves under
     default_group: str = ""        # fallback when Tally carries no usable group
+
+    def run(self, records: list[dict], on_progress=None) -> "ImportResult":
+        """Import parties with the per-contact gravatar network lookup suspended -
+        the dominant, data-irrelevant cost of the phase (see
+        ``_gravatar_lookup_suspended``). Everything else is the standard template."""
+        with _gravatar_lookup_suspended():
+            return super().run(records, on_progress=on_progress)
 
     def before_run(self, records: list[dict], result: "ImportResult") -> None:
         self._ensure_party_groups(
@@ -116,24 +157,27 @@ class PartyImporter(BaseImporter):
         warning, never a failed party."""
         prefix = frappe.scrub(self.doctype)        # "customer" / "supplier"
         try:
-            if address_name:
-                frappe.db.set_value("Address", address_name, "is_primary_address", 1,
-                                    update_modified=False)
-                frappe.db.set_value(self.doctype, party_name,
-                                    f"{prefix}_primary_address", address_name,
-                                    update_modified=False)
-                from frappe.contacts.doctype.address.address import get_address_display
-                frappe.db.set_value(self.doctype, party_name, "primary_address",
-                                    get_address_display(address_name),
-                                    update_modified=False)
-            if contact_name:
-                frappe.db.set_value("Contact", contact_name, "is_primary_contact", 1,
-                                    update_modified=False)
-                frappe.db.set_value(self.doctype, party_name,
-                                    f"{prefix}_primary_contact", contact_name,
-                                    update_modified=False)
-            if address_name or contact_name:
-                frappe.db.commit()
+            # Savepointed so a link failure rolls back only these set_values, leaving
+            # the party (and its address/contact) intact - the batch commit in run()
+            # persists them. Same best-effort contract as before, minus the per-party
+            # fsync.
+            with atomic():
+                if address_name:
+                    frappe.db.set_value("Address", address_name, "is_primary_address", 1,
+                                        update_modified=False)
+                    frappe.db.set_value(self.doctype, party_name,
+                                        f"{prefix}_primary_address", address_name,
+                                        update_modified=False)
+                    from frappe.contacts.doctype.address.address import get_address_display
+                    frappe.db.set_value(self.doctype, party_name, "primary_address",
+                                        get_address_display(address_name),
+                                        update_modified=False)
+                if contact_name:
+                    frappe.db.set_value("Contact", contact_name, "is_primary_contact", 1,
+                                        update_modified=False)
+                    frappe.db.set_value(self.doctype, party_name,
+                                        f"{prefix}_primary_contact", contact_name,
+                                        update_modified=False)
         except Exception as exc:
             frappe.log_error("Tally Migrator", f"Primary link failed for {party_name}: {exc}")
             result.add_warning(
@@ -159,20 +203,20 @@ class PartyImporter(BaseImporter):
                 continue
             label = (a.get("name") or "").strip()
             try:
-                addr = frappe.new_doc("Address")
-                addr.address_title = f"{link_name} - {label}" if label else link_name
-                addr.address_type = (label.title()
-                                     if label.lower() in self._ADDRESS_TYPES else "Other")
-                addr.address_line1 = text
-                addr.city = "Not Specified"
-                row_pin = (a.get("pincode") or "").strip()
-                if row_pin:
-                    addr.pincode = row_pin
-                addr.state = self._extra_address_state(a, data)
-                addr.country = (data.get("CountryName") or "").strip() or self.company_country
-                addr.append("links", {"link_doctype": link_type, "link_name": link_name})
-                addr.insert(ignore_permissions=True)
-                frappe.db.commit()
+                with atomic():
+                    addr = frappe.new_doc("Address")
+                    addr.address_title = f"{link_name} - {label}" if label else link_name
+                    addr.address_type = (label.title()
+                                         if label.lower() in self._ADDRESS_TYPES else "Other")
+                    addr.address_line1 = text
+                    addr.city = "Not Specified"
+                    row_pin = (a.get("pincode") or "").strip()
+                    if row_pin:
+                        addr.pincode = row_pin
+                    addr.state = self._extra_address_state(a, data)
+                    addr.country = (data.get("CountryName") or "").strip() or self.company_country
+                    addr.append("links", {"link_doctype": link_type, "link_name": link_name})
+                    addr.insert(ignore_permissions=True)
             except Exception as exc:
                 frappe.log_error("Tally Migrator", f"Extra address failed for {link_name}: {exc}")
                 result.add_warning(link_name, f"additional address not created: {exc}")
@@ -231,15 +275,15 @@ class PartyImporter(BaseImporter):
             if not phone:
                 continue
             try:
-                contact = frappe.new_doc("Contact")
-                contact.first_name = (c.get("name") or "").strip() or link_name
-                contact.append("phone_nos", {
-                    "phone": phone,
-                    "is_primary_mobile_no": 1 if c.get("whatsapp") else 0,
-                })
-                contact.append("links", {"link_doctype": link_type, "link_name": link_name})
-                contact.insert(ignore_permissions=True)
-                frappe.db.commit()
+                with atomic():
+                    contact = frappe.new_doc("Contact")
+                    contact.first_name = (c.get("name") or "").strip() or link_name
+                    contact.append("phone_nos", {
+                        "phone": phone,
+                        "is_primary_mobile_no": 1 if c.get("whatsapp") else 0,
+                    })
+                    contact.append("links", {"link_doctype": link_type, "link_name": link_name})
+                    contact.insert(ignore_permissions=True)
             except Exception as exc:
                 frappe.log_error("Tally Migrator", f"Extra contact failed for {link_name}: {exc}")
                 result.add_warning(link_name, f"additional contact not created: {exc}")
@@ -326,8 +370,10 @@ class PartyImporter(BaseImporter):
                 _msg_mark = len(frappe.local.message_log)
             except Exception:
                 _msg_mark = None
-            addr.insert(ignore_permissions=True)
-            frappe.db.commit()
+            # Savepointed: a failed insert rolls back only the address, never the
+            # party or the batch. The batch commit in run() persists it.
+            with atomic():
+                addr.insert(ignore_permissions=True)
             return addr.name
         except Exception as exc:
             # India Compliance hard-rejects a pincode whose leading digits don't match
@@ -335,13 +381,13 @@ class PartyImporter(BaseImporter):
             # pre-flight already warns "PIN and state to verify", so rather than lose
             # the whole address, drop just the suspect PIN and retry once - mirroring
             # how we drop a rejected GSTIN above. Keeps the address; flags the PIN.
+            # The first attempt's savepoint has already rolled back.
             msg = str(exc).lower()
             if addr.pincode and ("not associated with" in msg or "postal code" in msg):
-                frappe.db.rollback()
                 try:
                     addr.pincode = ""
-                    addr.insert(ignore_permissions=True)
-                    frappe.db.commit()
+                    with atomic():
+                        addr.insert(ignore_permissions=True)
                     # Drop the failed attempt's queued "Invalid Postal Code" message -
                     # the address was salvaged, so that warning would only be noise.
                     if _msg_mark is not None:
@@ -354,8 +400,7 @@ class PartyImporter(BaseImporter):
                         "not match the state (verify and set it in ERPNext)")
                     return addr.name
                 except Exception as exc2:
-                    exc = exc2
-            frappe.db.rollback()
+                    exc = exc2   # retry's savepoint already rolled back
             frappe.log_error("Tally Migrator", f"Address save failed for {link_name}: {exc}")
             result.add_warning(link_name, f"address not created: {exc}")
             return ""
@@ -392,23 +437,23 @@ class PartyImporter(BaseImporter):
         if not (phone or mobile or email or email_cc):
             return ""
         try:
-            contact = frappe.new_doc("Contact")
-            # Tally's contact-person name when supplied, else the ledger name.
-            contact.first_name = (data.get("LedgerContact") or "").strip() or link_name
-            if email:
-                contact.append("email_ids", {"email_id": email, "is_primary": 1})
-            if email_cc and email_cc.lower() != email.lower():
-                contact.append("email_ids", {"email_id": email_cc, "is_primary": 0})
-            if mobile:
-                contact.append("phone_nos", {"phone": mobile, "is_primary_mobile_no": 1})
-            if phone:
-                contact.append("phone_nos", {
-                    "phone": phone,
-                    "is_primary_phone": 1 if not mobile else 0,
-                })
-            contact.append("links", {"link_doctype": link_type, "link_name": link_name})
-            contact.insert(ignore_permissions=True)
-            frappe.db.commit()
+            with atomic():
+                contact = frappe.new_doc("Contact")
+                # Tally's contact-person name when supplied, else the ledger name.
+                contact.first_name = (data.get("LedgerContact") or "").strip() or link_name
+                if email:
+                    contact.append("email_ids", {"email_id": email, "is_primary": 1})
+                if email_cc and email_cc.lower() != email.lower():
+                    contact.append("email_ids", {"email_id": email_cc, "is_primary": 0})
+                if mobile:
+                    contact.append("phone_nos", {"phone": mobile, "is_primary_mobile_no": 1})
+                if phone:
+                    contact.append("phone_nos", {
+                        "phone": phone,
+                        "is_primary_phone": 1 if not mobile else 0,
+                    })
+                contact.append("links", {"link_doctype": link_type, "link_name": link_name})
+                contact.insert(ignore_permissions=True)
             return contact.name
         except Exception as exc:
             frappe.log_error("Tally Migrator", f"Contact save failed for {link_name}: {exc}")

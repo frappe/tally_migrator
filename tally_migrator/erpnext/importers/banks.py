@@ -24,11 +24,12 @@ from tally_migrator.tally.extractors import TallyExtractor
 from tally_migrator.validation.engine import (
     infer_gst_category, validate_gstin, GSTIN_STATE_CODES,
 )
-from .base import ImportResult
+from .base import ImportResult, atomic
 
 # ── Bank Account helpers (shared by party + company bank accounts) ─────────────
 
-def _ensure_bank(bank_name: str, result: "ImportResult | None" = None) -> str:
+def _ensure_bank(bank_name: str, result: "ImportResult | None" = None, *,
+                 is_company: bool = False) -> str:
     """Return an existing/created Bank master name, or "" when no name is given.
 
     ERPNext's Bank Account requires a linked Bank; Tally only gives us its name,
@@ -46,13 +47,21 @@ def _ensure_bank(bank_name: str, result: "ImportResult | None" = None) -> str:
     if frappe.db.exists("Bank", name):
         return name
     try:
-        frappe.get_doc({"doctype": "Bank", "bank_name": name}).insert(ignore_permissions=True)
-        frappe.db.commit()
+        # Savepoint-isolate the insert so a failure rolls back only this Bank, never a
+        # caller's uncommitted work.
+        with atomic():
+            frappe.get_doc({"doctype": "Bank", "bank_name": name}).insert(ignore_permissions=True)
+        # Commit only on the non-batched company path: AccountImporter is standalone and
+        # a *later* account's full rollback (accounts.py) would otherwise wipe this
+        # still-uncommitted Bank. The party path is batched and savepoint-isolated with
+        # no full rollback, so the Bank is safe in the batch until run()'s batch commit -
+        # committing here would flush the whole in-flight batch and defeat the batching.
+        if is_company:
+            frappe.db.commit()
         if result is not None:
             result.add_created(name, "Bank")
         return name
     except Exception:
-        frappe.db.rollback()
         return ""
 
 
@@ -71,25 +80,32 @@ def _insert_bank_account(*, account_name: str, bank: str, account_no: str,
     Account quirk never aborts the party/account that was just created.
     """
     try:
-        ba = frappe.new_doc("Bank Account")
-        ba.account_name = account_name
-        ba.bank = bank
-        ba.bank_account_no = account_no
-        if ifsc:
-            ba.branch_code = ifsc
+        # Savepoint-isolated (see _ensure_bank): a failure rolls back only this Bank
+        # Account, never a caller's uncommitted batch.
+        with atomic():
+            ba = frappe.new_doc("Bank Account")
+            ba.account_name = account_name
+            ba.bank = bank
+            ba.bank_account_no = account_no
+            if ifsc:
+                ba.branch_code = ifsc
+            if is_company:
+                ba.account = gl_account
+                ba.is_company_account = 1
+            else:
+                ba.party_type = party_type
+                ba.party = party
+            ba.insert(ignore_permissions=True)
+        # Commit only on the non-batched company path, for the same reason as
+        # _ensure_bank: the party path leaves this in the batch for run()'s commit so
+        # batching is preserved, while the company path must persist it before a later
+        # account's full rollback can wipe it.
         if is_company:
-            ba.account = gl_account
-            ba.is_company_account = 1
-        else:
-            ba.party_type = party_type
-            ba.party = party
-        ba.insert(ignore_permissions=True)
-        frappe.db.commit()
+            frappe.db.commit()
         if count_created:
             result.add_created(ba.name, "Bank Account")
         return ba.name
     except Exception as exc:
         frappe.log_error("Tally Migrator", f"Bank account save failed for {warn_name}: {exc}")
         result.add_warning(warn_name, f"bank account not created: {exc}")
-        frappe.db.rollback()
         return ""
