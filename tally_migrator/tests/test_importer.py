@@ -90,6 +90,77 @@ class TestERPNextImporter(unittest.TestCase):
             "Contact", filters={"first_name": "_TMTest Customer ContactDup"})
         self.assertEqual(len(contacts), 1, msg="re-run duplicated the contact")
 
+    def test_party_side_effect_hooks_suspended_and_restored(self):
+        """The per-contact Google-Contacts/Call-Log hooks are neutralised inside the
+        context and restored after - the mechanism Step 5 relies on to drop the
+        data-irrelevant per-record round-trips on large books."""
+        import importlib
+        from tally_migrator.erpnext.importers.party import (
+            _party_side_effect_hooks_suspended, _SUSPENDED_PARTY_HOOKS)
+
+        calls = []
+        saved = []
+        for mod_path, names in _SUSPENDED_PARTY_HOOKS:
+            mod = importlib.import_module(mod_path)
+            for nm in names:
+                saved.append((mod, nm, getattr(mod, nm)))
+                setattr(mod, nm, lambda *a, **k: calls.append(nm))
+        try:
+            with _party_side_effect_hooks_suspended():
+                for mod_path, names in _SUSPENDED_PARTY_HOOKS:
+                    mod = importlib.import_module(mod_path)
+                    for nm in names:
+                        getattr(mod, nm)("doc")           # suspended -> must be a no-op
+            self.assertEqual(calls, [], "hooks must be neutralised inside the context")
+            for mod_path, names in _SUSPENDED_PARTY_HOOKS:   # restored afterwards
+                mod = importlib.import_module(mod_path)
+                for nm in names:
+                    getattr(mod, nm)("doc")
+            self.assertTrue(calls, "hooks must be restored after the context")
+        finally:
+            for mod, nm, fn in saved:
+                setattr(mod, nm, fn)
+
+    def test_party_import_does_not_fire_contact_integration_hooks(self):
+        """A normal Contact insert fires the Google-Contacts/Call-Log hooks; importing
+        a party that creates a Contact must not (they are suspended), while the Contact
+        is still created identically."""
+        import importlib
+        from tally_migrator.erpnext.importers.party import _SUSPENDED_PARTY_HOOKS
+
+        calls = {"n": 0}
+        saved = []
+        for mod_path, names in _SUSPENDED_PARTY_HOOKS:
+            try:
+                mod = importlib.import_module(mod_path)
+            except Exception:
+                continue
+            for nm in names:
+                if hasattr(mod, nm):
+                    saved.append((mod, nm, getattr(mod, nm)))
+                    setattr(mod, nm, lambda *a, **k: calls.__setitem__("n", calls["n"] + 1))
+        try:
+            # Anchor: a plain Contact insert DOES fire the hooks, so "0 during import"
+            # below is a real assertion and not a hook that simply never runs here.
+            anchor = frappe.new_doc("Contact")
+            anchor.first_name = "_TMTest Hook Anchor"
+            anchor.append("phone_nos", {"phone": "9811111111", "is_primary_mobile_no": 1})
+            anchor.insert(ignore_permissions=True)
+            self.assertGreater(calls["n"], 0, "the hooks should fire on a normal Contact insert")
+
+            fired_before = calls["n"]
+            self.importer.import_customers([{
+                "_name": "_TMTest Hook Cust", "LedgerMobile": "9822222222"}])
+            self.assertEqual(
+                calls["n"], fired_before,
+                "the integration hooks must not fire during a party import")
+            self.assertTrue(
+                frappe.db.exists("Contact", {"first_name": "_TMTest Hook Cust"}),
+                "the contact must still be created")
+        finally:
+            for mod, nm, fn in saved:
+                setattr(mod, nm, fn)
+
     def test_explicit_gst_registration_type_wins(self):
         """Tally's stated registration type overrides GSTIN/country inference."""
         if not frappe.db.has_column("Customer", "gst_category"):

@@ -1,6 +1,7 @@
 """Party importers: Customer and Supplier (shared address / payment-term handling)."""
 
 import contextlib
+import importlib
 from collections import Counter
 from dataclasses import dataclass, field
 from functools import lru_cache
@@ -77,6 +78,52 @@ def _gravatar_lookup_suspended():
         _contact_mod.has_gravatar = original
 
 
+# ── Per-contact integration hooks suspended for the party phase ─────────────────
+# Beyond gravatar, Frappe/ERPNext fire Contact doc-event hooks on every insert that
+# do nothing for a migration but cost a DB round-trip each - and, if the integration
+# is configured, a per-contact NETWORK call (the same class of cost gravatar had). On
+# a real book (tens of thousands of contacts) that is pure overhead, and it dominates
+# on Frappe Cloud where every round-trip carries network latency. We neutralise just
+# these named handlers for the party phase; the contact still saves identically, it is
+# simply not pushed to Google or back-linked to call logs - neither of which a
+# migration ever wants to do per record. The handlers are resolved by dotted path at
+# event time (frappe.get_attr), so replacing the function on its own module is seen.
+_SUSPENDED_PARTY_HOOKS = (
+    # Push every new/updated Contact up to the user's Google account. Never wanted
+    # mid-migration: it would sync 10k+ contacts and hit Google's API rate limits.
+    ("frappe.integrations.doctype.google_contacts.google_contacts",
+     ("insert_contacts_to_google_contacts", "update_contacts_to_google_contacts")),
+    # Back-link a new Contact to historical Call Logs by phone match - a JOIN scan
+    # per contact. A cosmetic telephony convenience, re-derivable; irrelevant here.
+    ("erpnext.telephony.doctype.call_log.call_log",
+     ("link_existing_conversations",)),
+)
+
+
+@contextlib.contextmanager
+def _party_side_effect_hooks_suspended():
+    """Neutralise the per-contact Google-Contacts sync and Call-Log linking hooks for
+    the duration of the party phase, then restore them. No-op-safe: a module or symbol
+    that is not installed is skipped, leaving Frappe/ERPNext untouched. Migrations are
+    serialised by the single-active-run guard, so the process-local patch can never
+    bleed into a concurrent migration (same contract as _gravatar_lookup_suspended)."""
+    saved = []
+    for module_path, names in _SUSPENDED_PARTY_HOOKS:
+        try:
+            mod = importlib.import_module(module_path)
+        except Exception:
+            continue
+        for nm in names:
+            if hasattr(mod, nm):
+                saved.append((mod, nm, getattr(mod, nm)))
+                setattr(mod, nm, lambda *a, **k: None)
+    try:
+        yield
+    finally:
+        for mod, nm, fn in saved:
+            setattr(mod, nm, fn)
+
+
 # ── Party importers (Customer / Supplier) ──────────────────────────────────────
 
 class PartyImporter(BaseImporter):
@@ -96,10 +143,12 @@ class PartyImporter(BaseImporter):
     default_group: str = ""        # fallback when Tally carries no usable group
 
     def run(self, records: list[dict], on_progress=None) -> "ImportResult":
-        """Import parties with the per-contact gravatar network lookup suspended -
-        the dominant, data-irrelevant cost of the phase (see
-        ``_gravatar_lookup_suspended``). Everything else is the standard template."""
-        with _gravatar_lookup_suspended():
+        """Import parties with the per-contact integration hooks suspended - the
+        gravatar network lookup plus the Google-Contacts sync and Call-Log linking
+        hooks, all data-irrelevant per-record cost of the phase (see
+        ``_gravatar_lookup_suspended`` / ``_party_side_effect_hooks_suspended``).
+        Everything else is the standard template."""
+        with _gravatar_lookup_suspended(), _party_side_effect_hooks_suspended():
             return super().run(records, on_progress=on_progress)
 
     def before_run(self, records: list[dict], result: "ImportResult") -> None:
