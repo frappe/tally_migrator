@@ -3,8 +3,10 @@
 import contextlib
 from collections import Counter
 from dataclasses import dataclass, field
+from functools import lru_cache
 
 import frappe
+from frappe.utils import validate_email_address
 
 from tally_migrator.tally.mappings import (
     UOM_MAP,
@@ -26,6 +28,20 @@ from tally_migrator.validation.engine import (
 )
 from .base import BaseImporter, ImportResult, atomic
 from .banks import _ensure_bank, _insert_bank_account
+
+
+@lru_cache(maxsize=1)
+def _address_requires_state() -> bool:
+    """Whether a stateless Indian Address is rejected on this site. India Compliance
+    adds the ``gst_state`` field and a validate hook that makes ``state`` mandatory
+    for an Indian address; without IC, ERPNext core saves a stateless address fine.
+    So the importer should only pre-skip a no-state address when IC is enforcing -
+    otherwise it would drop addresses that would have imported. Cached: the installed
+    app set does not change within a run."""
+    try:
+        return bool(frappe.get_meta("Address").has_field("gst_state"))
+    except Exception:
+        return False
 
 # ── Gravatar lookup suspension ─────────────────────────────────────────────────
 # Frappe's Contact.validate fills a blank avatar by calling has_gravatar(email),
@@ -339,6 +355,19 @@ class PartyImporter(BaseImporter):
         raw_address = (data.get("Address") or "").strip()
         if not raw_address:
             return ""
+        state = self._resolve_state(data)
+        country = (data.get("CountryName") or "").strip() or self.company_country
+        # India Compliance hard-requires a state on an Indian address. When Tally
+        # gave us nothing to derive one from (no ledger state, valid GSTIN or PIN),
+        # the insert is certain to fail - so skip it with a single warning rather
+        # than attempt a doomed insert that rolls back and floods the Error Log on a
+        # large import. Only when IC is actually enforcing the rule (without it, core
+        # saves a stateless address). Anything with a derivable state imports below.
+        if country == "India" and not state and _address_requires_state():
+            result.add_warning(
+                link_name, "address not created - the Tally data has no state "
+                "(add a state, GSTIN or PIN code in Tally, then re-import)")
+            return ""
         _msg_mark = None   # message-queue length, set just before insert (see below)
         try:
             addr = frappe.new_doc("Address")
@@ -350,11 +379,15 @@ class PartyImporter(BaseImporter):
             # otherwise a clear placeholder - never the PIN, which only looked like a
             # city and produced visibly wrong addresses.
             addr.city = (data.get("City") or "").strip() or "Not Specified"
-            addr.state = self._resolve_state(data)
-            addr.country = (data.get("CountryName") or "").strip() or self.company_country
+            addr.state = state
+            addr.country = country
             addr.pincode = data.get("PinCode") or ""
             addr.phone = data.get("LedgerPhone") or data.get("LedgerMobile") or ""
-            addr.email_id = data.get("LedgerEmail") or ""
+            # A malformed email (Tally holds plenty: "NA", "n/a", "x@") makes ERPNext
+            # reject the whole address. Run it through the same validator ERPNext uses
+            # and drop just the bad email, so the address still imports.
+            addr.email_id = validate_email_address(
+                (data.get("LedgerEmail") or "").strip(), throw=False)
             # Only set a structurally valid GSTIN: India Compliance validates the
             # address GSTIN and rejects the whole address on a malformed one, which
             # would lose the address entirely. A bad GSTIN is already flagged by the
@@ -405,19 +438,22 @@ class PartyImporter(BaseImporter):
             result.add_warning(link_name, f"address not created: {exc}")
             return ""
 
-    @staticmethod
-    def _resolve_state(data: dict) -> str:
-        """The party's ERPNext state. Prefer Tally's ledger state; when it's blank
-        but the party has a structurally valid GSTIN, derive the state from the
-        GSTIN's state code - the same fallback the pre-flight check assumes, so a
-        registered party never lands with an empty (and GST-breaking) state."""
+    def _resolve_state(self, data: dict) -> str:
+        """The party's ERPNext state, most-reliable signal first: Tally's ledger
+        state, else a structurally valid GSTIN's state code, else derived from the
+        party's PIN code (India Compliance's pincode<->state map). Tally does not
+        mandate a ledger state so most exports omit it, but a PIN is common and
+        yields an IC-valid state - so the address is kept rather than dropped on
+        India Compliance's missing-state rule."""
         state = TALLY_STATE_MAP.get((data.get("LedgerState") or "").strip(), "")
         if state:
             return state
         gstin = (data.get("GSTRegistrationNumber") or "").strip().upper()
         if gstin and validate_gstin(gstin)[0]:
-            return GSTIN_STATE_CODES.get(gstin[:2], "")
-        return ""
+            derived = GSTIN_STATE_CODES.get(gstin[:2], "")
+            if derived:
+                return derived
+        return self._state_from_pincode((data.get("PinCode") or "").strip())
 
     def _save_contact(self, link_name: str, link_type: str, data: dict,
                       result: "ImportResult") -> str:
@@ -432,8 +468,14 @@ class PartyImporter(BaseImporter):
         visible in the migration log rather than lost silently."""
         phone = (data.get("LedgerPhone") or "").strip()
         mobile = (data.get("LedgerMobile") or "").strip()
-        email = (data.get("LedgerEmail") or "").strip()
-        email_cc = (data.get("EmailCC") or "").strip()
+        # Validate emails up front (the same validator ERPNext's Contact uses) and
+        # drop a malformed one - Tally holds plenty ("NA", "n/a", "x@") and a single
+        # bad email would otherwise reject the whole contact. Warn so the drop shows.
+        raw_email = (data.get("LedgerEmail") or "").strip()
+        email = validate_email_address(raw_email, throw=False)
+        email_cc = validate_email_address((data.get("EmailCC") or "").strip(), throw=False)
+        if raw_email and not email:
+            result.add_warning(link_name, "contact email skipped - not a valid email address")
         if not (phone or mobile or email or email_cc):
             return ""
         try:
