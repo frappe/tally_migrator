@@ -140,7 +140,9 @@ the awesomebar). The wizard walks you through a few guided steps:
 The Migration Log is your record of the run. It shows what was created (grouped by
 type, with clickable links to each record), what was skipped and why, and the
 reconciliation report. If a large migration is still running, it keeps going in the
-background and the log updates as it progresses.
+background; reload the log to see its latest progress. If a run stops early (for
+example the server restarts), the log says so and you can simply run it again -
+records already imported are kept.
 
 ### If something goes wrong
 

@@ -242,6 +242,8 @@ class TallyMigratorPage {
 
 					<div id="error-section" class="tm-callout tm-callout--error" style="display:none;"></div>
 
+					<div id="stall-section" class="tm-callout tm-callout--info tm-section" style="display:none;"></div>
+
 					<div id="run-actions">
 						<div class="tm-footer" style="margin-top:0;">
 							<button id="btn-back-3" class="btn btn-default btn-sm">${TallyMigratorPage.navIcon("left")} Back</button>
@@ -2049,6 +2051,7 @@ class TallyMigratorPage {
 			.show();
 		$("#run-actions").hide();
 		$("#error-section").hide();
+		$("#stall-section").hide();
 		$("#results-section").hide();
 		$("#progress-section").show();
 		this._setupProgressStream();
@@ -2092,6 +2095,7 @@ class TallyMigratorPage {
 		$("#btn-run").prop("disabled", true);
 		$("#btn-back-3").prop("disabled", true);
 		$("#error-section").hide();
+		$("#stall-section").hide();
 		$("#results-section").hide();
 		$("#run-banner").hide();
 		$("#progress-section").show();
@@ -2202,6 +2206,7 @@ class TallyMigratorPage {
 			this._trackingLog = null;
 			frappe.realtime.off("tally_migration_progress", this._onProgress);
 			this.stopHeartbeat();
+			$("#stall-section").hide();   // clear any "taking longer" notice now the run is terminal
 			$("#progress-bar").removeClass("active progress-bar-striped").css("width", "100%").text("100%");
 			if (doc.status === "Failed") {
 				$("#progress-section").hide();   // the run failed; don't leave a stuck bar above the error
@@ -2245,19 +2250,39 @@ class TallyMigratorPage {
 			this._trackingLog = null;
 			frappe.realtime.off("tally_migration_progress", this._onProgress);
 			this.stopHeartbeat();
-			$("#run-actions").show();
 			$("#btn-run").prop("disabled", false);
 			$("#btn-back-3").prop("disabled", false);
-			$("#progress-desc").html(
-				"This is taking longer than expected. The migration may still be running - " +
-				'open <a href="#" class="err-logs-link">the migration log</a> to check its ' +
-				'status. <button class="btn btn-xs btn-default" id="btn-keep-checking">Keep checking</button>'
-			);
-			$(".err-logs-link").on("click", (e) => {
-				e.preventDefault();
+			// Freeze the bar where it stalled - drop the active animation so it no longer
+			// implies live progress, but leave it visible as context for how far it got.
+			$("#progress-bar").removeClass("active progress-bar-striped");
+			$("#progress-desc").text("This is taking longer than expected.");
+			// The stall notice and its actions live in their own callout (not inline in
+			// the progress text and not the error callout) so the "Keep checking" action
+			// reads as a real button in a tidy row rather than mid-sentence.
+			$("#stall-section")
+				.html(
+					'<div style="display:flex; align-items:center; justify-content:space-between; ' +
+						'gap:var(--margin-md); flex-wrap:wrap;">' +
+						'<span style="flex:1; min-width:240px; line-height:1.5;">' +
+							"The migration may still be running in the background. " +
+							"Keep checking, or open the migration log for its live status." +
+						"</span>" +
+						'<span style="display:flex; gap:var(--margin-sm); flex-shrink:0;">' +
+							'<button class="btn btn-default btn-sm" id="btn-open-log">Open migration log</button>' +
+							'<button class="btn btn-primary btn-sm" id="btn-keep-checking">Keep checking</button>' +
+						"</span>" +
+					"</div>"
+				)
+				.show();
+			$("#run-actions").show();
+			$("#btn-open-log").on("click", () => {
 				frappe.set_route("Form", "Tally Migration Log", logName);
 			});
-			$("#btn-keep-checking").on("click", () => this.pollLog(logName));
+			$("#btn-keep-checking").on("click", () => {
+				$("#stall-section").hide();
+				$("#progress-bar").addClass("active progress-bar-striped");
+				this.pollLog(logName);
+			});
 		};
 
 		const poll = () => {
@@ -2422,6 +2447,7 @@ class TallyMigratorPage {
 		$("#progress-section").hide();
 		$("#results-section").hide().html("");
 		$("#error-section").hide();
+		$("#stall-section").hide();
 		$("#progress-bar").css("width", "0%").text("0%");
 		$("#run-actions").show();
 		$("#btn-run").prop("disabled", false);

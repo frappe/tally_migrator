@@ -496,7 +496,11 @@ from the results screen, or find it in the desk under **Tally Migration Log**.
 
 The log's **status** is one of:
 
-- **Running** - the migration is still in progress.
+- **Running** - the migration is still in progress. The log does not refresh on its
+  own, so reload it to see the latest progress. If the run stops early (for example
+  the server restarts or runs out of memory), the log detects that its background job
+  is no longer active and shows that the run stopped before completing - records
+  imported so far are kept, so you can run it again.
 - **Completed** - finished with no failures.
 - **Completed with Errors** - finished, but some records failed (everything else
   imported).

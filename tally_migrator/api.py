@@ -454,6 +454,37 @@ def active_run(erpnext_company: str = "") -> dict:
 
 
 @frappe.whitelist(methods=["GET", "POST"])
+def run_liveness(log_name: str = "") -> dict:
+    """Whether a still-'Running' migration log's run is genuinely alive.
+
+    A hard-killed worker (OOM, redeploy) leaves the log on 'Running' forever, so the
+    log form would otherwise keep claiming "still running" indefinitely. This lets the
+    form ask RQ whether the job is actually queued/running and show a "stopped before
+    completing" state instead. Mirrors ``_active_run_log``'s liveness rule. Read-only.
+
+    Returns ``{status, alive}``: for a 'Running' log, ``alive`` is True while the job
+    is enqueued (or a job-less legacy run that isn't yet stale), False once the worker
+    is gone. For any terminal status, ``alive`` is False and ``status`` carries it.
+    ``{}`` when the log is unknown."""
+    frappe.only_for(ALLOWED_ROLES)
+    if not log_name:
+        return {}
+    row = frappe.db.get_value(
+        "Tally Migration Log", log_name, ["status", "job_id", "modified"], as_dict=True)
+    if not row:
+        return {}
+    if row.status != "Running":
+        return {"status": row.status, "alive": False}
+    alive = True
+    if row.job_id:
+        alive = _is_job_alive(row.job_id)
+    elif frappe.utils.time_diff_in_seconds(
+            frappe.utils.now(), row.modified) >= _ACTIVE_RUN_STALE_SECONDS:
+        alive = False
+    return {"status": row.status, "alive": alive}
+
+
+@frappe.whitelist(methods=["GET", "POST"])
 def run_progress(log_name: str = "") -> dict:
     """Status + latest progress percent/description for a migration run.
 

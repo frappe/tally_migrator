@@ -9,10 +9,38 @@ frappe.ui.form.on("Tally Migration Log", {
 		render_coverage(frm);
 		render_mapping(frm);
 		add_buttons(frm);
+		check_liveness(frm);
 		/* ===== ROLLBACK FEATURE - remove this line + the fenced block below to delete ===== */
 		tally_rollback_attach(frm);
 	},
 });
+
+// A log left on "Running" can mean either a genuinely long import or a worker that
+// was hard-killed (OOM, redeploy) - which never writes a terminal status. Ask the
+// server whether the background job is actually alive; if it's gone, mark the run as
+// stopped and re-render the summary + buttons so the form stops claiming "still
+// running" forever and offers a re-run instead. Best-effort: a lookup failure leaves
+// the optimistic "still running" state untouched.
+function check_liveness(frm) {
+	if (frm.is_new() || frm.doc.status !== "Running" || !frm.doc.job_id) return;
+	frappe.call({
+		method: "tally_migrator.api.run_liveness",
+		args: { log_name: frm.doc.name },
+		callback: (r) => {
+			const res = r.message || {};
+			if (res.status === "Running" && res.alive === false) {
+				frm.__run_stopped = true;
+				render_summary(frm);
+				// Rebuild the whole custom-button bar in one pass: clear first so the
+				// buttons added during refresh aren't duplicated, then re-add ours plus
+				// the rollback action (cleared by clear_custom_buttons too).
+				frm.clear_custom_buttons();
+				add_buttons(frm);
+				tally_rollback_attach(frm);
+			}
+		},
+	});
+}
 
 // ── Dark-mode theming ────────────────────────────────────────────────────────
 // Frappe flips its semantic tokens in dark mode (--text-color, --border-color…)
@@ -949,15 +977,24 @@ function render_summary(frm) {
 
 	const entries = Object.entries(summary);
 	if (!entries.length) {
-		wrapper.html(
-			section(
-				`<div class="text-muted" style="padding:6px 0;">
-					${frm.doc.status === "Running"
-						? "Migration is still running..."
-						: "No import summary recorded for this run."}
-				</div>`
-			)
-		);
+		// No results yet. A Running log is either genuinely in progress or a worker
+		// that was hard-killed - check_liveness() sets __run_stopped for the latter so
+		// the form shows an honest "stopped" state instead of "still running" forever.
+		if (frm.doc.status === "Running" && frm.__run_stopped) {
+			wrapper.html(section(callout("error", iconRow("error",
+				"This run stopped before completing - its background job is no longer " +
+				"active (it may have run out of memory or the server restarted). Records " +
+				"imported before it stopped are kept, so it's safe to run again from the " +
+				"Tally Migrator."))));
+		} else if (frm.doc.status === "Running") {
+			wrapper.html(section(callout("info", iconRow("info",
+				"Migration is still running. This page does not refresh on its own - " +
+				"reload it to see the latest progress, or watch it live in the Tally " +
+				"Migrator."))));
+		} else {
+			wrapper.html(section(callout("info", iconRow("info",
+				"No import summary recorded for this run."))));
+		}
 		return;
 	}
 
@@ -1042,10 +1079,15 @@ function render_summary(frm) {
 function add_buttons(frm) {
 	if (frm.is_new()) return;
 
-	// Re-run is only meaningful when there's a source file AND something to retry.
+	// Re-run is only meaningful when there's a source file AND something to retry: a
+	// run that finished with errors/failed, or one detected as stopped (a dead
+	// 'Running' job - see check_liveness). The server-side re-run is idempotent, so
+	// already-imported records are skipped either way.
 	const canRetry =
 		frm.doc.source_file &&
-		(frm.doc.status === "Completed with Errors" || frm.doc.status === "Failed");
+		(frm.doc.status === "Completed with Errors" ||
+			frm.doc.status === "Failed" ||
+			(frm.doc.status === "Running" && frm.__run_stopped));
 
 	if (canRetry) {
 		frm.add_custom_button(__("Re-run from Source File"), () => {
