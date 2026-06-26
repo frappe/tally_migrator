@@ -9,7 +9,7 @@
   "fields": [
     {
       "fieldname": "record_name",
-      "fieldtype": "Data",
+      "fieldtype": "Small Text",
       "label": "Record",
       "in_list_view": 1,
       "columns": 3,
