@@ -58,6 +58,16 @@ class TestUnzipIfZip(unittest.TestCase):
         with self.assertRaises(Exception):
             unzip_if_zip(b"PK\x03\x04corrupt-not-a-real-archive", CAP)
 
+    def test_unreadable_member_rejected_gracefully(self):
+        # The central directory opens fine but the member's stored bytes are
+        # clobbered, so archive.open(...).read() fails (bad CRC). Must surface as a
+        # clean frappe.throw, not an unhandled 500.
+        raw = _zip({"Master.xml": b"C" * 4096}, compression=zipfile.ZIP_STORED)
+        corrupt = bytearray(raw)
+        corrupt[40:80] = b"\x00" * 40   # trash the stored member payload, leave the dir intact
+        with self.assertRaises(Exception):
+            unzip_if_zip(bytes(corrupt), CAP)
+
     def test_zip_bomb_declared_size_rejected(self):
         # Highly compressible 50 MB member, but the cap is 10 MB.
         raw = _zip({"Master.xml": b"A" * (50 * 1024 * 1024)})

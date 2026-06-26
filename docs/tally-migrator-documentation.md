@@ -225,8 +225,9 @@ but a Masters XML compresses by roughly 90%, so a big export has two easy routes
 
 - **Upload a zip.** Zip the `Master.xml` and choose the `.zip` - the app unpacks it
   automatically and reads the XML inside. The zip must contain exactly one `.xml`
-  file. (The uncompressed XML is still held to the same size limit, so a zip cannot
-  be used to slip an over-limit file past the cap.)
+  file and must not be password-protected. (The uncompressed XML is still held to
+  the same size limit, so a zip cannot be used to slip an over-limit file past the
+  cap.)
 - **Import from a Google Drive link.** In the upload dialog, choose the **Link**
   option and paste the share link to your file. In Drive, the file must be shared as
   **Anyone with the link** - otherwise Google returns a sign-in page instead of the

@@ -135,9 +135,20 @@ def unzip_if_zip(raw, max_uncompressed_bytes: int):
             f"uncompressed, above the {max_mb:.0f} MB limit. Split the export or "
             "ask your administrator to raise tally_migrator_max_upload_mb."
         )
-    with archive.open(member) as fh:
-        # Read one byte past the cap so an under-reported header is still caught.
-        data = fh.read(max_uncompressed_bytes + 1)
+    try:
+        with archive.open(member) as fh:
+            # Read one byte past the cap so an under-reported header is still caught.
+            data = fh.read(max_uncompressed_bytes + 1)
+    except (zipfile.BadZipFile, RuntimeError):
+        # The central directory opened fine but the member itself can't be read -
+        # a bad CRC (truncated/corrupt entry) raises BadZipFile, an encrypted member
+        # raises RuntimeError("File is encrypted"). Either way it's not a usable
+        # export; surface the same actionable message instead of a raw 500.
+        frappe.throw(
+            "The .xml inside the .zip could not be extracted - the archive may be "
+            "corrupt or password-protected. Re-zip your Tally Masters XML (no "
+            "password) and try again."
+        )
     if len(data) > max_uncompressed_bytes:
         max_mb = max_uncompressed_bytes / (1024 * 1024)
         frappe.throw(
