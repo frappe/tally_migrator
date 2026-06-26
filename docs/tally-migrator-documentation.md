@@ -515,8 +515,12 @@ The log is made up of several sections, each explained below.
 
 A per-record-type table with a coloured bar for each row showing the split of
 **Imported (new)** in green, **Already there (skipped, safe)** in grey, and
-**Failed** in red, plus a total row. This is the same breakdown you saw on the
-results screen, kept for the record.
+**Failed** in red, plus **Imported**, **Already there**, **Warnings**, and
+**Failed** count columns and a total row. The **Warnings** column counts records
+that imported but had a dependent piece (an address, a contact, an opening balance,
+and so on) dropped, so a partial drop is visible here and not only on the results
+screen; the detail is in the issues table below. This is the same breakdown you saw
+on the results screen, kept for the record.
 
 ### Reconciliation: opening trial balance
 
