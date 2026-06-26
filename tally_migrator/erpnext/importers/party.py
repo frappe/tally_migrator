@@ -27,6 +27,40 @@ from tally_migrator.validation.engine import (
 from .base import BaseImporter, ImportResult, atomic
 from .banks import _ensure_bank, _insert_bank_account
 
+# ── Gravatar lookup suspension ─────────────────────────────────────────────────
+# Frappe's Contact.validate fills a blank avatar by calling has_gravatar(email),
+# which makes a live HTTPS GET to gravatar.com *per contact that carries an email*.
+# On a real Tally book (tens of thousands of parties) that one network round-trip
+# (~35ms each) dominates the party import - measured at ~50% of the whole phase -
+# and contributes nothing to the imported data: the avatar URL is purely cosmetic,
+# and Frappe itself skips the lookup during bulk import (see has_gravatar's
+# `frappe.flags.in_import` guard). We suspend just that lookup for the party phase,
+# rather than setting the blunt `in_import` flag (which would also skip doctype
+# default-value population and link validation - a real data-quality change). The
+# contact still saves identically; it simply gets no gravatar-guessed avatar, the
+# same outcome Frappe gives every bulk-imported contact.
+@contextlib.contextmanager
+def _gravatar_lookup_suspended():
+    """Neutralise the per-contact gravatar network lookup for the duration of the
+    party import, then restore it. No-op-safe: if the symbol ever moves, we leave
+    Frappe untouched. Migrations are serialised by the single-active-run guard, so
+    the process-local patch can't bleed into a concurrent migration."""
+    try:
+        import frappe.contacts.doctype.contact.contact as _contact_mod
+    except Exception:
+        yield
+        return
+    original = getattr(_contact_mod, "has_gravatar", None)
+    if original is None:
+        yield
+        return
+    _contact_mod.has_gravatar = lambda *args, **kwargs: ""
+    try:
+        yield
+    finally:
+        _contact_mod.has_gravatar = original
+
+
 # ── Party importers (Customer / Supplier) ──────────────────────────────────────
 
 class PartyImporter(BaseImporter):
@@ -44,6 +78,13 @@ class PartyImporter(BaseImporter):
     group_parent_field: str = ""   # "parent_customer_group" / "parent_supplier_group"
     group_root: str = ""           # standard root group to nest new leaves under
     default_group: str = ""        # fallback when Tally carries no usable group
+
+    def run(self, records: list[dict], on_progress=None) -> "ImportResult":
+        """Import parties with the per-contact gravatar network lookup suspended -
+        the dominant, data-irrelevant cost of the phase (see
+        ``_gravatar_lookup_suspended``). Everything else is the standard template."""
+        with _gravatar_lookup_suspended():
+            return super().run(records, on_progress=on_progress)
 
     def before_run(self, records: list[dict], result: "ImportResult") -> None:
         self._ensure_party_groups(
