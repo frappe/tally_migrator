@@ -327,9 +327,13 @@ _SOURCE_CACHE_MAX = 4
 
 # Reject uploads above this size before parsing, with an actionable message,
 # rather than letting a multi-gigabyte file exhaust the worker. UTF-16 exports
-# decode to roughly half this many characters. Overridable via site config
-# (``tally_migrator_max_upload_mb``) for operators who need a higher ceiling.
-_DEFAULT_MAX_UPLOAD_MB = 150
+# decode to roughly half this many characters. The default is set to comfortably
+# cover a real-world large Tally book (these routinely run 200-400 MB uncompressed)
+# so a typical export imports without any per-site tuning; a heavier worker can
+# raise it, and a memory-constrained one can lower it, via site config
+# (``tally_migrator_max_upload_mb``). Note this also bounds the uncompressed size
+# of a zipped upload (the zip-bomb guard), so both paths share one ceiling.
+_DEFAULT_MAX_UPLOAD_MB = 512
 
 # Above this many master records a run is moved to a background job instead of
 # blocking the web request until it finishes (which would hit the proxy/gunicorn
