@@ -244,21 +244,25 @@ def run_masters_migration_from_file(file_url: str, erpnext_company: str = "", uo
     records: dict = json.loads(record_overrides) if record_overrides else {}
     created: list = json.loads(created_uoms) if created_uoms else []
 
-    file_doc, source = _source_from_file(file_url)
+    # Decide sync-vs-background on the file's *size* (cheap metadata) before parsing,
+    # so a large import never has to be parsed inside the web request at all: above the
+    # threshold we create the log and hand the run to a background worker - which does
+    # the single parse and computes the coverage/mapping reports - returning
+    # immediately. The page then tracks the log to completion (progress still streams
+    # over the realtime bus). A large import can run longer than the proxy/gunicorn
+    # timeout, so this also keeps the request from timing out.
+    file_doc = _resolve_file_doc(file_url)
+    if _should_run_async(file_doc):
+        return _enqueue_masters_run(
+            file_url, file_doc.file_name, erpnext_company, uom_overrides or "",
+            validation_report or "", record_overrides or "", coa_mode, posting_date or "",
+            created_uoms or "")
+    # Small upload: parse + run synchronously and return the full summary in one
+    # round-trip.
+    source = _source_from_file(file_url)[1]
     config = _build_masters_config(
         file_url, file_doc.file_name, erpnext_company, source,
         validation_report, coa_mode, posting_date)
-
-    # Large imports can run longer than the web request's proxy/gunicorn timeout,
-    # so above a record threshold we create the log up front and hand the run to a
-    # background worker, returning immediately. The page then tracks the log to
-    # completion (progress still streams over the realtime bus). Smaller imports
-    # stay synchronous and return the full summary in one round-trip.
-    if source.approx_record_count() > RUN_ASYNC_THRESHOLD:
-        return _enqueue_masters_run(
-            config, file_url, erpnext_company, uom_overrides or "",
-            validation_report or "", record_overrides or "", coa_mode, posting_date or "",
-            created_uoms or "")
     return _run_and_summarize(config, source, uom, records, created)
 
 
@@ -335,10 +339,36 @@ _SOURCE_CACHE_MAX = 4
 # of a zipped upload (the zip-bomb guard), so both paths share one ceiling.
 _DEFAULT_MAX_UPLOAD_MB = 512
 
-# Above this many master records a run is moved to a background job instead of
-# blocking the web request until it finishes (which would hit the proxy/gunicorn
-# timeout). Below it, the run stays synchronous and returns the summary directly.
-RUN_ASYNC_THRESHOLD = 5000
+# A run above this *upload size* is handed to a background job instead of blocking
+# the web request. We decide on the file's size (cheap metadata), not a record count,
+# so the run endpoint never has to parse the document just to choose - the worker does
+# the single parse. Below it, the run stays synchronous and returns the summary
+# directly. Overridable via site config (``tally_migrator_async_threshold_mb``).
+_DEFAULT_ASYNC_THRESHOLD_MB = 15
+
+
+def _async_threshold_bytes() -> int:
+    mb = frappe.conf.get("tally_migrator_async_threshold_mb") or _DEFAULT_ASYNC_THRESHOLD_MB
+    return int(mb) * 1024 * 1024
+
+
+def _should_run_async(file_doc) -> bool:
+    """Decide background-vs-synchronous from the File's metadata alone - no read, no
+    parse. Background when:
+
+    - the file is a remote (Google Drive) link: its real size is unknown until the
+      worker downloads it, and Drive is used precisely for large exports; or
+    - it is a ``.zip``: zips are used to fit a large export under the upload limit, so
+      the compressed ``file_size`` understates the work - always defer; or
+    - a plain upload whose ``file_size`` exceeds the threshold.
+
+    A small plain upload stays synchronous (fast parse, immediate summary)."""
+    if getattr(file_doc, "is_remote_file", False):
+        return True
+    name = (getattr(file_doc, "file_name", "") or getattr(file_doc, "file_url", "") or "").lower()
+    if name.endswith(".zip"):
+        return True
+    return (file_doc.file_size or 0) > _async_threshold_bytes()
 
 # A 'Running' log older than this is treated as stale (its worker likely died
 # without finalising), so it no longer blocks a fresh run - otherwise a crashed run
@@ -471,13 +501,10 @@ def _assert_file_access(file_doc) -> None:
     )
 
 
-def _source_from_file(file_url):
-    """Load the uploaded File and wrap it as a FileTallySource.
-
-    Returns ``(file_doc, source)`` - most callers only need the source, but the
-    migration run also reads ``file_doc.file_name`` for the log label. Access is
-    checked (see ``_assert_file_access``) and the parse is cached per file version.
-    """
+def _resolve_file_doc(file_url):
+    """Resolve a file_url to an access-checked File doc, *without* reading or parsing
+    it - so the run endpoint can decide sync-vs-background on cheap metadata (size,
+    remote flag) before paying the parse. Shared with ``_source_from_file``."""
     # Frappe stores byte-identical uploads at one path, so a single file_url can map
     # to several File rows owned by different users (e.g. the same export uploaded by
     # two people). Prefer the row owned by the current user; otherwise fall back to any
@@ -497,6 +524,17 @@ def _source_from_file(file_url):
         )
     file_doc = frappe.get_doc("File", name)
     _assert_file_access(file_doc)
+    return file_doc
+
+
+def _source_from_file(file_url):
+    """Load the uploaded File and wrap it as a FileTallySource.
+
+    Returns ``(file_doc, source)`` - most callers only need the source, but the
+    migration run also reads ``file_doc.file_name`` for the log label. Access is
+    checked (see ``_assert_file_access``) and the parse is cached per file version.
+    """
+    file_doc = _resolve_file_doc(file_url)
     cache_key = (frappe.session.user, file_doc.name, str(file_doc.modified))
     with _SOURCE_CACHE_LOCK:
         source = _SOURCE_CACHE.get(cache_key)
@@ -505,9 +543,12 @@ def _source_from_file(file_url):
             return file_doc, source
         # A zipped XML is accepted transparently: unzip (with the uncompressed
         # size held to the same cap) before decoding, so the parser only ever
-        # sees plain XML bytes regardless of how the file was uploaded.
+        # sees plain XML bytes regardless of how the file was uploaded. The raw
+        # bytes are handed to FileTallySource as-is so it can decode + sanitize +
+        # parse them in a single streaming pass, instead of us materialising the
+        # whole decoded document here first.
         raw = unzip_if_zip(_raw_file_bytes(file_doc), _max_upload_bytes())
-        source = FileTallySource(_decode(raw))
+        source = FileTallySource(raw)
         _SOURCE_CACHE[cache_key] = source            # inserts as most-recently used
         while len(_SOURCE_CACHE) > _SOURCE_CACHE_MAX:
             _SOURCE_CACHE.popitem(last=False)        # evict least-recently used
@@ -722,7 +763,7 @@ def _run_and_summarize(config: TallyConfig, source, uom_overrides: dict | None =
     return result
 
 
-def _enqueue_masters_run(config: TallyConfig, file_url, erpnext_company, uom_overrides,
+def _enqueue_masters_run(file_url, file_name, erpnext_company, uom_overrides,
                          validation_report, record_overrides, coa_mode, posting_date,
                          created_uoms="") -> dict:
     """Create the log now, hand the run to a background worker, return the log name.
@@ -731,7 +772,21 @@ def _enqueue_masters_run(config: TallyConfig, file_url, erpnext_company, uom_ove
     track immediately; the worker reuses that same log rather than creating a new
     one. ``enqueue_after_commit`` ensures the job is only published once the log is
     durably committed, so the worker can never race ahead of it.
+
+    The file is *not* parsed here: the log is created from cheap metadata with empty
+    coverage/mapping reports, and the worker computes and backfills those after its
+    single parse (see ``_run_masters_job``).
     """
+    config = TallyConfig(
+        erpnext_company=erpnext_company,
+        tally_company=f"File: {file_name or file_url}",
+        source_file=file_url,
+        validation_report=validation_report or "",
+        coverage_report="",          # backfilled by the worker after it parses
+        mapping_report="",
+        coa_mode=coa_mode if coa_mode in ("reuse", "mirror") else "reuse",
+        posting_date=posting_date or "",
+    )
     migrator = MasterMigrator(config, source=None)
     log = migrator._create_log()
     # Stamp the log with the RQ job id so the active-run guard can ask RQ whether the
@@ -770,6 +825,13 @@ def _run_masters_job(file_url, erpnext_company, uom_overrides, validation_report
         file_url, file_doc.file_name, erpnext_company, source,
         validation_report, coa_mode, posting_date)
     log = frappe.get_doc("Tally Migration Log", log_name)
+    # Backfill the source-derived reports the (deferred) web request left empty, so an
+    # enqueued run's log shows the same coverage/mapping a synchronous run would. Only
+    # when still empty, so a re-run from an existing log never clobbers them.
+    if config.coverage_report and not log.coverage_report:
+        log.db_set("coverage_report", config.coverage_report, update_modified=False)
+    if config.mapping_report and not log.mapping_report:
+        log.db_set("mapping_report", config.mapping_report, update_modified=False)
     MasterMigrator(
         config, source=source, uom_overrides=uom, record_overrides=records, log=log,
         created_uoms=created,
