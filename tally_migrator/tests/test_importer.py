@@ -1049,6 +1049,35 @@ class TestERPNextImporter(unittest.TestCase):
         self.assertNotIn(grp, accounts, "the group account must be skipped")
         self.assertTrue(any("group account" in w["reason"] for w in res.warnings))
 
+    def test_accounting_dimensions_cached_memoises_and_restores(self):
+        """The opening-stock phase memoises ERPNext's per-item get_accounting_dimensions
+        (a company-wide constant) to cut a DB round-trip per item, then restores it.
+        The wrapper must hit the underlying lookup once, return a fresh copy each call
+        (so a mutating caller can't corrupt the cache), and restore the original."""
+        from tally_migrator.erpnext.importers import openings
+        from erpnext.accounts.doctype.accounting_dimension import accounting_dimension as ad
+
+        calls = {"n": 0}
+
+        def spy(as_list=True):
+            calls["n"] += 1
+            return ["dim_a"]
+
+        original = ad.get_accounting_dimensions
+        ad.get_accounting_dimensions = spy
+        try:
+            with openings._accounting_dimensions_cached():
+                r1 = ad.get_accounting_dimensions()
+                r2 = ad.get_accounting_dimensions()
+                r3 = ad.get_accounting_dimensions()
+            self.assertEqual(calls["n"], 1, "the underlying lookup should run once")
+            self.assertEqual(r1, ["dim_a"])
+            self.assertIsNot(r1, r2, "each call should return a fresh copy")
+            self.assertEqual(r3, ["dim_a"])
+            self.assertIs(ad.get_accounting_dimensions, spy, "must restore on exit")
+        finally:
+            ad.get_accounting_dimensions = original
+
     def test_batch_label_roundtrips_through_remark(self):
         """The label written to user_remark must parse back to the same label, and a
         foreign remark must not be mistaken for one of ours."""

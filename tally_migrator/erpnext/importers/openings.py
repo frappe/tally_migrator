@@ -1,6 +1,7 @@
 """Opening balances: the per-company lock and the three opening importers."""
 
 import contextlib
+import sys
 from dataclasses import dataclass, field
 
 import frappe
@@ -920,6 +921,54 @@ class PartyOpeningImporter:
 
 # ── Opening stock importer ───────────────────────────────────────────────────
 
+@contextlib.contextmanager
+def _accounting_dimensions_cached():
+    """Memoise ERPNext's ``get_accounting_dimensions()`` for the duration of the block.
+
+    Posting opening stock submits one Stock Reconciliation per chunk, and ERPNext's
+    GL/SLE path calls ``get_accounting_dimensions()`` about twice per item - each an
+    uncached DB read of a company-wide constant (the Accounting Dimension list does
+    not change during a migration). On a real book that is ~2 round-trips per item of
+    pure waste, and it dominates on Frappe Cloud where every round-trip carries
+    network latency. We memoise the result for the phase, then restore the original.
+
+    The function is name-imported into several ERPNext modules (general_ledger,
+    accounts_controller, ...), so patching only its source module would miss those
+    bound references. We scan ``sys.modules`` and swap every module-level reference
+    that currently points at the original, restoring each on exit. The wrapper returns
+    a fresh copy per call so a caller that mutates the list can never corrupt the
+    cache. No-op-safe: if ERPNext or the symbol is absent, the block runs unchanged."""
+    try:
+        from erpnext.accounts.doctype.accounting_dimension import accounting_dimension as _ad
+    except Exception:
+        yield
+        return
+    original = getattr(_ad, "get_accounting_dimensions", None)
+    if original is None:
+        yield
+        return
+
+    cache: dict = {}
+
+    def cached(as_list=True):
+        if as_list not in cache:
+            cache[as_list] = original(as_list=as_list)
+        value = cache[as_list]
+        return list(value) if isinstance(value, list) else value
+
+    # Every module that did ``from ...accounting_dimension import get_accounting_dimensions``
+    # holds its own reference; patch them all (plus the source module).
+    patched = [m for m in list(sys.modules.values())
+               if getattr(m, "get_accounting_dimensions", None) is original]
+    for m in patched:
+        m.get_accounting_dimensions = cached
+    try:
+        yield
+    finally:
+        for m in patched:
+            m.get_accounting_dimensions = original
+
+
 class StockOpeningImporter:
     """Posts item opening stock as one submitted 'Opening Stock' Stock Reconciliation.
 
@@ -1002,14 +1051,18 @@ class StockOpeningImporter:
         if any(r.get("use_serial_batch_fields") for r in pending):
             self._ensure_serial_batch_enabled(result)
 
-        for i in range(0, len(pending), self._CHUNK):
-            chunk = pending[i:i + self._CHUNK]
-            if not self._post_doc(chunk, posting_date, result):
-                # The chunk failed as a unit - retry each row on its own so one bad
-                # row (e.g. an unforeseen validation) cannot cost the other ~100
-                # their opening stock. A 1-row doc also submits synchronously.
-                for row in chunk:
-                    self._post_doc([row], posting_date, result, isolate=True)
+        # Memoise the per-item Accounting Dimension lookup ERPNext repeats on every
+        # GL/SLE posting (a company-wide constant) - the dominant avoidable round-trip
+        # cost of this phase, especially on Frappe Cloud. See _accounting_dimensions_cached.
+        with _accounting_dimensions_cached():
+            for i in range(0, len(pending), self._CHUNK):
+                chunk = pending[i:i + self._CHUNK]
+                if not self._post_doc(chunk, posting_date, result):
+                    # The chunk failed as a unit - retry each row on its own so one bad
+                    # row (e.g. an unforeseen validation) cannot cost the other ~100
+                    # their opening stock. A 1-row doc also submits synchronously.
+                    for row in chunk:
+                        self._post_doc([row], posting_date, result, isolate=True)
         return result
 
     def _post_doc(self, rows: list, posting_date: str, result: ImportResult,
