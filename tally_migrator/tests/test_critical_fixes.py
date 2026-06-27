@@ -97,7 +97,7 @@ class TestOpeningBalanceGuards(unittest.TestCase):
         acc = _node("Cash", None)
         acc.opening_balance, acc.is_group, acc.opening_dr_cr = 5000.0, 0, "Dr"
         acc.root_type = "Asset"
-        with mock.patch("frappe.db.exists", return_value=True):
+        with mock.patch("frappe.db.get_value", return_value=0):  # exists, is_group=0
             lines = imp._account_lines([acc], result)
         self.assertEqual(len(lines), 1)
         self.assertEqual(result.warned, 0)
@@ -161,11 +161,22 @@ class TestPLOpeningSkipped(unittest.TestCase):
 
     def test_balance_sheet_line_posts_without_cost_center(self):
         imp, result = self._imp(), ImportResult("Journal Entry")
-        with mock.patch("frappe.db") as db:
-            db.exists.return_value = True
+        with mock.patch("frappe.db.get_value", return_value=0):  # exists, is_group=0
             lines = imp._account_lines([self._ledger("Asset")], result)
         self.assertEqual(len(lines), 1)
         self.assertNotIn("cost_center", lines[0])
+
+    def test_group_account_line_skipped_with_warning(self):
+        # An account that resolved to a GROUP in ERPNext (e.g. a Tally ledger promoted
+        # so its sub-accounts could nest) cannot carry a balance and would fail the
+        # whole class batch on submit, so it must be skipped with a warning.
+        imp, result = self._imp(), ImportResult("Journal Entry")
+        with mock.patch("frappe.db.get_value", return_value=1):  # exists, but is_group=1
+            lines = imp._account_lines([self._ledger("Asset")], result)
+        self.assertEqual(lines, [])
+        self.assertEqual(result.warned, 1)
+        self.assertEqual(result.failed, 0)
+        self.assertIn("group account", result.warnings[0]["reason"])
 
 
 class TestOpeningConcurrencyLock(unittest.TestCase):

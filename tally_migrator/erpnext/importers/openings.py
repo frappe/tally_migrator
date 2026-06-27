@@ -266,11 +266,29 @@ class OpeningBalanceImporter:
                     "not posted. It is included in the Temporary Opening total instead.")
                 continue
             account = company_scoped(node.name, self.abbr)
-            if not frappe.db.exists("Account", account):
+            is_group = frappe.db.get_value("Account", account, "is_group")
+            if is_group is None:
                 result.add_warning(
                     node.name,
                     f"opening balance skipped - account '{account}' was not created "
                     "(its import failed earlier). Fix the account and re-run.")
+                continue
+            # The Tally ledger exists in ERPNext as a GROUP account - it had
+            # sub-accounts under it in Tally, so it was created (or promoted) as a
+            # group, and ERPNext forbids a group account from carrying a balance
+            # ("group accounts cannot be used in transactions"). Including it would
+            # fail the whole class's Opening Entry on submit and lose every balance in
+            # that batch, so skip just this line. The amount is not lost: the batch
+            # plugs against Temporary Opening, so it stays inside that difference, to
+            # be cleared when the user completes their opening entries - the same
+            # contract as an income/expense opening above.
+            if is_group:
+                result.add_warning(
+                    node.name,
+                    f"opening balance skipped - account '{account}' exists as a group "
+                    "account (its Tally ledger had sub-accounts), and ERPNext does not "
+                    f"allow a group account to carry a balance, so {abs(node.opening_balance):,.2f} "
+                    "was not posted. It is included in the Temporary Opening total instead.")
                 continue
             lines.append(self._line(account, node.opening_balance, node.opening_dr_cr))
         return lines

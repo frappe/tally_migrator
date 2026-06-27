@@ -1007,6 +1007,48 @@ class TestERPNextImporter(unittest.TestCase):
         self.assertEqual(result.skipped, 1)
         self.assertTrue(any("already posted" in w["reason"] for w in result.warnings))
 
+    def test_opening_balance_skips_account_that_is_a_group_in_erpnext(self):
+        """A Tally ledger that exists in ERPNext as a GROUP (e.g. promoted so its
+        sub-accounts could nest - see test_account_group_promotes_colliding_ledger)
+        must be skipped from the opening Journal Entry, not added as a line. A group
+        account cannot carry a balance, and one such line fails the whole class batch
+        on submit, losing every opening balance in it. Regression for the Step 3 /
+        opening-balance interaction."""
+        require_company()
+        from tally_migrator.erpnext.importers.openings import OpeningBalanceImporter
+        from tally_migrator.erpnext.importers.base import ImportResult
+        from tally_migrator.tally.extractors import AccountNode
+        from tally_migrator.naming import company_scoped
+
+        company = self.company
+        abbr = frappe.get_value("Company", company, "abbr")
+        root = frappe.db.get_value(
+            "Account", {"company": company, "root_type": "Liability",
+                        "is_group": 1, "parent_account": ["is", "not set"]}, "name")
+        grp_base, led_base = "_TMTest Promoted Liab", "_TMTest Plain Liab"
+        grp, led = company_scoped(grp_base, abbr), company_scoped(led_base, abbr)
+        if not frappe.db.exists("Account", grp):
+            frappe.get_doc({"doctype": "Account", "account_name": grp_base,
+                            "company": company, "parent_account": root,
+                            "is_group": 1, "root_type": "Liability"}).insert(ignore_permissions=True)
+        if not frappe.db.exists("Account", led):
+            frappe.get_doc({"doctype": "Account", "account_name": led_base,
+                            "company": company, "parent_account": root,
+                            "is_group": 0, "root_type": "Liability"}).insert(ignore_permissions=True)
+
+        def node(name):
+            return AccountNode(name=name, parent="", is_group=False, root_type="Liability",
+                               account_type="", is_reserved=False,
+                               opening_balance=1000.0, opening_dr_cr="Cr")
+
+        res = ImportResult("Journal Entry")
+        lines = OpeningBalanceImporter(company, abbr)._account_lines(
+            [node(grp_base), node(led_base)], res)
+        accounts = [l["account"] for l in lines]
+        self.assertIn(led, accounts, "the ordinary ledger opening should still post")
+        self.assertNotIn(grp, accounts, "the group account must be skipped")
+        self.assertTrue(any("group account" in w["reason"] for w in res.warnings))
+
     def test_batch_label_roundtrips_through_remark(self):
         """The label written to user_remark must parse back to the same label, and a
         foreign remark must not be mistaken for one of ours."""

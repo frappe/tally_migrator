@@ -953,6 +953,10 @@ migration.
   quantity times rate; the opening rate was used. Verify in Tally.
 - **"... is held in Temporary Opening to keep your books balanced"** - normal; see
   the Temporary Opening explanation.
+- **"opening balance skipped - account ... exists as a group account"** - the Tally
+  ledger had sub-accounts, so it was created as a group, and ERPNext does not let a
+  group account carry a balance. Its opening amount is held in Temporary Opening
+  instead; the rest of that account class still posts normally.
 - **"this company already has an Opening Entry that was not created by this
   migrator"** - opening balances were skipped to avoid double-posting against a
   manually set-up book. Cancel that entry first if you want this migration to post
