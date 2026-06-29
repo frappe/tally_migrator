@@ -52,10 +52,18 @@ class AccountImporter:
         self.abbr = abbr
         self.mode = mode if mode in ("reuse", "mirror") else "reuse"
         self._group_cache: dict[str, str] = {}
+        # Tally group name -> ERPNext parent account its children should nest under,
+        # for groups whose name collides with an existing account we must NOT convert
+        # (see _build_redirects). Empty until run() builds it.
+        self._redirect: dict[str, str] = {}
 
     def run(self, accounts: list) -> ImportResult:
         result = ImportResult(self.doctype)
-        for node in self._ordered(self._select(accounts)):
+        ordered = self._ordered(self._select(accounts))
+        # Decide up front which Tally groups collide with an existing account we must
+        # leave intact, so child parent-resolution can re-home them (order-independent).
+        self._build_redirects(ordered, result)
+        for node in ordered:
             parent = self._resolve_parent(node)
             if not parent:
                 result.add_error(node.name, "could not resolve a parent account")
@@ -101,10 +109,16 @@ class AccountImporter:
 
     def _resolve_parent(self, node) -> str | None:
         parent = node.parent
-        if self.mode == "mirror":
-            return self._erp_name(parent) if parent else self._root_group(node.root_type)
         if not parent:
             return self._root_group(node.root_type)
+        if parent in self._redirect:
+            # The Tally parent group's name collides with an existing account we keep
+            # as a ledger (never converted), so its children nest under that account's
+            # own parent instead - see _build_redirects. Applies in both modes: we never
+            # convert the ledger, so its children always re-home.
+            return self._redirect[parent]
+        if self.mode == "mirror":
+            return self._erp_name(parent)
         cls = classify_group(parent)
         if cls:  # parent is a reserved group → use its ERPNext default group
             return self._default_group(cls["erpnext_group"], node.root_type)
@@ -136,20 +150,14 @@ class AccountImporter:
 
     def _upsert(self, result: ImportResult, node, parent: str) -> None:
         try:
-            existing = frappe.db.get_value(
-                "Account", self._erp_name(node.name), ["name", "is_group"], as_dict=True)
-            if existing:
-                # The name is already taken. MariaDB's default collation is
-                # case-insensitive, so a Tally custom group ("OFFICE EQUIPMENT")
-                # collides with a standard-CoA *ledger* of the same name
-                # ("Office Equipment", a Fixed Asset ledger). Skipping would leave a
-                # ledger where a group is needed, and every child would then fail with
-                # "Parent account ... can not be a ledger". When we need a group but the
-                # existing account is a ledger, promote it so the children can nest.
-                if node.is_group and not existing.is_group:
-                    self._promote_to_group(result, existing.name, node)
-                else:
-                    result.skipped += 1
+            if frappe.db.exists("Account", self._erp_name(node.name)):
+                # The name is already taken - a re-run's own account, a reserved group,
+                # or a Tally group colliding with a standard ledger. We never convert or
+                # overwrite an existing account (it may be load-bearing - e.g. India
+                # Compliance wires "TDS Payable" into its tax-withholding setup). A
+                # colliding group's children were re-homed to the existing account's
+                # parent in _build_redirects, so here we simply skip.
+                result.skipped += 1
                 return
             doc = {
                 "doctype": "Account",
@@ -175,40 +183,43 @@ class AccountImporter:
         if not node.is_group and node.account_type == "Bank" and node.bank_account_no:
             self._save_company_bank_account(node, d.name, result)
 
-    def _promote_to_group(self, result: ImportResult, account_name: str, node) -> None:
-        """Convert an existing ledger Account to a group so Tally's children can nest.
+    def _build_redirects(self, ordered: list, result: ImportResult) -> None:
+        """Map each Tally group whose name collides with an existing *ledger* to that
+        ledger's parent group, so the group's children nest there instead.
 
-        Reached only when a Tally group's name collides (case-insensitively) with an
-        existing ledger - typically an empty standard-CoA placeholder ledger. The
-        ledger is converted in place; ERPNext rebuilds the tree. A converted account
-        is reported as created (it is now the group the migration needs) plus a warning
-        so the reuse is visible in the log.
-        """
-        try:
-            acc = frappe.get_doc("Account", account_name)
-            if acc.check_gle_exists():
-                # Only possible on a re-run after transactions posted; ERPNext (rightly)
-                # forbids converting a transacting account. Surface it instead of crashing.
-                result.add_error(
-                    node.name,
-                    f"could not create group '{node.name}': an account named "
-                    f"'{account_name}' already exists and has transactions, so it "
-                    "cannot be converted to a group")
-                return
-            # These placeholder ledgers carry an account_type (e.g. Fixed Asset, Tax);
-            # the flag lets a typed account become a group, which ERPNext otherwise blocks.
-            acc.flags.exclude_account_type_check = True
-            acc.flags.ignore_permissions = True
-            acc.convert_ledger_to_group()
-            frappe.db.commit()
-            result.add_created(acc.name)
+        A Tally custom group ("OFFICE EQUIPMENT", "TDS PAYABLE") can share a name -
+        case-insensitively, the way MariaDB compares - with an account ERPNext already
+        ships as a ledger ("Office Equipment"; "TDS Payable", a Tax account India
+        Compliance wires into every Tax Withholding Category). We must NOT convert that
+        ledger to a group: converting strips its load-bearing role and breaks the
+        features that depend on it (opening entries, IC tax withholding, company
+        defaults). Instead we leave the ledger exactly as it is and re-home the Tally
+        group's sub-accounts to the ledger's own parent group - so every sub-account
+        still imports, one level flatter, and nothing standard is mutated.
+
+        Builds ``self._redirect`` (Tally group name -> ERPNext parent account name).
+        ``_resolve_parent`` consults it; ``_upsert`` then skips the colliding group
+        itself (its name is taken by the ledger we are keeping)."""
+        self._redirect = {}
+        for node in ordered:
+            if not node.is_group:
+                continue
+            existing = frappe.db.get_value(
+                "Account", self._erp_name(node.name),
+                ["name", "is_group", "parent_account", "root_type"], as_dict=True)
+            if not existing or existing.is_group:
+                continue  # free to create, or an existing group we can nest under
+            target = existing.parent_account or self._root_group(
+                existing.root_type or node.root_type)
+            if not target:
+                continue  # no safe parent to re-home under; let _upsert skip + warn-free
+            self._redirect[node.name] = target
             result.add_warning(
                 node.name,
-                f"reused existing account '{account_name}' and converted it to a group "
-                "so the Tally sub-accounts under it could be created")
-        except Exception as exc:
-            frappe.db.rollback()
-            result.add_error(node.name, exc)
+                f"a Tally group with this name matches the existing account "
+                f"'{existing.name}', which is kept as a ledger (converting it would "
+                f"break ERPNext features that rely on it). Its sub-accounts were placed "
+                f"under '{target}' instead.")
 
     def _save_company_bank_account(self, node, account_name: str,
                                    result: ImportResult) -> None:
