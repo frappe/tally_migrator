@@ -1157,41 +1157,65 @@ class StockOpeningImporter:
         ``(warehouse, raw_qty, raw_rate, raw_value, batch)`` buckets fed to
         :meth:`_add_opening_row`.
 
+        The governing invariant: the rows for an item must total ``item_qty x
+        item_rate`` - the value the reconciliation counts - whatever the godown data
+        looks like. So:
+
         - No godown-wise detail (``GodownOpenings`` empty, e.g. a live client or an
           older export) → one bucket at the default warehouse using the item-level
           OpeningBalance/Rate/Value, i.e. exactly the legacy behaviour.
-        - Godown-wise detail present → one bucket per (resolved warehouse, batch).
-          Several godowns that map to the same warehouse *and* batch (e.g. both fall
-          back to the default because they weren't migrated) are summed, so nothing
-          is lost and the rows stay unique. A bucket fed by a single godown keeps
-          that godown's raw rate (preserving the unit-suffixed rate and the
-          value/rate cross-check); a summed bucket derives its rate from value÷qty.
-          ``batch`` is "" for non-batch items, so they behave exactly as before.
+        - Godown-wise detail present → net each allocation into its (resolved
+          warehouse, batch) bucket using SIGNED quantity. Tally's per-godown rows can
+          include negatives (transfers / oversold) that are only authoritative once
+          summed back to the item total. A clean split (every netted bucket >= 0 and
+          the buckets reproduce the item-level quantity) posts one row per bucket;
+          each is valued at the *item-level* rate, distributing only the quantity, so
+          the posted total ties exactly to the item value. Per-godown rate/value is
+          deliberately not trusted - it is frequently blank (then the row would post
+          at zero value) or internally inconsistent with the item total.
+        - When the godown split is not faithfully postable (a net-negative bucket,
+          which ERPNext opening stock cannot hold, or buckets that do not tie to the
+          item-level quantity) → fall back to the single item-level row, which always
+          reconciles. The per-warehouse detail is sacrificed for that one item, not
+          its value, and the run records a warning via the zero/negative handling.
+        ``batch`` is "" for non-batch items, so they behave exactly as before.
         """
+        item_qty = TallyExtractor.item_opening_qty(it)
+        legacy = [(default_wh, it.get("OpeningBalance"),
+                   it.get("OpeningRate"), it.get("OpeningValue"), "")]
         godowns = it.get("GodownOpenings") or []
         if not godowns:
-            return [(default_wh, it.get("OpeningBalance"),
-                     it.get("OpeningRate"), it.get("OpeningValue"), "")]
+            return legacy
+        # A non-positive item quantity is not postable (and the legacy row drops it
+        # with a warning); never let a stray positive godown row post against it.
+        if item_qty <= 0:
+            return legacy
         # Tally stamps EVERY item's opening allocation with a batch name - an implicit
         # "Primary Batch" even for non-batch items - so the batch is only meaningful
         # when the item is actually batch-tracked. Otherwise batch_no would be set on a
         # has_batch_no=0 item and the reconciliation would be rejected.
         is_batch = (it.get("IsBatchWiseOn") or "").strip().lower() == "yes"
-        buckets: dict[tuple, list] = {}
+        buckets: dict[tuple, float] = {}
         for g in godowns:
             wh = self._warehouse_for_godown(g.get("godown", ""), default_wh)
             batch = (g.get("batch") or "").strip() if is_batch else ""
-            buckets.setdefault((wh, batch), []).append(g)
+            buckets[(wh, batch)] = buckets.get((wh, batch), 0.0) + \
+                TallyExtractor._parse_quantity(g.get("qty"))
+        # Faithfulness gate: a net-negative bucket cannot be posted, and a breakdown
+        # that does not sum to the item-level quantity would mis-state it. Either way,
+        # post the item-level row instead so the value still reconciles exactly.
+        if any(qty < -1e-9 for qty in buckets.values()):
+            return legacy
+        if abs(sum(buckets.values()) - item_qty) > 1e-6:
+            return legacy
+        # Value every bucket at the item-level rate, distributing only the quantity.
+        item_rate = TallyExtractor.item_opening_rate(it)
         placements: list[tuple] = []
-        for (wh, batch), gs in buckets.items():
-            if len(gs) == 1:
-                g = gs[0]
-                placements.append((wh, g.get("qty"), g.get("rate"), g.get("value"), batch))
-            else:
-                qsum = sum(TallyExtractor._parse_quantity(g.get("qty")) for g in gs)
-                vsum = sum(abs(BaseImporter._to_float(g.get("value"))) for g in gs)
-                placements.append((wh, str(qsum), "", str(vsum), batch))
-        return placements
+        for (wh, batch), qty in buckets.items():
+            if qty <= 1e-9:
+                continue
+            placements.append((wh, str(qty), str(item_rate), "", batch))
+        return placements or legacy
 
     def _warehouse_for_godown(self, godown: str, default_wh: str) -> str:
         """Map a Tally godown name to its migrated ERPNext warehouse

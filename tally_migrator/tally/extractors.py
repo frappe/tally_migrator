@@ -536,6 +536,65 @@ class TallyExtractor:
             return 0.0
 
     @staticmethod
+    def _to_float(raw) -> float:
+        """Parse a Tally numeric cell (e.g. an opening value '-31329.00') → float.
+        Returns 0.0 when there is no leading number. Sign is preserved."""
+        s = str(raw or "").strip().replace(",", "")
+        if not s:
+            return 0.0
+        m = re.match(r"[-+]?\d*\.?\d+", s)
+        if not m:
+            return 0.0
+        try:
+            return float(m.group(0))
+        except ValueError:
+            return 0.0
+
+    @staticmethod
+    def item_opening_qty(it: dict) -> float:
+        """Authoritative opening quantity for a stock item (signed). The item-level
+        OpeningBalance when Tally states it, else the sum of the godown allocations.
+        Tally normally records the item level as that sum, but falling back keeps a
+        godown-only item counted and posted consistently. Shared by the importer and
+        the reconciliation so both sides agree on what an item's opening qty is."""
+        qty = TallyExtractor._parse_quantity(it.get("OpeningBalance"))
+        if qty != 0:
+            return qty
+        return sum(TallyExtractor._parse_quantity(g.get("qty"))
+                   for g in (it.get("GodownOpenings") or []))
+
+    @staticmethod
+    def item_opening_rate(it: dict) -> float:
+        """Authoritative opening valuation rate for a stock item - the single rule
+        shared by the importer (which posts qty x rate) and the reconciliation (which
+        counts qty x rate), so the two sides always tie.
+
+        Cascade: the item-level opening rate, then the item-level value / qty, then
+        the item's standard cost, and finally - when Tally records a rate only on the
+        godown allocations and leaves the item master blank - the summed allocation
+        value / qty (signed, so transfers net out). Returns 0.0 when no valuation can
+        be found anywhere; the item then posts at zero value (with a warning).
+        """
+        qty = abs(TallyExtractor.item_opening_qty(it))
+        if qty == 0:
+            return 0.0
+        rate = TallyExtractor._parse_rate(it.get("OpeningRate"))
+        if rate:
+            return rate
+        value = abs(TallyExtractor._to_float(it.get("OpeningValue")))
+        if value:
+            return value / qty
+        rate = TallyExtractor._parse_rate(it.get("StandardCost"))
+        if rate:
+            return rate
+        godown_value = abs(sum(
+            TallyExtractor._to_float(g.get("value"))
+            for g in (it.get("GodownOpenings") or [])))
+        if godown_value:
+            return godown_value / qty
+        return 0.0
+
+    @staticmethod
     def _parse_opening(raw) -> tuple[float, str]:
         """Parse a Tally opening balance → (abs_amount, 'Dr'|'Cr'|'').
 

@@ -1556,6 +1556,95 @@ class TestERPNextImporter(unittest.TestCase):
         self.assertEqual(captured["items"][0]["valuation_rate"], 10.0)  # 300 / 30
         self.assertFalse(any("more than once" in w["reason"] for w in result.warnings))
 
+    # ── Godown-wise opening stock invariant (no DB - placement maths only) ──────
+
+    def _godown_rows(self, item, default="WH - TC"):
+        """Build the opening rows _placements + _add_opening_row produce for ``item``,
+        with the godown→warehouse map stubbed (a named godown migrates to
+        '<godown> - TC', a blank one falls to the default)."""
+        from tally_migrator.erpnext.importers import StockOpeningImporter
+        from tally_migrator.erpnext.importers.base import ImportResult
+        imp = StockOpeningImporter("_TMTest Co", "TC")
+        imp._warehouse_for_godown = lambda g, d: (f"{g} - TC" if g else d)
+        res, by_key = ImportResult("Stock Reconciliation"), {}
+        for wh, q, r, v, b in imp._placements(item, default):
+            imp._add_opening_row(by_key, item["_name"], wh, q, r, v,
+                                 item.get("StandardCost"), res, batch=b)
+        return list(by_key.values()), res
+
+    def test_negative_godown_allocation_falls_back_to_item_level(self):
+        """+99 in one godown and -58 in another net to the item-level 41. ERPNext
+        cannot hold the -58, so post the item-level net (41) at the item rate - never
+        the gross 99, and never at zero value."""
+        item = {"_name": "Case", "IsBatchWiseOn": "No", "OpeningBalance": "41 PCS",
+                "OpeningRate": "758.48/PCS", "OpeningValue": "", "StandardCost": "",
+                "GodownOpenings": [
+                    {"godown": "CHD", "qty": "99 PCS", "rate": "", "value": ""},
+                    {"godown": "Main", "qty": "-58 PCS", "rate": "", "value": ""}]}
+        rows, _ = self._godown_rows(item)
+        self.assertEqual(len(rows), 1)
+        self.assertEqual(rows[0]["qty"], 41.0)
+        self.assertEqual(rows[0]["valuation_rate"], 758.48)
+        self.assertEqual(rows[0]["warehouse"], "WH - TC")   # item-level default
+
+    def test_divergent_per_godown_rate_uses_item_rate(self):
+        """Godowns carrying their own (higher) rate are still valued at the item-level
+        rate, so the posted total ties to item_qty x item_rate, not the godown rates."""
+        item = {"_name": "Pods", "IsBatchWiseOn": "No", "OpeningBalance": "2 Nos",
+                "OpeningRate": "1000.00/Nos", "OpeningValue": "", "StandardCost": "",
+                "GodownOpenings": [
+                    {"godown": "A", "qty": "1 Nos", "rate": "1500.00/Nos", "value": "-1500.00"},
+                    {"godown": "B", "qty": "1 Nos", "rate": "1500.00/Nos", "value": "-1500.00"}]}
+        rows, _ = self._godown_rows(item)
+        self.assertEqual(sum(r["qty"] for r in rows), 2.0)
+        self.assertTrue(all(r["valuation_rate"] == 1000.0 for r in rows))
+
+    def test_godown_qty_mismatch_falls_back_to_item_level(self):
+        """When the godown allocations do not sum to the item-level quantity the split
+        is not faithful, so post the item-level row (which always reconciles)."""
+        item = {"_name": "Widget", "IsBatchWiseOn": "No", "OpeningBalance": "30 Nos",
+                "OpeningRate": "10.00/Nos", "OpeningValue": "", "StandardCost": "",
+                "GodownOpenings": [
+                    {"godown": "A", "qty": "15 Nos", "rate": "", "value": ""},
+                    {"godown": "B", "qty": "10 Nos", "rate": "", "value": ""}]}   # sums to 25
+        rows, _ = self._godown_rows(item)
+        self.assertEqual(len(rows), 1)
+        self.assertEqual(rows[0]["qty"], 30.0)
+        self.assertEqual(rows[0]["valuation_rate"], 10.0)
+        self.assertEqual(rows[0]["warehouse"], "WH - TC")
+
+    def test_clean_godown_split_posts_per_warehouse_at_item_rate(self):
+        """A clean, all-positive split that ties to the item quantity posts one row per
+        warehouse, each at the item-level rate (total == item_qty x item_rate)."""
+        item = {"_name": "Cable", "IsBatchWiseOn": "No", "OpeningBalance": "30 Nos",
+                "OpeningRate": "10.00/Nos", "OpeningValue": "", "StandardCost": "",
+                "GodownOpenings": [
+                    {"godown": "A", "qty": "20 Nos", "rate": "", "value": ""},
+                    {"godown": "B", "qty": "10 Nos", "rate": "", "value": ""}]}
+        rows, _ = self._godown_rows(item)
+        by_wh = {r["warehouse"]: r for r in rows}
+        self.assertEqual(by_wh["A - TC"]["qty"], 20.0)
+        self.assertEqual(by_wh["B - TC"]["qty"], 10.0)
+        self.assertTrue(all(r["valuation_rate"] == 10.0 for r in rows))
+        self.assertEqual(sum(r["qty"] * r["valuation_rate"] for r in rows), 300.0)
+
+    def test_item_opening_qty_and_rate_helpers(self):
+        """The shared qty/rate rule: item level wins, else the godown allocations."""
+        from tally_migrator.tally.extractors import TallyExtractor as TE
+        # qty: item-level OpeningBalance, else summed godown qty
+        self.assertEqual(TE.item_opening_qty({"OpeningBalance": "41 PCS"}), 41.0)
+        self.assertEqual(TE.item_opening_qty(
+            {"OpeningBalance": "", "GodownOpenings": [{"qty": "20 Nos"}, {"qty": "10 Nos"}]}),
+            30.0)
+        # rate: item rate, then value/qty, then summed godown value/qty
+        self.assertEqual(TE.item_opening_rate(
+            {"OpeningBalance": "10 Nos", "OpeningRate": "5.00/Nos"}), 5.0)
+        self.assertEqual(TE.item_opening_rate(
+            {"OpeningBalance": "10 Nos", "OpeningValue": "-250.00"}), 25.0)
+        self.assertEqual(TE.item_opening_rate(
+            {"OpeningBalance": "30 Nos", "GodownOpenings": [
+                {"value": "-200.00"}, {"value": "-100.00"}]}), 10.0)
+
     # ── Opening-balance batching (no DB - residual maths only) ──────────────────
 
     def test_warn_residual_only_fires_above_threshold(self):

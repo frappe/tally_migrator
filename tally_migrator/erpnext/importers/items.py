@@ -18,6 +18,7 @@ from tally_migrator.tally.mappings import (
     ERPNEXT_ROOT_GROUPS,
     classify_group,
     gst_category_from_type,
+    is_stock_item,
 )
 from tally_migrator.naming import safe_item_code, company_scoped
 from tally_migrator.tally.extractors import TallyExtractor
@@ -246,9 +247,10 @@ class ItemImporter(BaseImporter):
     def _is_stock_item(record: dict) -> int:
         """A Tally Stock Item whose GST supply type is 'Services' maps to a
         non-stock Item in ERPNext (read from GSTDETAILS.LIST/SUPPLYTYPE); every
-        other supply type stays a stock item."""
-        supply = (record.get("TypeOfSupply") or "").strip().lower()
-        return 0 if supply in ("services", "service") else 1
+        other supply type stays a stock item. Delegates to the shared, pure rule
+        (mappings.is_stock_item) so the reconciliation counts stock for exactly
+        the items posted here."""
+        return is_stock_item(record)
 
     @staticmethod
     def _gst_treatment(gst_type: str):
