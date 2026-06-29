@@ -1592,15 +1592,71 @@ class TestERPNextImporter(unittest.TestCase):
         self.assertEqual(rows[0]["valuation_rate"], 758.48)
         self.assertEqual(rows[0]["warehouse"], "WH - TC")   # item-level default
 
-    def test_negative_godown_batch_item_is_skipped_with_warning(self):
-        """A BATCH-tracked item whose batch allocations net via a negative cannot fall
-        back to a batch-less item-level row (ERPNext rejects it) and cannot be
-        represented as opening stock, so it posts nothing and warns for manual entry -
-        never a wrong value."""
+    def test_negative_godown_batch_item_collapses_to_dominant_batch(self):
+        """A BATCH-tracked item whose batch allocations net via a negative cannot post
+        per batch, but its authoritative item-level qty x rate is homed on the single
+        largest positive batch (value kept, split sacrificed) - never the gross 99,
+        never zero value, never dropped."""
         from tally_migrator.erpnext.importers import StockOpeningImporter
         from tally_migrator.erpnext.importers.base import ImportResult
         imp = StockOpeningImporter("_TMTest Co", "TC")
         imp._warehouse_for_godown = lambda g, d: (f"{g} - TC" if g else d)
+        imp._batch_exists_for_item = lambda batch_id, code: True   # batches created
+        item = {"_name": "Cable", "IsBatchWiseOn": "Yes", "OpeningBalance": "41 PCS",
+                "OpeningRate": "758.48/PCS", "OpeningValue": "", "StandardCost": "",
+                "GodownOpenings": [
+                    {"godown": "CHD", "qty": "99 PCS", "rate": "", "value": "", "batch": "124"},
+                    {"godown": "Main", "qty": "-58 PCS", "rate": "", "value": "", "batch": "Primary"}]}
+        res, by_key = ImportResult("Stock Reconciliation"), {}
+        placements = imp._placements(item, "WH - TC", res)
+        self.assertEqual(len(placements), 1)           # collapsed to one row
+        for wh, q, r, v, b in placements:
+            imp._add_opening_row(by_key, item["_name"], wh, q, r, v,
+                                 item.get("StandardCost"), res, batch=b)
+        rows = list(by_key.values())
+        self.assertEqual(len(rows), 1)
+        self.assertEqual(rows[0]["qty"], 41.0)                 # item-level net, not 99
+        self.assertEqual(rows[0]["valuation_rate"], 758.48)
+        self.assertEqual(rows[0]["warehouse"], "CHD - TC")     # dominant positive bucket
+        self.assertEqual(rows[0]["batch_no"], "124")           # homed on the largest batch
+        self.assertEqual(round(rows[0]["qty"] * rows[0]["valuation_rate"], 2), 31097.68)
+        self.assertIn("single batch line", res.warnings[0]["reason"])
+
+    def test_collapsed_batch_item_homes_on_largest_positive_bucket(self):
+        """With several positive batches and a negative one, the collapsed line lands on
+        the single largest positive (warehouse, batch) bucket, carrying the whole
+        item-level quantity x rate."""
+        from tally_migrator.erpnext.importers import StockOpeningImporter
+        from tally_migrator.erpnext.importers.base import ImportResult
+        imp = StockOpeningImporter("_TMTest Co", "TC")
+        imp._warehouse_for_godown = lambda g, d: (f"{g} - TC" if g else d)
+        imp._batch_exists_for_item = lambda batch_id, code: True
+        item = {"_name": "Cable", "IsBatchWiseOn": "Yes", "OpeningBalance": "59 PCS",
+                "OpeningRate": "100.00/PCS", "OpeningValue": "", "StandardCost": "",
+                "GodownOpenings": [
+                    {"godown": "CHD", "qty": "20 PCS", "rate": "", "value": "", "batch": "A"},
+                    {"godown": "HSP", "qty": "53 PCS", "rate": "", "value": "", "batch": "B"},
+                    {"godown": "MOH", "qty": "-14 PCS", "rate": "", "value": "", "batch": "C"}]}
+        res, by_key = ImportResult("Stock Reconciliation"), {}
+        for wh, q, r, v, b in imp._placements(item, "WH - TC", res):
+            imp._add_opening_row(by_key, item["_name"], wh, q, r, v,
+                                 item.get("StandardCost"), res, batch=b)
+        rows = list(by_key.values())
+        self.assertEqual(len(rows), 1)
+        self.assertEqual(rows[0]["warehouse"], "HSP - TC")   # 53 is the largest bucket
+        self.assertEqual(rows[0]["batch_no"], "B")
+        self.assertEqual(rows[0]["qty"], 59.0)               # full item total
+        self.assertEqual(rows[0]["qty"] * rows[0]["valuation_rate"], 5900.0)
+
+    def test_negative_godown_batch_item_skips_when_no_batch_master(self):
+        """When no positive bucket maps to an existing Batch (e.g. every batch id
+        clashed cross-item and was skipped by the Batch importer), the value cannot be
+        homed anywhere, so the item posts nothing and warns for manual entry."""
+        from tally_migrator.erpnext.importers import StockOpeningImporter
+        from tally_migrator.erpnext.importers.base import ImportResult
+        imp = StockOpeningImporter("_TMTest Co", "TC")
+        imp._warehouse_for_godown = lambda g, d: (f"{g} - TC" if g else d)
+        imp._batch_exists_for_item = lambda batch_id, code: False   # no Batch master
         item = {"_name": "Cable", "IsBatchWiseOn": "Yes", "OpeningBalance": "41 PCS",
                 "OpeningRate": "758.48/PCS", "OpeningValue": "", "StandardCost": "",
                 "GodownOpenings": [

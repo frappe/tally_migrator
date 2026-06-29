@@ -1178,11 +1178,13 @@ class StockOpeningImporter:
           which ERPNext opening stock cannot hold, or buckets that do not tie to the
           item-level quantity) → a NON-batch item falls back to the single item-level
           row, which always reconciles (per-warehouse detail is sacrificed for that one
-          item, not its value). A BATCH-tracked item cannot fall back this way: every
-          opening row needs a ``batch_no`` and the item-level row has none, so ERPNext
-          rejects it. Such an item's batch allocations genuinely cannot be represented
-          as ERPNext opening stock (e.g. a batch quantity that nets negative), so it is
-          skipped with a warning for manual entry - never posted at a wrong value.
+          item, not its value). A BATCH-tracked item cannot fall back to a batch-less
+          item-level row (every opening row needs a ``batch_no``), so instead it is
+          collapsed onto the single real batch that held the most stock - the item
+          quantity x rate posted under the largest positive bucket (see
+          :meth:`_collapse_unpostable_batch`). Value and total are kept; only the
+          per-batch split is sacrificed. If no positive bucket maps to an existing
+          Batch, it is skipped with a warning for manual entry - never a wrong value.
         ``batch`` is "" for non-batch items, so they behave exactly as before.
         """
         item_qty = TallyExtractor.item_opening_qty(it)
@@ -1217,10 +1219,10 @@ class StockOpeningImporter:
                       or abs(sum(buckets.values()) - item_qty) > 1e-6)
         if unfaithful:
             # A non-batch item falls back to the item-level row (still reconciles). A
-            # batch item cannot - the fallback row has no batch_no - and its batch
-            # allocations cannot be represented as ERPNext opening stock, so skip it.
+            # batch item cannot fall back to a batch-less row, but it can still be
+            # homed under a single real batch - collapse it there, keeping its value.
             if is_batch:
-                return self._skip_unpostable_batch(it, result)
+                return self._collapse_unpostable_batch(it, buckets, result)
             return legacy
         # Value every bucket at the item-level rate, distributing only the quantity.
         item_rate = TallyExtractor.item_opening_rate(it)
@@ -1247,6 +1249,56 @@ class StockOpeningImporter:
                 "quantity is negative, or the per-batch split does not reconcile to "
                 "the item's total). Set this item's opening stock manually.")
         return []
+
+    def _collapse_unpostable_batch(self, it: dict, buckets: dict,
+                                   result: "ImportResult | None") -> list:
+        """Home an unrepresentable batch item's opening on a single real batch.
+
+        A batch-tracked item whose Tally breakdown cannot be posted batch-for-batch -
+        a batch quantity nets negative (oversold / transferred), or the buckets do not
+        sum to the item total - still has an authoritative, reconciling item-level
+        quantity and rate: the negatives only net out against the positives at the item
+        level, which ERPNext opening stock cannot represent per batch. Rather than drop
+        the value, collapse to one line - the item-level quantity x rate posted under
+        the single (warehouse, batch) bucket that genuinely held the most stock (the
+        largest positive bucket whose Batch master exists for this item). This mirrors
+        the non-batch fallback (one row, value kept, the per-location split sacrificed)
+        while keeping a real batch so ERPNext accepts the row, and it ties the
+        reconciliation exactly. When no positive bucket maps to an existing Batch (e.g.
+        every batch id clashed cross-item and was skipped, or the positives carry no
+        batch name) the value cannot be homed anywhere, so fall back to skipping with a
+        warning for manual entry.
+        """
+        item_qty = TallyExtractor.item_opening_qty(it)
+        item_rate = TallyExtractor.item_opening_rate(it)
+        code = safe_item_code(it.get("_name", ""))
+        shared = getattr(self, "_shared_batch_names", set())
+        # Largest positive (warehouse, batch) bucket whose Batch exists for this item:
+        # the most representative single home for the collapsed quantity.
+        for (wh, batch), qty in sorted(
+                buckets.items(), key=lambda kv: kv[1], reverse=True):
+            if qty <= 1e-9 or not batch:
+                continue
+            if not self._batch_exists_for_item(batch_id_for(batch, code, shared), code):
+                continue
+            if result is not None:
+                result.add_warning(
+                    it.get("_name"),
+                    f"opening stock posted as a single batch line - this item's Tally "
+                    f"batch breakdown includes a negative or non-reconciling batch "
+                    f"quantity that ERPNext opening stock cannot hold, so its full "
+                    f"opening ({item_qty:g} at {item_rate:g}) was posted under batch "
+                    f"'{batch}'. The per-batch split was not preserved; set batch-wise "
+                    "opening stock manually if you need it.")
+            return [(wh, str(item_qty), str(item_rate), "", batch)]
+        # No positive bucket maps to an existing batch - nothing postable.
+        return self._skip_unpostable_batch(it, result)
+
+    def _batch_exists_for_item(self, batch_id: str, item_code: str) -> bool:
+        """True when ``batch_id`` is an existing Batch belonging to ``item_code`` (the
+        Batch importer creates these before opening stock). Isolated as its own method
+        so the placement maths can be unit-tested without a database."""
+        return frappe.db.get_value("Batch", batch_id, "item") == item_code
 
     def _warehouse_for_godown(self, godown: str, default_wh: str) -> str:
         """Map a Tally godown name to its migrated ERPNext warehouse
