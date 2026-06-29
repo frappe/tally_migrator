@@ -739,6 +739,10 @@ Migrator handles a real-world wrinkle in Tally data.
 - **Invalid GSTIN.** A structurally invalid GSTIN is dropped from the party (and its
   address) so it does not block import, but the party still imports as Unregistered.
   The pre-flight flags it so you can fix it.
+- **Invalid PAN.** Tally's Income Tax Number maps to the party's PAN, but a value that
+  is not a valid PAN (for example a TAN or a plain number) would otherwise make India
+  Compliance reject the whole party. The app keeps a valid PAN and drops an invalid
+  one, so the party still imports; set the correct PAN in ERPNext afterwards.
 - **PIN that does not match the state.** India Compliance rejects an address whose PIN
   does not match its state. Rather than lose the whole address, the app drops just
   the PIN, keeps the address, and warns you to set the PIN in ERPNext.
@@ -783,6 +787,11 @@ Migrator handles a real-world wrinkle in Tally data.
   cleared so it still lands, and you are told to set a correct one.
 - **Batch and expiry.** An item marked batch-wise in Tally gets batch tracking turned
   on; if it is also perishable, expiry tracking is enabled too.
+- **Opening stock value.** Every item with opening stock is imported with its quantity
+  and rate. ERPNext recomputes each item's valuation when it posts the opening stock,
+  so the total opening stock value on the trial balance can differ from Tally's by a
+  few units of rounding. This is a rounding effect, not missing stock - all items and
+  quantities are imported.
 
 ### Units of measure
 
@@ -804,7 +813,10 @@ Migrator handles a real-world wrinkle in Tally data.
 - **Account ordering.** Groups are created parent-before-child, and any circular
   parent loop is broken rather than crashing (with a pre-flight warning).
 - **Bank ledgers.** A Tally bank ledger carrying the company's own account number and
-  IFSC creates a company Bank Account linked to that GL account.
+  IFSC creates a company Bank Account linked to that GL account. When several bank
+  ledgers share the same account-holder name (Tally often repeats it), each still gets
+  its own Bank Account - the name is made unique with the account number, so no
+  ledger's bank details are lost to a name clash.
 - **Cost centres** import flat or nested, under the company's root cost centre.
 - **Warehouses / godowns** import with their full nesting. A godown that is the parent
   of another is created as a group warehouse so the tree renders correctly. Each

@@ -1573,3 +1573,45 @@ class TestERPNextImporter(unittest.TestCase):
         imp._warn_residual(
             [{"debit_in_account_currency": 0.4, "credit_in_account_currency": 0.0}], tiny)
         self.assertEqual(tiny.warned, 0)   # below PLUG_NOISE_THRESHOLD
+
+
+class TestPartyPanSanitisation(unittest.TestCase):
+    """Tally's INCOMETAXNumber lands in the party PAN field, but India Compliance
+    validates PAN as ^[A-Z]{5}[0-9]{4}[A-Z]$ and rejects the whole party on a
+    mismatch. Real books carry a TAN, a typo, or plain digits there (e.g.
+    '4870030501'), which previously failed creation and lost the party. The
+    importer must keep a valid PAN and silently blank an invalid one, so the party
+    always imports - same fallback as an invalid GSTIN."""
+
+    def _imp(self):
+        from tally_migrator.erpnext.importers import SupplierImporter
+        return SupplierImporter("_TMTest Co", "TC")
+
+    def test_valid_pan_kept(self):
+        self.assertEqual(self._imp()._valid_pan("AAACT2727Q"), "AAACT2727Q")
+
+    def test_valid_pan_normalised(self):
+        # lowercase + surrounding whitespace still recognised
+        self.assertEqual(self._imp()._valid_pan("  aaact2727q  "), "AAACT2727Q")
+
+    def test_invalid_pan_blanked(self):
+        # the Brightpoint case: 10 digits, no letters -> not a PAN
+        self.assertEqual(self._imp()._valid_pan("4870030501"), "")
+
+    def test_partial_or_garbage_blanked(self):
+        for bad in ("AAACT2727", "AAACT2727QQ", "12345ABCDZ", "ABCDE12345", "", None):
+            self.assertEqual(self._imp()._valid_pan(bad), "",
+                             msg="should reject %r" % (bad,))
+
+    def test_build_doc_drops_invalid_pan_but_keeps_party(self):
+        imp = self._imp()
+        doc = imp.build_doc({"_name": "_TMTest Brightpoint",
+                             "INCOMETAXNumber": "4870030501"})
+        self.assertEqual(doc["supplier_name"], "_TMTest Brightpoint")
+        self.assertEqual(doc["pan"], "")     # bad PAN dropped, party still builds
+
+    def test_build_doc_keeps_valid_pan(self):
+        imp = self._imp()
+        doc = imp.build_doc({"_name": "_TMTest Good",
+                             "INCOMETAXNumber": "AAACT2727Q"})
+        self.assertEqual(doc["pan"], "AAACT2727Q")

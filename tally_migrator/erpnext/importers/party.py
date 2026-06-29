@@ -2,6 +2,7 @@
 
 import contextlib
 import importlib
+import re
 from collections import Counter
 from dataclasses import dataclass, field
 from functools import lru_cache
@@ -29,6 +30,12 @@ from tally_migrator.validation.engine import (
 )
 from .base import BaseImporter, ImportResult, atomic
 from .banks import _ensure_bank, _insert_bank_account
+
+
+# India Compliance's PAN format (income_tax_india): 5 letters, 4 digits, 1 letter.
+# Mirrored here so an invalid Tally INCOMETAXNumber can be dropped before it reaches
+# IC's validation and blocks the party - see PartyImporter._valid_pan.
+_PAN_NUMBER = re.compile(r"^[A-Z]{5}[0-9]{4}[A-Z]$")
 
 
 @lru_cache(maxsize=1)
@@ -381,6 +388,19 @@ class PartyImporter(BaseImporter):
             return {"gstin": gstin}
         return {}
 
+    def _valid_pan(self, raw) -> str:
+        """Tally's INCOMETAXNumber as an ERPNext PAN, but only if it is actually a
+        PAN. India Compliance validates the field against ^[A-Z]{5}[0-9]{4}[A-Z]$
+        and rejects the whole party on a mismatch - and Tally books routinely carry
+        a TAN, a typo, or plain digits in this field (e.g. '4870030501'). Storing
+        such a value is wrong data and, worse, loses the entire party. So normalise
+        (strip + upper) and keep it only when it matches the PAN format; otherwise
+        return blank, so the party imports cleanly without a bad PAN, exactly as an
+        invalid GSTIN falls back in _maybe_gstin. Mirrors IC's own regex rather than
+        importing it, so it degrades gracefully when IC is not installed."""
+        pan = (raw or "").strip().upper()
+        return pan if _PAN_NUMBER.match(pan) else ""
+
     def _resolve_payment_terms(self, tally_credit_period: str) -> str:
         """
         Tally stores a credit period as '30 Days' or '30'. The Customer/Supplier
@@ -595,7 +615,7 @@ class CustomerImporter(PartyImporter):
             "territory": DEFAULT_TERRITORY,
             "customer_type": "Company",
             "tax_id": record.get("GSTRegistrationNumber") or "",
-            "pan": record.get("INCOMETAXNumber") or "",
+            "pan": self._valid_pan(record.get("INCOMETAXNumber")),
             "gst_category": self._gst_category(record),
             "payment_terms": self._resolve_payment_terms(record.get("BillCreditPeriod")),
         }
@@ -623,7 +643,7 @@ class SupplierImporter(PartyImporter):
             "supplier_group": self._resolve_group(record),
             "supplier_type": "Company",
             "tax_id": record.get("GSTRegistrationNumber") or "",
-            "pan": record.get("INCOMETAXNumber") or "",
+            "pan": self._valid_pan(record.get("INCOMETAXNumber")),
             "gst_category": self._gst_category(record),
             "payment_terms": self._resolve_payment_terms(record.get("BillCreditPeriod")),
         }

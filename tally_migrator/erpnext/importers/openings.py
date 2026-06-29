@@ -195,7 +195,17 @@ class OpeningBalanceImporter:
                 "user_remark": f"{self._REMARK_PREFIX}{label})",
             })
             doc.insert(ignore_permissions=True)
-            doc.submit()
+            # Submit synchronously. ERPNext's JournalEntry.submit() enqueues the
+            # submission as a BACKGROUND job when the entry has > 100 accounts
+            # (the asset Opening Entry routinely does), returning before the GL is
+            # posted. The single migration worker is then busy until the run ends,
+            # so that queued submit - and its GL - only lands AFTER finalize, which
+            # makes the post-import trial balance read a whole account class as
+            # absent. _submit() is exactly the path submit() takes for <=100-row
+            # entries, so this forces the same synchronous posting for any size.
+            # Safe here because the migration already runs off the web request,
+            # so there is no request-timeout reason to defer.
+            doc._submit()
             frappe.db.commit()
             result.add_created(doc.name)
         except Exception as exc:
@@ -765,11 +775,25 @@ class PartyOpeningImporter:
 
     @staticmethod
     def _classify(party_type: str, signed: float, is_advance: bool) -> str:
-        """An outstanding invoice (party's natural side, not flagged advance) vs an
-        advance/credit. Customer natural side = Dr (signed > 0); Supplier = Cr
-        (signed < 0). Tally's ISADVANCE flag forces 'advance' regardless of side."""
-        if is_advance:
-            return "advance"
+        """Outstanding invoice vs advance/credit, decided PURELY by which side of the
+        party's control account the bill sits on. Customer natural side = Dr
+        (signed > 0); Supplier = Cr (signed < 0): a bill there is an outstanding
+        opening invoice. A bill on the OPPOSITE side is an advance/credit and posts
+        as an unallocated Payment Entry.
+
+        Tally's ISADVANCE flag is deliberately NOT used to force 'advance'. A genuine
+        advance already falls on the opposite side (a customer prepayment is a credit,
+        a supplier prepayment is a debit), so side alone routes it correctly. But some
+        exports also tag a bill that sits on the party's NATURAL side as ISADVANCE
+        (e.g. a supplier credit bill that offsets a debit bill). Forcing those to an
+        advance posted them on the WRONG side via an opposite-direction Payment Entry,
+        flipping their sign - so an offsetting Cr+Dr pair that nets to zero in Tally
+        posted as a non-zero party balance (understating Payables/Receivables). The
+        advance Payment Entry's direction is fixed by party type (supplier=Pay/debit,
+        customer=Receive/credit), so it can only carry a bill that is genuinely on the
+        opposite side; routing by side keeps every bill's GL effect equal to Tally's.
+        ``is_advance`` is retained in the signature (it is a real Tally attribute the
+        caller passes through) but does not change the side a balance lands on."""
         on_natural_side = (signed > 0) if party_type == "Customer" else (signed < 0)
         return "invoice" if on_natural_side else "advance"
 

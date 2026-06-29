@@ -127,6 +127,44 @@ class TestOpeningBalanceGuards(unittest.TestCase):
         self.assertEqual(result.warned, 0)
 
 
+class TestOpeningEntrySubmitsSynchronously(unittest.TestCase):
+    """The opening Journal Entry must post its GL synchronously. ERPNext's
+    JournalEntry.submit() enqueues a BACKGROUND job when the entry has > 100
+    accounts (the asset Opening Entry routinely does); that returns before the GL
+    is posted, so on a long single-worker run the GL lands only after the migration
+    finalizes - and the post-import trial balance then reads a whole account class
+    as absent. _post_batch must therefore call doc._submit() (the same synchronous
+    path submit() takes for <=100 rows), never the size-gated submit()."""
+
+    def _imp(self):
+        return OpeningBalanceImporter(company="_T Co", abbr="TC")
+
+    def test_post_batch_calls_underlying_submit_not_gated_submit(self):
+        imp = self._imp()
+        result = ImportResult("Journal Entry")
+        calls = []
+
+        class _FakeJE:
+            name = "ACC-JV-0001"
+            def insert(self, *a, **k):
+                calls.append("insert")
+            def submit(self):                 # the size-gated one - must NOT run
+                calls.append("submit")
+            def _submit(self):                # the synchronous one - must run
+                calls.append("_submit")
+
+        lines = [{"account": "Cash - TC", "debit_in_account_currency": 100.0,
+                  "credit_in_account_currency": 0.0}]
+        with mock.patch.object(imp, "_balance"), \
+                mock.patch("frappe.get_doc", return_value=_FakeJE()), \
+                mock.patch("frappe.db.commit"):
+            imp._post_batch("Asset", lines, "2026-01-01", result)
+
+        self.assertIn("_submit", calls)
+        self.assertNotIn("submit", calls)        # never the background-gated path
+        self.assertEqual(result.created_names, ["ACC-JV-0001"])
+
+
 class TestPLOpeningSkipped(unittest.TestCase):
     """ERPNext forbids an Income/Expense (P&L) account from carrying an opening balance
     (GL Entry.check_pl_account throws in an Opening Entry), so the importer must skip
@@ -429,9 +467,22 @@ class TestPartyOpeningClassification(unittest.TestCase):
     def test_supplier_dr_is_advance(self):
         self.assertEqual(self._c("Supplier", 5000), "advance")     # advance paid
 
-    def test_advance_flag_forces_advance_on_natural_side(self):
-        # A customer Dr bill is normally an invoice, but Tally's ISADVANCE wins.
-        self.assertEqual(self._c("Customer", 5000, is_advance=True), "advance")
+    def test_natural_side_bill_is_invoice_even_when_flagged_advance(self):
+        # A bill on the party's natural side is an outstanding balance and must post
+        # there, even if Tally tags it ISADVANCE. Forcing it to an advance posted an
+        # opposite-direction Payment Entry that flipped the sign, so an offsetting
+        # Cr+Dr pair (net zero in Tally) posted as a non-zero balance. Classify by
+        # side only - ISADVANCE never moves a balance to the wrong side.
+        self.assertEqual(self._c("Customer", 5000, is_advance=True), "invoice")
+        self.assertEqual(self._c("Supplier", -5000, is_advance=True), "invoice")
+
+    def test_opposite_side_stays_advance_with_or_without_flag(self):
+        # Genuine advances sit on the opposite side and still route to a Payment Entry
+        # whether or not ISADVANCE is set - their sign was already correct.
+        self.assertEqual(self._c("Supplier", 5000, is_advance=True), "advance")
+        self.assertEqual(self._c("Supplier", 5000, is_advance=False), "advance")
+        self.assertEqual(self._c("Customer", -5000, is_advance=True), "advance")
+        self.assertEqual(self._c("Customer", -5000, is_advance=False), "advance")
 
     def test_signed_dr_positive(self):
         self.assertEqual(PartyOpeningImporter._signed(100.0, "Dr"), 100.0)

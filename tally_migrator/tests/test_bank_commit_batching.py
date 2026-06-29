@@ -48,6 +48,7 @@ class TestBankHelpersCommitOnlyForCompany(unittest.TestCase):
         with mock.patch.object(banks, "atomic", _noop_atomic), \
                 mock.patch.object(banks, "frappe") as fr:
             fr.new_doc.return_value = fake
+            fr.db.exists.return_value = False   # bank account name is free (no collision)
             out = banks._insert_bank_account(
                 account_name="Acme", bank="HDFC Bank", account_no="123",
                 ifsc="HDFC0000001", result=res, warn_name="Acme",
@@ -66,6 +67,41 @@ class TestBankHelpersCommitOnlyForCompany(unittest.TestCase):
         out, commit = self._call_insert(is_company=False)
         self.assertEqual(out, "BA-0001")
         commit.assert_not_called()
+
+
+class TestUniqueBankAccountName(unittest.TestCase):
+    """Tally repeats one holder name across several bank ledgers of a company; since
+    ERPNext names a Bank Account 'account_name - bank', they would collide and all but
+    the first drop. _unique_bank_account_name disambiguates so each keeps its details."""
+
+    def test_returns_base_when_name_free(self):
+        with mock.patch.object(banks, "frappe") as fr:
+            fr.db.exists.return_value = False
+            self.assertEqual(
+                banks._unique_bank_account_name("ICONCEPT", "HDFC Bank", "2250"),
+                "ICONCEPT")
+
+    def test_appends_account_no_when_holder_taken(self):
+        # base name collides; the variant with the account number is free.
+        with mock.patch.object(banks, "frappe") as fr:
+            fr.db.exists.side_effect = lambda dt, name: name == "ICONCEPT - HDFC Bank"
+            self.assertEqual(
+                banks._unique_bank_account_name("ICONCEPT", "HDFC Bank", "2250"),
+                "ICONCEPT (2250)")
+
+    def test_numeric_suffix_when_no_account_no(self):
+        # base collides and there is no account number to disambiguate with.
+        taken = {"ICONCEPT - HDFC Bank", "ICONCEPT 2 - HDFC Bank"}
+        with mock.patch.object(banks, "frappe") as fr:
+            fr.db.exists.side_effect = lambda dt, name: name in taken
+            self.assertEqual(
+                banks._unique_bank_account_name("ICONCEPT", "HDFC Bank", ""),
+                "ICONCEPT 3")
+
+    def test_blank_holder_returned_unchanged(self):
+        with mock.patch.object(banks, "frappe") as fr:
+            fr.db.exists.return_value = False
+            self.assertEqual(banks._unique_bank_account_name("", "HDFC Bank", ""), "")
 
 
 if __name__ == "__main__":
