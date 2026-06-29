@@ -869,10 +869,14 @@ Migrator handles a real-world wrinkle in Tally data.
   that item, whatever the per-godown detail looks like. A godown breakdown that cannot
   be posted as is - because it includes a negative allocation (a transfer or oversold
   godown that ERPNext opening stock cannot hold) or does not add up to the item's total
-  quantity - falls back to a single item-level line at the default warehouse, so the
-  value is always kept; only that one item's per-warehouse split is sacrificed. A whole
-  item with no rate, value, or standard cost anywhere posts at a zero valuation rate,
-  with a warning, so its quantity is still recorded.
+  quantity - falls back, for a non-batch item, to a single item-level line at the
+  default warehouse, so the value is always kept and only that item's per-warehouse
+  split is sacrificed. A **batch-tracked** item cannot fall back this way (every row
+  needs a batch), and such a breakdown - typically a batch quantity that nets negative -
+  cannot be represented as ERPNext opening stock at all, so that one item is skipped
+  with a warning to set it manually, rather than posted at a wrong value. A whole item
+  with no rate, value, or standard cost anywhere posts at a zero valuation rate, with a
+  warning, so its quantity is still recorded.
 - **Service / non-stock items with an opening quantity.** ERPNext cannot hold stock for
   a service item, so its opening quantity is not posted as stock (with a warning to
   record it as a ledger balance instead). The reconciliation does not count it on the
@@ -973,6 +977,11 @@ migration.
   edge cases above.
 - **"opening stock not posted - Tally reports a negative opening quantity"** - set
   this item's opening stock manually.
+- **"opening stock not posted - this batch-tracked item's Tally batch allocations
+  cannot be represented as ERPNext opening stock"** - a batch quantity is negative or
+  the per-batch split does not reconcile to the item's total, which ERPNext opening
+  stock cannot hold. Set this item's opening stock manually; the reconciliation shows
+  these as a small Stock value shortfall to review.
 - **"opening stock posted with a zero valuation rate"** - Tally carried no value for
   the item; set a valuation rate in ERPNext if it should carry value.
 - **"opening stock value does not reconcile"** - Tally's recorded value did not match

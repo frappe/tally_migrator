@@ -1037,7 +1037,7 @@ class StockOpeningImporter:
         # an item legitimately carry opening stock in several godowns.
         by_key: dict[tuple, dict] = {}
         for it in items:
-            for wh, raw_qty, raw_rate, raw_value, batch in self._placements(it, warehouse):
+            for wh, raw_qty, raw_rate, raw_value, batch in self._placements(it, warehouse, result):
                 self._add_opening_row(
                     by_key, it["_name"], wh, raw_qty, raw_rate, raw_value,
                     it.get("StandardCost"), result, batch=batch)
@@ -1152,7 +1152,8 @@ class StockOpeningImporter:
                     "opening value as a ledger balance if it should carry one.")
         return kept
 
-    def _placements(self, it: dict, default_wh: str) -> list[tuple]:
+    def _placements(self, it: dict, default_wh: str,
+                    result: "ImportResult | None" = None) -> list[tuple]:
         """Where this item's opening stock lands → list of
         ``(warehouse, raw_qty, raw_rate, raw_value, batch)`` buckets fed to
         :meth:`_add_opening_row`.
@@ -1175,26 +1176,35 @@ class StockOpeningImporter:
           at zero value) or internally inconsistent with the item total.
         - When the godown split is not faithfully postable (a net-negative bucket,
           which ERPNext opening stock cannot hold, or buckets that do not tie to the
-          item-level quantity) → fall back to the single item-level row, which always
-          reconciles. The per-warehouse detail is sacrificed for that one item, not
-          its value, and the run records a warning via the zero/negative handling.
+          item-level quantity) → a NON-batch item falls back to the single item-level
+          row, which always reconciles (per-warehouse detail is sacrificed for that one
+          item, not its value). A BATCH-tracked item cannot fall back this way: every
+          opening row needs a ``batch_no`` and the item-level row has none, so ERPNext
+          rejects it. Such an item's batch allocations genuinely cannot be represented
+          as ERPNext opening stock (e.g. a batch quantity that nets negative), so it is
+          skipped with a warning for manual entry - never posted at a wrong value.
         ``batch`` is "" for non-batch items, so they behave exactly as before.
         """
         item_qty = TallyExtractor.item_opening_qty(it)
-        legacy = [(default_wh, it.get("OpeningBalance"),
-                   it.get("OpeningRate"), it.get("OpeningValue"), "")]
-        godowns = it.get("GodownOpenings") or []
-        if not godowns:
-            return legacy
-        # A non-positive item quantity is not postable (and the legacy row drops it
-        # with a warning); never let a stray positive godown row post against it.
-        if item_qty <= 0:
-            return legacy
         # Tally stamps EVERY item's opening allocation with a batch name - an implicit
         # "Primary Batch" even for non-batch items - so the batch is only meaningful
         # when the item is actually batch-tracked. Otherwise batch_no would be set on a
         # has_batch_no=0 item and the reconciliation would be rejected.
         is_batch = (it.get("IsBatchWiseOn") or "").strip().lower() == "yes"
+        legacy = [(default_wh, it.get("OpeningBalance"),
+                   it.get("OpeningRate"), it.get("OpeningValue"), "")]
+        godowns = it.get("GodownOpenings") or []
+        if not godowns:
+            # A batch item needs a batch on every row; with no godown/batch detail
+            # there is no batch to post under, so skip rather than emit a batch-less
+            # row ERPNext rejects. A non-positive qty would be dropped anyway.
+            if is_batch and item_qty > 0:
+                return self._skip_unpostable_batch(it, result)
+            return legacy
+        # A non-positive item quantity is not postable (and the legacy row drops it
+        # with a warning); never let a stray positive godown row post against it.
+        if item_qty <= 0:
+            return legacy
         buckets: dict[tuple, float] = {}
         for g in godowns:
             wh = self._warehouse_for_godown(g.get("godown", ""), default_wh)
@@ -1202,11 +1212,15 @@ class StockOpeningImporter:
             buckets[(wh, batch)] = buckets.get((wh, batch), 0.0) + \
                 TallyExtractor._parse_quantity(g.get("qty"))
         # Faithfulness gate: a net-negative bucket cannot be posted, and a breakdown
-        # that does not sum to the item-level quantity would mis-state it. Either way,
-        # post the item-level row instead so the value still reconciles exactly.
-        if any(qty < -1e-9 for qty in buckets.values()):
-            return legacy
-        if abs(sum(buckets.values()) - item_qty) > 1e-6:
+        # that does not sum to the item-level quantity would mis-state it.
+        unfaithful = (any(qty < -1e-9 for qty in buckets.values())
+                      or abs(sum(buckets.values()) - item_qty) > 1e-6)
+        if unfaithful:
+            # A non-batch item falls back to the item-level row (still reconciles). A
+            # batch item cannot - the fallback row has no batch_no - and its batch
+            # allocations cannot be represented as ERPNext opening stock, so skip it.
+            if is_batch:
+                return self._skip_unpostable_batch(it, result)
             return legacy
         # Value every bucket at the item-level rate, distributing only the quantity.
         item_rate = TallyExtractor.item_opening_rate(it)
@@ -1216,6 +1230,23 @@ class StockOpeningImporter:
                 continue
             placements.append((wh, str(qty), str(item_rate), "", batch))
         return placements or legacy
+
+    @staticmethod
+    def _skip_unpostable_batch(it: dict, result: "ImportResult | None") -> list:
+        """Skip a batch-tracked item whose Tally batch allocations cannot be posted as
+        ERPNext opening stock - a batch quantity that nets negative, a godown/batch
+        split that does not reconcile to the item total, or no batch detail at all.
+        ERPNext opening stock cannot hold these, and a batch item cannot fall back to a
+        batch-less item-level row, so skip with a warning (manual entry) rather than
+        post a wrong value or fail the whole document. Returns no placements."""
+        if result is not None:
+            result.add_warning(
+                it.get("_name"),
+                "opening stock not posted - this batch-tracked item's Tally batch "
+                "allocations cannot be represented as ERPNext opening stock (a batch "
+                "quantity is negative, or the per-batch split does not reconcile to "
+                "the item's total). Set this item's opening stock manually.")
+        return []
 
     def _warehouse_for_godown(self, godown: str, default_wh: str) -> str:
         """Map a Tally godown name to its migrated ERPNext warehouse
@@ -1352,10 +1383,17 @@ class StockOpeningImporter:
 
         Idempotent and global (Stock Settings is a Single). Required for ERPNext to
         create the Serial and Batch Bundle that batch-tracked opening stock posts
-        through; we set it only when this import actually has batch rows."""
+        through; we set it only when this import actually has batch rows.
+
+        The change is committed immediately: the chunk-posting loop that follows rolls
+        back a failed chunk (``_post_doc``), and an uncommitted setting would be
+        reverted by that rollback - leaving every later batch chunk to fail with
+        "Activate Serial and Batch No for Item" and dropping all batch opening stock.
+        Committing once, up front, makes the flag survive any later chunk rollback."""
         if frappe.db.get_single_value("Stock Settings", "enable_serial_and_batch_no_for_item"):
             return
         frappe.db.set_single_value("Stock Settings", "enable_serial_and_batch_no_for_item", 1)
+        frappe.db.commit()
         result.add_warning(
             "Opening Stock",
             "enabled Stock Settings > 'Activate Serial and Batch No for Item' - it "

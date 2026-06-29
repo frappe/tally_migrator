@@ -487,10 +487,15 @@ class TestERPNextImporter(unittest.TestCase):
         from tally_migrator.erpnext.importers import openings
         res = ImportResult("Stock Reconciliation")
         with mock.patch.object(openings.frappe.db, "get_single_value", return_value=0), \
-             mock.patch.object(openings.frappe.db, "set_single_value") as set_single:
+             mock.patch.object(openings.frappe.db, "set_single_value") as set_single, \
+             mock.patch.object(openings.frappe.db, "commit") as commit:
             StockOpeningImporter._ensure_serial_batch_enabled(res)
         set_single.assert_called_once_with(
             "Stock Settings", "enable_serial_and_batch_no_for_item", 1)
+        # The flip MUST be committed up front: the chunk-posting loop rolls back a
+        # failed chunk, and an uncommitted setting would be reverted by that rollback,
+        # dropping all batch opening stock.
+        commit.assert_called_once()
         self.assertTrue(res.warnings)   # the flip is recorded on the log
 
     def test_ensure_serial_batch_enabled_noop_when_already_on(self):
@@ -1586,6 +1591,26 @@ class TestERPNextImporter(unittest.TestCase):
         self.assertEqual(rows[0]["qty"], 41.0)
         self.assertEqual(rows[0]["valuation_rate"], 758.48)
         self.assertEqual(rows[0]["warehouse"], "WH - TC")   # item-level default
+
+    def test_negative_godown_batch_item_is_skipped_with_warning(self):
+        """A BATCH-tracked item whose batch allocations net via a negative cannot fall
+        back to a batch-less item-level row (ERPNext rejects it) and cannot be
+        represented as opening stock, so it posts nothing and warns for manual entry -
+        never a wrong value."""
+        from tally_migrator.erpnext.importers import StockOpeningImporter
+        from tally_migrator.erpnext.importers.base import ImportResult
+        imp = StockOpeningImporter("_TMTest Co", "TC")
+        imp._warehouse_for_godown = lambda g, d: (f"{g} - TC" if g else d)
+        item = {"_name": "Cable", "IsBatchWiseOn": "Yes", "OpeningBalance": "41 PCS",
+                "OpeningRate": "758.48/PCS", "OpeningValue": "", "StandardCost": "",
+                "GodownOpenings": [
+                    {"godown": "CHD", "qty": "99 PCS", "rate": "", "value": "", "batch": "124"},
+                    {"godown": "Main", "qty": "-58 PCS", "rate": "", "value": "", "batch": "Primary"}]}
+        res = ImportResult("Stock Reconciliation")
+        rows = imp._placements(item, "WH - TC", res)
+        self.assertEqual(rows, [])                     # nothing posted
+        self.assertEqual(res.warned, 1)
+        self.assertIn("manually", res.warnings[0]["reason"])
 
     def test_divergent_per_godown_rate_uses_item_rate(self):
         """Godowns carrying their own (higher) rate are still valued at the item-level
