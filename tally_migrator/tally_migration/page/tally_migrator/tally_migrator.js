@@ -2228,6 +2228,11 @@ class TallyMigratorPage {
 				});
 				return;
 			}
+			// The run is complete. finishFromLog can win the race against the server's
+			// final 100% "Migration complete." progress event, so set the caption here
+			// explicitly - otherwise it stays on the stale 95% "Saving migration log..."
+			// text under a full bar.
+			$("#progress-desc").text("Migration complete.");
 			let summary = {};
 			try {
 				summary = JSON.parse(doc.import_summary || "{}");

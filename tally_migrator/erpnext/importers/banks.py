@@ -28,6 +28,30 @@ from .base import ImportResult, atomic
 
 # ── Bank Account helpers (shared by party + company bank accounts) ─────────────
 
+def _unique_bank_account_name(account_name: str, bank: str, account_no: str = "") -> str:
+    """An account_name that yields a unique Bank Account, given ERPNext names the doc
+    ``account_name + " - " + bank`` (Bank Account.autoname).
+
+    Tally often repeats one account-holder name across several bank ledgers of the
+    same company (e.g. every HDFC ledger carries the holder 'ICONCEPT'). They then
+    collapse to the same Bank Account name and all but the first fail on a duplicate
+    key, silently dropping that ledger's bank details. So when the natural name is
+    taken, disambiguate - first with the account number (unique per real account),
+    then with a numeric suffix - so each bank ledger keeps its own Bank Account.
+    Generic: a holder that is already unique is returned unchanged."""
+    base = (account_name or "").strip()
+    if not base or not frappe.db.exists("Bank Account", f"{base} - {bank}"):
+        return base
+    acc_no = (account_no or "").strip()
+    if acc_no:
+        candidate = f"{base} ({acc_no})"
+        if not frappe.db.exists("Bank Account", f"{candidate} - {bank}"):
+            return candidate
+    i = 2
+    while frappe.db.exists("Bank Account", f"{base} {i} - {bank}"):
+        i += 1
+    return f"{base} {i}"
+
 def _ensure_bank(bank_name: str, result: "ImportResult | None" = None, *,
                  is_company: bool = False) -> str:
     """Return an existing/created Bank master name, or "" when no name is given.
@@ -84,7 +108,10 @@ def _insert_bank_account(*, account_name: str, bank: str, account_no: str,
         # Account, never a caller's uncommitted batch.
         with atomic():
             ba = frappe.new_doc("Bank Account")
-            ba.account_name = account_name
+            # Disambiguate a holder name already used by another bank ledger so the
+            # autonamed doc ("account_name - bank") does not collide and drop this
+            # ledger's bank details.
+            ba.account_name = _unique_bank_account_name(account_name, bank, account_no)
             ba.bank = bank
             ba.bank_account_no = account_no
             if ifsc:

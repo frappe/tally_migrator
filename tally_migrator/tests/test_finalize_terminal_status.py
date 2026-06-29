@@ -75,6 +75,23 @@ class TestFinalizeTerminalStatus(unittest.TestCase):
 
     @mock.patch("frappe.db")
     @mock.patch("frappe.log_error")
+    def test_reports_persist_when_issues_table_fails(self, _log_err, _db):
+        # A failure writing the issues table (2b) - e.g. a row-level length limit on a
+        # big run - must not also lose the records-created / reconciliation reports (2a).
+        log = _FakeLog()
+        m = self._migrator(log)
+        m._reconciliation = lambda *a: {"rows": []}
+        m._track_wizard_uoms = lambda *a: None
+        masters, coa = self._masters_coa()
+        summary = _summary(has_errors=True)
+        summary.error_records = mock.Mock(side_effect=RuntimeError("row too long"))
+        m._finalize_log(masters, coa, summary)
+        self.assertEqual(log.status, "Completed with Errors")
+        self.assertIsNotNone(log.created_records)        # 2a survived
+        self.assertIsNotNone(log.reconciliation_report)  # 2a survived
+
+    @mock.patch("frappe.db")
+    @mock.patch("frappe.log_error")
     def test_status_reflects_errors(self, _log_err, _db):
         log = _FakeLog()
         m = self._migrator(log)

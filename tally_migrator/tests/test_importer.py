@@ -90,6 +90,77 @@ class TestERPNextImporter(unittest.TestCase):
             "Contact", filters={"first_name": "_TMTest Customer ContactDup"})
         self.assertEqual(len(contacts), 1, msg="re-run duplicated the contact")
 
+    def test_party_side_effect_hooks_suspended_and_restored(self):
+        """The per-contact Google-Contacts/Call-Log hooks are neutralised inside the
+        context and restored after - the mechanism Step 5 relies on to drop the
+        data-irrelevant per-record round-trips on large books."""
+        import importlib
+        from tally_migrator.erpnext.importers.party import (
+            _party_side_effect_hooks_suspended, _SUSPENDED_PARTY_HOOKS)
+
+        calls = []
+        saved = []
+        for mod_path, names in _SUSPENDED_PARTY_HOOKS:
+            mod = importlib.import_module(mod_path)
+            for nm in names:
+                saved.append((mod, nm, getattr(mod, nm)))
+                setattr(mod, nm, lambda *a, **k: calls.append(nm))
+        try:
+            with _party_side_effect_hooks_suspended():
+                for mod_path, names in _SUSPENDED_PARTY_HOOKS:
+                    mod = importlib.import_module(mod_path)
+                    for nm in names:
+                        getattr(mod, nm)("doc")           # suspended -> must be a no-op
+            self.assertEqual(calls, [], "hooks must be neutralised inside the context")
+            for mod_path, names in _SUSPENDED_PARTY_HOOKS:   # restored afterwards
+                mod = importlib.import_module(mod_path)
+                for nm in names:
+                    getattr(mod, nm)("doc")
+            self.assertTrue(calls, "hooks must be restored after the context")
+        finally:
+            for mod, nm, fn in saved:
+                setattr(mod, nm, fn)
+
+    def test_party_import_does_not_fire_contact_integration_hooks(self):
+        """A normal Contact insert fires the Google-Contacts/Call-Log hooks; importing
+        a party that creates a Contact must not (they are suspended), while the Contact
+        is still created identically."""
+        import importlib
+        from tally_migrator.erpnext.importers.party import _SUSPENDED_PARTY_HOOKS
+
+        calls = {"n": 0}
+        saved = []
+        for mod_path, names in _SUSPENDED_PARTY_HOOKS:
+            try:
+                mod = importlib.import_module(mod_path)
+            except Exception:
+                continue
+            for nm in names:
+                if hasattr(mod, nm):
+                    saved.append((mod, nm, getattr(mod, nm)))
+                    setattr(mod, nm, lambda *a, **k: calls.__setitem__("n", calls["n"] + 1))
+        try:
+            # Anchor: a plain Contact insert DOES fire the hooks, so "0 during import"
+            # below is a real assertion and not a hook that simply never runs here.
+            anchor = frappe.new_doc("Contact")
+            anchor.first_name = "_TMTest Hook Anchor"
+            anchor.append("phone_nos", {"phone": "9811111111", "is_primary_mobile_no": 1})
+            anchor.insert(ignore_permissions=True)
+            self.assertGreater(calls["n"], 0, "the hooks should fire on a normal Contact insert")
+
+            fired_before = calls["n"]
+            self.importer.import_customers([{
+                "_name": "_TMTest Hook Cust", "LedgerMobile": "9822222222"}])
+            self.assertEqual(
+                calls["n"], fired_before,
+                "the integration hooks must not fire during a party import")
+            self.assertTrue(
+                frappe.db.exists("Contact", {"first_name": "_TMTest Hook Cust"}),
+                "the contact must still be created")
+        finally:
+            for mod, nm, fn in saved:
+                setattr(mod, nm, fn)
+
     def test_explicit_gst_registration_type_wins(self):
         """Tally's stated registration type overrides GSTIN/country inference."""
         if not frappe.db.has_column("Customer", "gst_category"):
@@ -168,6 +239,90 @@ class TestERPNextImporter(unittest.TestCase):
             frappe.db.exists("Address", {"address_title": "_TMTest Mailing Title-Billing"})
             or frappe.db.exists("Address", {"address_title": "_TMTest Mailing Title"}))
 
+    # ── Step 1: recover address/contact drops (no-state, bad email) ────────────
+
+    def test_resolve_state_prefers_ledger_then_gstin_then_pin(self):
+        """State resolves most-reliable first: Tally ledger state, else GSTIN state
+        code, else derived from the PIN. Tally rarely sets a ledger state, so the
+        PIN fallback is what keeps most addresses out of the missing-state drop."""
+        from tally_migrator.erpnext.importers import CustomerImporter
+        imp = CustomerImporter("_TMTest Co", "TC")
+        # ledger state wins over everything
+        self.assertEqual(imp._resolve_state(
+            {"LedgerState": "Karnataka", "GSTRegistrationNumber": "27AAACT2727Q1ZW",
+             "PinCode": "600001"}), "Karnataka")
+        # no ledger state -> GSTIN's state code (27 -> Maharashtra) beats the PIN
+        self.assertEqual(imp._resolve_state(
+            {"GSTRegistrationNumber": "27AAACT2727Q1ZW", "PinCode": "600001"}),
+            "Maharashtra")
+        # only a PIN -> derived from it (600xxx -> Tamil Nadu)
+        self.assertEqual(imp._resolve_state({"PinCode": "600001"}), "Tamil Nadu")
+        # no signal at all -> empty (caller decides to skip)
+        self.assertEqual(imp._resolve_state({}), "")
+
+    def test_address_state_derived_from_pincode(self):
+        """A party with a PIN but no ledger state / GSTIN keeps its address - the
+        state is derived from the PIN, not dropped."""
+        customer = {
+            "_name": "_TMTest Customer PinState",
+            "Address": "1 Pin Road",
+            "PinCode": "560001",   # Bengaluru -> Karnataka
+        }
+        self.importer.import_customers([customer])
+        addr = frappe.get_all(
+            "Address", filters={"address_title": "_TMTest Customer PinState"},
+            fields=["name", "state"])
+        self.assertEqual(len(addr), 1, msg="address dropped despite a derivable state")
+        self.assertEqual(addr[0].state, "Karnataka")
+
+    def test_address_skipped_cleanly_when_no_state_signal(self):
+        """No ledger state, GSTIN or PIN -> the Indian address cannot satisfy India
+        Compliance, so it is skipped as a warning (the party still imports) WITHOUT a
+        failed insert or an Error Log entry - the big-import flood we removed."""
+        from unittest import mock
+        if not frappe.get_meta("Address").has_field("gst_state"):
+            self.skipTest("state-mandatory rule requires India Compliance")
+        customer = {"_name": "_TMTest Customer NoState", "Address": "9 Nowhere Lane"}
+        with mock.patch("frappe.log_error") as logged:
+            result = self.importer.import_customers([customer])
+        self.assertEqual(result.failed, 0)
+        self.assertTrue(
+            frappe.db.exists("Customer", {"customer_name": "_TMTest Customer NoState"}))
+        self.assertFalse(
+            frappe.db.exists("Address", {"address_title": "_TMTest Customer NoState"}))
+        self.assertTrue(any("no state" in w["reason"] for w in result.warnings))
+        logged.assert_not_called()
+
+    def test_address_kept_when_email_invalid(self):
+        """A malformed Tally email must not sink the whole address - the address
+        imports, just without the bad email."""
+        customer = {
+            "_name": "_TMTest Customer BadEmailAddr",
+            "Address": "2 Email Road",
+            "LedgerState": "Maharashtra",
+            "LedgerEmail": "NA",   # not a valid email address
+        }
+        self.importer.import_customers([customer])
+        addr = frappe.get_all(
+            "Address", filters={"address_title": "_TMTest Customer BadEmailAddr"},
+            fields=["name", "email_id"])
+        self.assertEqual(len(addr), 1, msg="address dropped over a bad email")
+        self.assertFalse(addr[0].email_id)
+
+    def test_contact_keeps_phone_when_email_invalid(self):
+        """A malformed email is dropped but the phone-only contact is still created,
+        and a warning records the dropped email."""
+        customer = {
+            "_name": "_TMTest Customer BadEmail",
+            "LedgerMobile": "9812345678",
+            "LedgerEmail": "n/a",
+        }
+        result = self.importer.import_customers([customer])
+        doc = frappe.get_doc("Contact", {"first_name": "_TMTest Customer BadEmail"})
+        self.assertEqual([e.email_id for e in doc.email_ids], [])
+        self.assertIn("9812345678", [p.phone for p in doc.phone_nos])
+        self.assertTrue(any("email" in w["reason"] for w in result.warnings))
+
     # ── Supplier ──────────────────────────────────────────────────────────────
 
     def test_import_supplier_creates_record(self):
@@ -238,6 +393,58 @@ class TestERPNextImporter(unittest.TestCase):
         self.assertTrue(b)
         self.assertEqual(str(b.manufacturing_date), "2026-05-01")
         self.assertEqual(str(b.expiry_date), "2026-07-31")
+
+    def test_batch_id_scoping_for_shared_names(self):
+        """shared_batch_names + batch_id_for: a name used by >1 item is scoped per
+        item; a unique name is kept verbatim; the scoped id stays within 140 chars."""
+        from tally_migrator.naming import shared_batch_names, batch_id_for
+        items = [
+            {"_name": "A", "IsBatchWiseOn": "Yes",
+             "GodownOpenings": [{"batch": "169.49"}, {"batch": "UNIQ-A"}]},
+            {"_name": "B", "IsBatchWiseOn": "Yes",
+             "GodownOpenings": [{"batch": "169.49"}]},
+        ]
+        shared = shared_batch_names(items)
+        self.assertEqual(shared, {"169.49"})
+        self.assertEqual(batch_id_for("169.49", "A", shared), "169.49 - A")
+        self.assertEqual(batch_id_for("169.49", "B", shared), "169.49 - B")
+        self.assertEqual(batch_id_for("UNIQ-A", "A", shared), "UNIQ-A")     # unique
+        self.assertLessEqual(len(batch_id_for("169.49", "Z" * 200, shared)), 140)
+
+    def test_opening_row_uses_scoped_batch_no_for_shared_name(self):
+        """A row for a shared batch name is tagged with the per-item scoped batch id
+        (matching what the Batch importer created), not the bare colliding name."""
+        from tally_migrator.erpnext.importers import StockOpeningImporter
+        from tally_migrator.erpnext.importers.base import ImportResult
+        imp = StockOpeningImporter("_TMTest Co", "TC")
+        imp._shared_batch_names = {"169.49"}
+        by_key, res = {}, ImportResult("Stock Reconciliation")
+        imp._add_opening_row(by_key, "ItemA", "WH", "5 Nos", "1/Nos", "", None,
+                             res, batch="169.49")
+        self.assertEqual(next(iter(by_key.values()))["batch_no"], "169.49 - ItemA")
+
+    def test_batch_importer_scopes_shared_batch_id_per_item(self):
+        """Two items sharing one Tally batch name each get their OWN ERPNext Batch
+        (scoped by item), instead of the second being skipped on the global id -
+        the fix that lets every item's batch-tracked opening stock post."""
+        from tally_migrator.naming import safe_item_code
+
+        def bitem(name):
+            it = self._batch_item(name)
+            it["GodownOpenings"][0]["batch"] = "_TMTest SHAREDRATE"
+            return it
+
+        a, b = bitem("_TMTest BShare A"), bitem("_TMTest BShare B")
+        code_a, code_b = safe_item_code("_TMTest BShare A"), safe_item_code("_TMTest BShare B")
+        for c in (code_a, code_b):
+            self.addCleanup(
+                lambda cc=c: frappe.db.exists("Batch", f"_TMTest SHAREDRATE - {cc}")
+                and frappe.delete_doc("Batch", f"_TMTest SHAREDRATE - {cc}", force=1))
+        self.importer.import_items([a, b])
+        res = self.importer.import_batches([a, b])
+        self.assertEqual(res.failed, 0, msg=str(res.errors))
+        self.assertTrue(frappe.db.exists("Batch", f"_TMTest SHAREDRATE - {code_a}"))
+        self.assertTrue(frappe.db.exists("Batch", f"_TMTest SHAREDRATE - {code_b}"))
 
     def test_mrp_creates_item_price_on_mrp_list(self):
         item = self._batch_item()
@@ -349,6 +556,58 @@ class TestERPNextImporter(unittest.TestCase):
             frappe.db.get_value("Warehouse", f"_TMTest Parent WH - {abbr}", "is_group"), 1)
         self.assertEqual(
             frappe.db.get_value("Warehouse", f"_TMTest Child WH - {abbr}", "is_group"), 0)
+
+    def test_colliding_group_keeps_ledger_and_rehomes_children(self):
+        """When a Tally group's name collides (case-insensitively) with an existing
+        ledger, the importer must NOT convert that ledger - it may be load-bearing
+        (e.g. India Compliance wires "TDS Payable" into every Tax Withholding
+        Category). The ledger stays a ledger, and the Tally group's children are
+        re-homed to the ledger's own parent so they still import.
+
+        Regression for the Frontier issue where promoting a standard ledger to a group
+        broke its opening entry and IC's tax-withholding setup."""
+        require_company()
+        from tally_migrator.erpnext.importers.accounts import AccountImporter
+        from tally_migrator.tally.extractors import AccountNode
+
+        abbr = frappe.get_value("Company", self.company, "abbr")
+        root = frappe.db.get_value(
+            "Account", {"company": self.company, "root_type": "Asset",
+                        "is_group": 1, "parent_account": ["is", "not set"]}, "name")
+        placeholder = f"_TMTest Equip - {abbr}"
+        for nm in (f"_TMTest Camera - {abbr}", placeholder):
+            if frappe.db.exists("Account", nm):
+                frappe.delete_doc("Account", nm, force=True, ignore_permissions=True)
+        # A pre-existing typed ledger (like ERPNext's standard CoA ships), under root.
+        frappe.get_doc({
+            "doctype": "Account", "account_name": "_TMTest Equip",
+            "company": self.company, "parent_account": root,
+            "is_group": 0, "root_type": "Asset", "account_type": "Fixed Asset",
+        }).insert(ignore_permissions=True)
+
+        imp = AccountImporter(self.company, abbr, mode="reuse")
+        # Same name in a different case (the collision is case-insensitive in MariaDB),
+        # plus a child that previously could only be created by promoting the ledger.
+        group = AccountNode(name="_TMTEST EQUIP", parent="", is_group=True,
+                            root_type="Asset", account_type="", is_reserved=False)
+        child = AccountNode(name="_TMTest Camera", parent="_TMTEST EQUIP",
+                            is_group=False, root_type="Asset", account_type="",
+                            is_reserved=False)
+        result = imp.run([group, child])
+
+        self.assertEqual(result.failed, 0, msg=str(result.errors))
+        # The colliding ledger is LEFT a ledger - never converted.
+        self.assertEqual(
+            frappe.db.get_value("Account", placeholder, "is_group"), 0,
+            "the colliding standard ledger must NOT be converted to a group")
+        # The child still imports, re-homed under the ledger's own parent (root here).
+        child_name = f"_TMTest Camera - {abbr}"
+        self.assertTrue(frappe.db.exists("Account", child_name),
+                        "the child must still be created")
+        self.assertEqual(
+            frappe.db.get_value("Account", child_name, "parent_account"), root,
+            "the child must nest under the existing ledger's parent")
+        self.assertTrue(any("kept as a ledger" in w["reason"] for w in result.warnings))
 
     # ── Stock Groups → nested Item Groups ───────────────────────────────────────
 
@@ -752,6 +1011,77 @@ class TestERPNextImporter(unittest.TestCase):
         self.assertEqual(result.skipped, 1)
         self.assertTrue(any("already posted" in w["reason"] for w in result.warnings))
 
+    def test_opening_balance_skips_account_that_is_a_group_in_erpnext(self):
+        """A Tally ledger that exists in ERPNext as a GROUP (e.g. promoted so its
+        sub-accounts could nest - see test_account_group_promotes_colliding_ledger)
+        must be skipped from the opening Journal Entry, not added as a line. A group
+        account cannot carry a balance, and one such line fails the whole class batch
+        on submit, losing every opening balance in it. Regression for the Step 3 /
+        opening-balance interaction."""
+        require_company()
+        from tally_migrator.erpnext.importers.openings import OpeningBalanceImporter
+        from tally_migrator.erpnext.importers.base import ImportResult
+        from tally_migrator.tally.extractors import AccountNode
+        from tally_migrator.naming import company_scoped
+
+        company = self.company
+        abbr = frappe.get_value("Company", company, "abbr")
+        root = frappe.db.get_value(
+            "Account", {"company": company, "root_type": "Liability",
+                        "is_group": 1, "parent_account": ["is", "not set"]}, "name")
+        grp_base, led_base = "_TMTest Promoted Liab", "_TMTest Plain Liab"
+        grp, led = company_scoped(grp_base, abbr), company_scoped(led_base, abbr)
+        if not frappe.db.exists("Account", grp):
+            frappe.get_doc({"doctype": "Account", "account_name": grp_base,
+                            "company": company, "parent_account": root,
+                            "is_group": 1, "root_type": "Liability"}).insert(ignore_permissions=True)
+        if not frappe.db.exists("Account", led):
+            frappe.get_doc({"doctype": "Account", "account_name": led_base,
+                            "company": company, "parent_account": root,
+                            "is_group": 0, "root_type": "Liability"}).insert(ignore_permissions=True)
+
+        def node(name):
+            return AccountNode(name=name, parent="", is_group=False, root_type="Liability",
+                               account_type="", is_reserved=False,
+                               opening_balance=1000.0, opening_dr_cr="Cr")
+
+        res = ImportResult("Journal Entry")
+        lines = OpeningBalanceImporter(company, abbr)._account_lines(
+            [node(grp_base), node(led_base)], res)
+        accounts = [l["account"] for l in lines]
+        self.assertIn(led, accounts, "the ordinary ledger opening should still post")
+        self.assertNotIn(grp, accounts, "the group account must be skipped")
+        self.assertTrue(any("group account" in w["reason"] for w in res.warnings))
+
+    def test_accounting_dimensions_cached_memoises_and_restores(self):
+        """The opening-stock phase memoises ERPNext's per-item get_accounting_dimensions
+        (a company-wide constant) to cut a DB round-trip per item, then restores it.
+        The wrapper must hit the underlying lookup once, return a fresh copy each call
+        (so a mutating caller can't corrupt the cache), and restore the original."""
+        from tally_migrator.erpnext.importers import openings
+        from erpnext.accounts.doctype.accounting_dimension import accounting_dimension as ad
+
+        calls = {"n": 0}
+
+        def spy(as_list=True):
+            calls["n"] += 1
+            return ["dim_a"]
+
+        original = ad.get_accounting_dimensions
+        ad.get_accounting_dimensions = spy
+        try:
+            with openings._accounting_dimensions_cached():
+                r1 = ad.get_accounting_dimensions()
+                r2 = ad.get_accounting_dimensions()
+                r3 = ad.get_accounting_dimensions()
+            self.assertEqual(calls["n"], 1, "the underlying lookup should run once")
+            self.assertEqual(r1, ["dim_a"])
+            self.assertIsNot(r1, r2, "each call should return a fresh copy")
+            self.assertEqual(r3, ["dim_a"])
+            self.assertIs(ad.get_accounting_dimensions, spy, "must restore on exit")
+        finally:
+            ad.get_accounting_dimensions = original
+
     def test_batch_label_roundtrips_through_remark(self):
         """The label written to user_remark must parse back to the same label, and a
         foreign remark must not be mistaken for one of ours."""
@@ -838,18 +1168,21 @@ class TestERPNextImporter(unittest.TestCase):
                 frappe.delete_doc("Payment Entry", pe, force=True, ignore_permissions=True)
             frappe.db.commit()
 
-    def test_opening_stock_skipped_when_reconciliation_exists(self):
-        """A second run must NOT post a second Opening Stock reconciliation."""
+    def test_opening_stock_skips_items_already_posted(self):
+        """Per-item idempotency: an item+warehouse already carried by a submitted
+        opening reconciliation is not re-posted, so a re-run can resume the rest
+        without doubling stock."""
         from tally_migrator.erpnext.importers import StockOpeningImporter
+        from tally_migrator.naming import safe_item_code
 
         imp = StockOpeningImporter("_TMTest Co", "TC")
-        imp._existing_opening_stock = lambda: True   # simulate a prior run
+        imp._default_warehouse = lambda: "Stores - TC"
+        imp._posted_keys = lambda: {(safe_item_code("X"), "Stores - TC")}
         result = imp.run(items=[{"_name": "X", "OpeningBalance": "55 Nos"}],
                          posting_date="2024-04-01")
         self.assertEqual(result.created, 0)
         self.assertEqual(result.skipped, 1)
-        self.assertEqual(result.warned, 1)
-        self.assertIn("already posted", result.warnings[0]["reason"])
+        self.assertIn("already posted", result.warnings[-1]["reason"])
 
     def test_default_warehouse_skips_other_company_global_default(self):
         """Stock Settings' default_warehouse is global. On a multi-company site it
@@ -924,7 +1257,7 @@ class TestERPNextImporter(unittest.TestCase):
         captured = {}
 
         def fake_get_doc(d):
-            captured["items"] = d["items"]
+            captured.setdefault("items", d["items"])  # keep the first (full chunk)
             raise Exception("stop")  # before insert/submit; we only inspect the rows
 
         with mock.patch("frappe.get_doc", side_effect=fake_get_doc):
@@ -947,7 +1280,7 @@ class TestERPNextImporter(unittest.TestCase):
         captured = {}
 
         def fake_get_doc(d):
-            captured["items"] = d["items"]
+            captured.setdefault("items", d["items"])  # keep the first (full chunk)
             raise Exception("stop")
 
         with mock.patch("frappe.get_doc", side_effect=fake_get_doc):
@@ -971,7 +1304,7 @@ class TestERPNextImporter(unittest.TestCase):
         captured = {}
 
         def fake_get_doc(d):
-            captured["items"] = d["items"]
+            captured.setdefault("items", d["items"])  # keep the first (full chunk)
             raise Exception("stop")
 
         with mock.patch("frappe.get_doc", side_effect=fake_get_doc):
@@ -993,7 +1326,7 @@ class TestERPNextImporter(unittest.TestCase):
         captured = {}
 
         def fake_get_doc(d):
-            captured["items"] = d["items"]
+            captured.setdefault("items", d["items"])  # keep the first (full chunk)
             raise Exception("stop")
 
         with mock.patch("frappe.get_doc", side_effect=fake_get_doc):
@@ -1016,7 +1349,7 @@ class TestERPNextImporter(unittest.TestCase):
         captured = {}
 
         def fake_get_doc(d):
-            captured["items"] = d["items"]
+            captured.setdefault("items", d["items"])  # keep the first (full chunk)
             raise Exception("stop")
 
         with mock.patch("frappe.get_doc", side_effect=fake_get_doc):
@@ -1028,6 +1361,59 @@ class TestERPNextImporter(unittest.TestCase):
         rows = {r["item_code"]: r for r in captured["items"]}
         self.assertEqual(rows["Envelope"].get("allow_zero_valuation_rate"), 1)
         self.assertNotIn("allow_zero_valuation_rate", rows["Mouse"])  # has a rate
+
+    def test_non_stock_item_excluded_from_opening_stock(self):
+        """A service / non-stock item carrying an opening quantity must be dropped
+        from the aggregate Stock Reconciliation (with a warning) so that one bad row
+        cannot fail the whole document and lose every item's opening stock."""
+        from unittest import mock
+        from tally_migrator.erpnext.importers import StockOpeningImporter
+        from tally_migrator.naming import safe_item_code
+
+        imp = StockOpeningImporter("_TMTest Co", "TC")
+        imp._existing_opening_stock = lambda: False
+        imp._default_warehouse = lambda: "Stores - TC"
+        captured = {}
+
+        def fake_get_doc(d):
+            captured.setdefault("items", d["items"])  # keep the first (full chunk)
+            raise Exception("stop")
+
+        items = [
+            {"_name": "_TMTest Service", "TypeOfSupply": "Services",
+             "OpeningBalance": "5 Nos", "OpeningRate": "10/Nos"},
+            {"_name": "_TMTest Goods", "OpeningBalance": "7 Nos", "OpeningRate": "3/Nos"},
+        ]
+        with mock.patch("frappe.get_doc", side_effect=fake_get_doc):
+            result = imp.run(items=items, posting_date="2024-04-01")
+        codes = [r["item_code"] for r in captured["items"]]
+        self.assertIn(safe_item_code("_TMTest Goods"), codes)
+        self.assertNotIn(safe_item_code("_TMTest Service"), codes)
+        self.assertTrue(any("non-stock" in w["reason"] for w in result.warnings))
+
+    def test_all_non_stock_items_post_nothing_cleanly(self):
+        """When only service / non-stock items carry an opening quantity, nothing is
+        posted (no Stock Reconciliation is even built) and the run does not fail."""
+        from unittest import mock
+        from tally_migrator.erpnext.importers import StockOpeningImporter
+
+        imp = StockOpeningImporter("_TMTest Co", "TC")
+        imp._existing_opening_stock = lambda: False
+        imp._default_warehouse = lambda: "Stores - TC"
+        called = {"n": 0}
+
+        def fake_get_doc(d):
+            called["n"] += 1
+            raise Exception("should not be called")
+
+        items = [{"_name": "_TMTest Svc Only", "TypeOfSupply": "Services",
+                  "OpeningBalance": "9 Nos", "OpeningRate": "2/Nos"}]
+        with mock.patch("frappe.get_doc", side_effect=fake_get_doc):
+            result = imp.run(items=items, posting_date="2024-04-01")
+        self.assertEqual(called["n"], 0)
+        self.assertEqual(result.created, 0)
+        self.assertEqual(result.failed, 0)
+        self.assertTrue(any("non-stock" in w["reason"] for w in result.warnings))
 
     def test_zero_valuation_warns_per_item_with_identical_text(self):
         """The importer emits one warning per zero-rate item, all with byte-identical
@@ -1093,7 +1479,7 @@ class TestERPNextImporter(unittest.TestCase):
         captured = {}
 
         def fake_get_doc(d):
-            captured["items"] = d["items"]
+            captured.setdefault("items", d["items"])  # keep the first (full chunk)
             raise Exception("stop")
 
         # Both godowns are "migrated" (warehouse exists); the default isn't consulted.
@@ -1126,7 +1512,7 @@ class TestERPNextImporter(unittest.TestCase):
         captured = {}
 
         def fake_get_doc(d):
-            captured["items"] = d["items"]
+            captured.setdefault("items", d["items"])  # keep the first (full chunk)
             raise Exception("stop")
 
         # No warehouse exists for the godown -> fall back to the default.
@@ -1154,7 +1540,7 @@ class TestERPNextImporter(unittest.TestCase):
         captured = {}
 
         def fake_get_doc(d):
-            captured["items"] = d["items"]
+            captured.setdefault("items", d["items"])  # keep the first (full chunk)
             raise Exception("stop")
 
         with mock.patch("frappe.db.exists", return_value=False), \
@@ -1187,3 +1573,45 @@ class TestERPNextImporter(unittest.TestCase):
         imp._warn_residual(
             [{"debit_in_account_currency": 0.4, "credit_in_account_currency": 0.0}], tiny)
         self.assertEqual(tiny.warned, 0)   # below PLUG_NOISE_THRESHOLD
+
+
+class TestPartyPanSanitisation(unittest.TestCase):
+    """Tally's INCOMETAXNumber lands in the party PAN field, but India Compliance
+    validates PAN as ^[A-Z]{5}[0-9]{4}[A-Z]$ and rejects the whole party on a
+    mismatch. Real books carry a TAN, a typo, or plain digits there (e.g.
+    '4870030501'), which previously failed creation and lost the party. The
+    importer must keep a valid PAN and silently blank an invalid one, so the party
+    always imports - same fallback as an invalid GSTIN."""
+
+    def _imp(self):
+        from tally_migrator.erpnext.importers import SupplierImporter
+        return SupplierImporter("_TMTest Co", "TC")
+
+    def test_valid_pan_kept(self):
+        self.assertEqual(self._imp()._valid_pan("AAACT2727Q"), "AAACT2727Q")
+
+    def test_valid_pan_normalised(self):
+        # lowercase + surrounding whitespace still recognised
+        self.assertEqual(self._imp()._valid_pan("  aaact2727q  "), "AAACT2727Q")
+
+    def test_invalid_pan_blanked(self):
+        # the Brightpoint case: 10 digits, no letters -> not a PAN
+        self.assertEqual(self._imp()._valid_pan("4870030501"), "")
+
+    def test_partial_or_garbage_blanked(self):
+        for bad in ("AAACT2727", "AAACT2727QQ", "12345ABCDZ", "ABCDE12345", "", None):
+            self.assertEqual(self._imp()._valid_pan(bad), "",
+                             msg="should reject %r" % (bad,))
+
+    def test_build_doc_drops_invalid_pan_but_keeps_party(self):
+        imp = self._imp()
+        doc = imp.build_doc({"_name": "_TMTest Brightpoint",
+                             "INCOMETAXNumber": "4870030501"})
+        self.assertEqual(doc["supplier_name"], "_TMTest Brightpoint")
+        self.assertEqual(doc["pan"], "")     # bad PAN dropped, party still builds
+
+    def test_build_doc_keeps_valid_pan(self):
+        imp = self._imp()
+        doc = imp.build_doc({"_name": "_TMTest Good",
+                             "INCOMETAXNumber": "AAACT2727Q"})
+        self.assertEqual(doc["pan"], "AAACT2727Q")

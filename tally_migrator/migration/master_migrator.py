@@ -524,7 +524,9 @@ class MasterMigrator:
             except Exception as exc2:
                 frappe.log_error(f"Migration log status fallback failed: {exc2}", "Tally Migrator")
 
-        # 2. Enrichment - best-effort, must never revert the terminal state above.
+        # 2a. Reports - the records-created manifest, reconciliation and audit fields.
+        # Saved on their own so a failure writing the issues table (2b) below cannot
+        # also lose these. Best-effort, must never revert the terminal state above.
         try:
             self.log.reload()
             self.log.extracted_counts = frappe.as_json(
@@ -534,15 +536,25 @@ class MasterMigrator:
             self._track_wizard_uoms(manifest)
             self.log.created_records = frappe.as_json(manifest)
             self.log.reconciliation_report = frappe.as_json(self._reconciliation(masters, coa))
+            self.log.save(ignore_permissions=True)
+            frappe.db.commit()
+        except Exception as exc:
+            frappe.log_error(f"Migration log reports failed: {exc}", "Tally Migrator")
+
+        # 2b. Issues table - the per-record failures/drops. Kept as its own write
+        # because it is the one most likely to hit a row-level limit on a big run; a
+        # failure here must not take the reports (2a) down with it.
+        try:
+            self.log.reload()
             self.log.set("errors", [])
             if summary.has_errors or summary.has_warnings:
                 self.log.error_log = summary.error_lines()
                 for row in summary.error_records():
                     self.log.append("errors", row)
-            self.log.save(ignore_permissions=True)
-            frappe.db.commit()
+                self.log.save(ignore_permissions=True)
+                frappe.db.commit()
         except Exception as exc:
-            frappe.log_error(f"Migration log enrichment failed: {exc}", "Tally Migrator")
+            frappe.log_error(f"Migration log issues table failed: {exc}", "Tally Migrator")
 
     def _track_wizard_uoms(self, manifest: dict) -> None:
         """Fold the pre-flight "create as new" UOMs into the manifest's Units entry so

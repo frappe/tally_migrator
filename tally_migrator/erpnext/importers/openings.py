@@ -1,6 +1,7 @@
 """Opening balances: the per-company lock and the three opening importers."""
 
 import contextlib
+import sys
 from dataclasses import dataclass, field
 
 import frappe
@@ -18,12 +19,14 @@ from tally_migrator.tally.mappings import (
     classify_group,
     gst_category_from_type,
 )
-from tally_migrator.naming import safe_item_code, company_scoped
+from tally_migrator.naming import (
+    safe_item_code, company_scoped, shared_batch_names, batch_id_for)
 from tally_migrator.tally.extractors import TallyExtractor
 from tally_migrator.validation.engine import (
     infer_gst_category, validate_gstin, GSTIN_STATE_CODES,
 )
 from .base import BaseImporter, ImportResult
+from .items import ItemImporter
 
 # ── Concurrency guard for opening entries ─────────────────────────────────────
 # The opening Journal Entry and Stock Reconciliation are aggregate, submitted
@@ -192,7 +195,17 @@ class OpeningBalanceImporter:
                 "user_remark": f"{self._REMARK_PREFIX}{label})",
             })
             doc.insert(ignore_permissions=True)
-            doc.submit()
+            # Submit synchronously. ERPNext's JournalEntry.submit() enqueues the
+            # submission as a BACKGROUND job when the entry has > 100 accounts
+            # (the asset Opening Entry routinely does), returning before the GL is
+            # posted. The single migration worker is then busy until the run ends,
+            # so that queued submit - and its GL - only lands AFTER finalize, which
+            # makes the post-import trial balance read a whole account class as
+            # absent. _submit() is exactly the path submit() takes for <=100-row
+            # entries, so this forces the same synchronous posting for any size.
+            # Safe here because the migration already runs off the web request,
+            # so there is no request-timeout reason to defer.
+            doc._submit()
             frappe.db.commit()
             result.add_created(doc.name)
         except Exception as exc:
@@ -264,11 +277,29 @@ class OpeningBalanceImporter:
                     "not posted. It is included in the Temporary Opening total instead.")
                 continue
             account = company_scoped(node.name, self.abbr)
-            if not frappe.db.exists("Account", account):
+            is_group = frappe.db.get_value("Account", account, "is_group")
+            if is_group is None:
                 result.add_warning(
                     node.name,
                     f"opening balance skipped - account '{account}' was not created "
                     "(its import failed earlier). Fix the account and re-run.")
+                continue
+            # The Tally ledger exists in ERPNext as a GROUP account - it had
+            # sub-accounts under it in Tally, so it was created (or promoted) as a
+            # group, and ERPNext forbids a group account from carrying a balance
+            # ("group accounts cannot be used in transactions"). Including it would
+            # fail the whole class's Opening Entry on submit and lose every balance in
+            # that batch, so skip just this line. The amount is not lost: the batch
+            # plugs against Temporary Opening, so it stays inside that difference, to
+            # be cleared when the user completes their opening entries - the same
+            # contract as an income/expense opening above.
+            if is_group:
+                result.add_warning(
+                    node.name,
+                    f"opening balance skipped - account '{account}' exists as a group "
+                    "account (its Tally ledger had sub-accounts), and ERPNext does not "
+                    f"allow a group account to carry a balance, so {abs(node.opening_balance):,.2f} "
+                    "was not posted. It is included in the Temporary Opening total instead.")
                 continue
             lines.append(self._line(account, node.opening_balance, node.opening_dr_cr))
         return lines
@@ -744,11 +775,25 @@ class PartyOpeningImporter:
 
     @staticmethod
     def _classify(party_type: str, signed: float, is_advance: bool) -> str:
-        """An outstanding invoice (party's natural side, not flagged advance) vs an
-        advance/credit. Customer natural side = Dr (signed > 0); Supplier = Cr
-        (signed < 0). Tally's ISADVANCE flag forces 'advance' regardless of side."""
-        if is_advance:
-            return "advance"
+        """Outstanding invoice vs advance/credit, decided PURELY by which side of the
+        party's control account the bill sits on. Customer natural side = Dr
+        (signed > 0); Supplier = Cr (signed < 0): a bill there is an outstanding
+        opening invoice. A bill on the OPPOSITE side is an advance/credit and posts
+        as an unallocated Payment Entry.
+
+        Tally's ISADVANCE flag is deliberately NOT used to force 'advance'. A genuine
+        advance already falls on the opposite side (a customer prepayment is a credit,
+        a supplier prepayment is a debit), so side alone routes it correctly. But some
+        exports also tag a bill that sits on the party's NATURAL side as ISADVANCE
+        (e.g. a supplier credit bill that offsets a debit bill). Forcing those to an
+        advance posted them on the WRONG side via an opposite-direction Payment Entry,
+        flipping their sign - so an offsetting Cr+Dr pair that nets to zero in Tally
+        posted as a non-zero party balance (understating Payables/Receivables). The
+        advance Payment Entry's direction is fixed by party type (supplier=Pay/debit,
+        customer=Receive/credit), so it can only carry a bill that is genuinely on the
+        opposite side; routing by side keeps every bill's GL effect equal to Tally's.
+        ``is_advance`` is retained in the signature (it is a real Tally attribute the
+        caller passes through) but does not change the side a balance lands on."""
         on_natural_side = (signed > 0) if party_type == "Customer" else (signed < 0)
         return "invoice" if on_natural_side else "advance"
 
@@ -900,6 +945,54 @@ class PartyOpeningImporter:
 
 # ── Opening stock importer ───────────────────────────────────────────────────
 
+@contextlib.contextmanager
+def _accounting_dimensions_cached():
+    """Memoise ERPNext's ``get_accounting_dimensions()`` for the duration of the block.
+
+    Posting opening stock submits one Stock Reconciliation per chunk, and ERPNext's
+    GL/SLE path calls ``get_accounting_dimensions()`` about twice per item - each an
+    uncached DB read of a company-wide constant (the Accounting Dimension list does
+    not change during a migration). On a real book that is ~2 round-trips per item of
+    pure waste, and it dominates on Frappe Cloud where every round-trip carries
+    network latency. We memoise the result for the phase, then restore the original.
+
+    The function is name-imported into several ERPNext modules (general_ledger,
+    accounts_controller, ...), so patching only its source module would miss those
+    bound references. We scan ``sys.modules`` and swap every module-level reference
+    that currently points at the original, restoring each on exit. The wrapper returns
+    a fresh copy per call so a caller that mutates the list can never corrupt the
+    cache. No-op-safe: if ERPNext or the symbol is absent, the block runs unchanged."""
+    try:
+        from erpnext.accounts.doctype.accounting_dimension import accounting_dimension as _ad
+    except Exception:
+        yield
+        return
+    original = getattr(_ad, "get_accounting_dimensions", None)
+    if original is None:
+        yield
+        return
+
+    cache: dict = {}
+
+    def cached(as_list=True):
+        if as_list not in cache:
+            cache[as_list] = original(as_list=as_list)
+        value = cache[as_list]
+        return list(value) if isinstance(value, list) else value
+
+    # Every module that did ``from ...accounting_dimension import get_accounting_dimensions``
+    # holds its own reference; patch them all (plus the source module).
+    patched = [m for m in list(sys.modules.values())
+               if getattr(m, "get_accounting_dimensions", None) is original]
+    for m in patched:
+        m.get_accounting_dimensions = cached
+    try:
+        yield
+    finally:
+        for m in patched:
+            m.get_accounting_dimensions = original
+
+
 class StockOpeningImporter:
     """Posts item opening stock as one submitted 'Opening Stock' Stock Reconciliation.
 
@@ -915,22 +1008,25 @@ class StockOpeningImporter:
         self.company = company
         self.abbr = abbr
 
+    # ERPNext queues a Stock Reconciliation submit in the background once it has
+    # more than 100 rows (stock_reconciliation.py); that background hop both breaks
+    # synchronous posting here and is the kind of job that stalls on cloud. Posting
+    # in <=100-row chunks keeps every submit synchronous and deterministic, bounds a
+    # failure's blast radius, and bounds the per-document memory/transaction size.
+    _CHUNK = 100
+
     def run(self, items: list, posting_date: str) -> ImportResult:
         result = ImportResult(self.doctype)
-        # Idempotency guard (see OpeningBalanceImporter): one aggregate submitted
-        # document, so re-running would double opening stock. Skip if one exists.
-        if self._existing_opening_stock():
-            result.skipped += 1
-            result.add_warning(
-                "Opening Stock",
-                "opening stock already posted for this company (an Opening Stock "
-                "reconciliation exists) - skipped to avoid double-counting. Cancel "
-                "the existing reconciliation first if you need to re-import.")
-            return result
         warehouse = self._default_warehouse()
         if not warehouse:
             result.add_error("Opening Stock", "no warehouse found to hold opening stock")
             return result
+
+        # Names reused across items would collide on ERPNext's global batch id, so
+        # scope exactly those per item - the same rule the Batch importer applied,
+        # computed from the same export so the batch_id we tag here matches the Batch
+        # that was actually created.
+        self._shared_batch_names = shared_batch_names(items)
 
         # Aggregate by (item_code, warehouse): a masters export can list the same
         # Stock Item more than once (Tally names are unique, so duplicate tags are
@@ -949,14 +1045,55 @@ class StockOpeningImporter:
         if not rows:
             return result  # no opening stock to post
 
+        # A Stock Reconciliation rejects a non-stock item and that single bad row
+        # fails the WHOLE document - losing every item's opening stock. Tally carries
+        # opening quantities on service/non-stock ledgers too, so drop just those
+        # rows (with a warning) and let the genuine stock still post.
+        rows = self._drop_non_stock_rows(rows, items, result)
+        if not rows:
+            return result  # only non-stock items carried an opening quantity
+
+        # Per-item idempotency: skip rows whose (item, warehouse) was already posted
+        # by a prior run. Unlike a single aggregate document, chunked posting can be
+        # safely resumed - an interrupted run re-runs and completes the missing rows
+        # instead of either doubling stock or abandoning what never posted.
+        posted = self._posted_keys()
+        pending = [r for r in rows if (r["item_code"], r["warehouse"]) not in posted]
+        if not pending:
+            result.skipped += 1
+            result.add_warning(
+                "Opening Stock",
+                "opening stock already posted for every item with an opening "
+                "quantity - skipped to avoid double-counting.")
+            return result
+
         # Batch-tracked rows post through a Serial and Batch Bundle, which ERPNext
         # refuses to build unless Stock Settings > "Activate Serial and Batch No for
         # Item" is on (it is off by default). It is a hard prerequisite for batch
         # stock in ERPNext v15+, so enable it once when this import actually carries
         # batch rows, and record it on the log so the change is visible.
-        if any(r.get("use_serial_batch_fields") for r in rows):
+        if any(r.get("use_serial_batch_fields") for r in pending):
             self._ensure_serial_batch_enabled(result)
 
+        # Memoise the per-item Accounting Dimension lookup ERPNext repeats on every
+        # GL/SLE posting (a company-wide constant) - the dominant avoidable round-trip
+        # cost of this phase, especially on Frappe Cloud. See _accounting_dimensions_cached.
+        with _accounting_dimensions_cached():
+            for i in range(0, len(pending), self._CHUNK):
+                chunk = pending[i:i + self._CHUNK]
+                if not self._post_doc(chunk, posting_date, result):
+                    # The chunk failed as a unit - retry each row on its own so one bad
+                    # row (e.g. an unforeseen validation) cannot cost the other ~100
+                    # their opening stock. A 1-row doc also submits synchronously.
+                    for row in chunk:
+                        self._post_doc([row], posting_date, result, isolate=True)
+        return result
+
+    def _post_doc(self, rows: list, posting_date: str, result: ImportResult,
+                  isolate: bool = False) -> bool:
+        """Insert + submit one Opening Stock reconciliation for ``rows``. Returns True
+        on success. On failure rolls back; when ``isolate`` (the row-by-row retry of a
+        failed chunk) the single bad row is recorded as an error so it is visible."""
         try:
             doc = frappe.get_doc({
                 "doctype": "Stock Reconciliation",
@@ -971,10 +1108,49 @@ class StockOpeningImporter:
             doc.submit()
             frappe.db.commit()
             result.add_created(doc.name)
+            return True
         except Exception as exc:
-            result.add_error("Opening Stock", exc)
             frappe.db.rollback()
-        return result
+            if isolate:
+                result.add_error(f"Opening Stock ({rows[0]['item_code']})", exc)
+            return False
+
+    def _posted_keys(self) -> set:
+        """(item_code, warehouse) pairs already carried by a submitted Opening Stock
+        reconciliation for this company - so a re-run skips them."""
+        rows = frappe.db.sql(
+            """select sri.item_code, sri.warehouse
+               from `tabStock Reconciliation Item` sri
+               inner join `tabStock Reconciliation` sr on sr.name = sri.parent
+               where sr.company = %s and sr.purpose = 'Opening Stock'
+                 and sr.docstatus = 1""",
+            self.company)
+        return {(code, wh) for code, wh in rows}
+
+    @staticmethod
+    def _drop_non_stock_rows(rows: list, items: list, result: ImportResult) -> list:
+        """Remove opening rows for items ERPNext does not stock-track. The non-stock
+        decision uses the very rule the Item importer applied (``TypeOfSupply`` =
+        Services -> non-stock), so it matches the ``is_stock_item`` ERPNext actually
+        stored - no DB round-trip - and a service ledger that carries an opening
+        quantity is dropped with a warning instead of failing the whole document."""
+        nonstock = {
+            safe_item_code(it["_name"]): it["_name"]
+            for it in items if not ItemImporter._is_stock_item(it)
+        }
+        if not nonstock:
+            return rows
+        kept = []
+        for r in rows:
+            name = nonstock.get(r["item_code"])
+            if name is None:
+                kept.append(r)
+            else:
+                result.add_warning(
+                    name, "opening stock not posted - this is a service / non-stock "
+                    "item in ERPNext, which cannot hold opening stock. Record its "
+                    "opening value as a ledger balance if it should carry one.")
+        return kept
 
     def _placements(self, it: dict, default_wh: str) -> list[tuple]:
         """Where this item's opening stock lands → list of
@@ -1121,7 +1297,14 @@ class StockOpeningImporter:
             # make_bundle_using_old_serial_batch_fields then builds the Bundle from
             # batch_no automatically. Without the flag the whole aggregate
             # reconciliation fails to submit and no opening stock posts at all.
-            row["batch_no"] = batch
+            #
+            # Use the same per-item-scoped batch id the Batch importer created: a
+            # name shared across items (a rate, or Tally's implicit "Primary Batch")
+            # is global in ERPNext, so without scoping the row would reference a
+            # Batch that belongs to a different item ("Batch X does not belong to
+            # Item Y") and fail.
+            row["batch_no"] = batch_id_for(
+                batch, code, getattr(self, "_shared_batch_names", set()))
             row["use_serial_batch_fields"] = 1
         if rate == 0:
             # ERPNext rejects a positive opening qty at a zero rate
@@ -1154,14 +1337,6 @@ class StockOpeningImporter:
             "enabled Stock Settings > 'Activate Serial and Batch No for Item' - it "
             "was off, and ERPNext requires it to post batch-tracked opening stock. "
             "Leave it on for batch/serial items to keep working.")
-
-    def _existing_opening_stock(self) -> bool:
-        """True when a non-cancelled Opening Stock reconciliation exists for the company."""
-        return bool(frappe.db.exists("Stock Reconciliation", {
-            "company": self.company,
-            "purpose": "Opening Stock",
-            "docstatus": ["<", 2],   # draft or submitted, not cancelled
-        }))
 
     def _default_warehouse(self) -> str:
         """A non-group warehouse to hold opening stock.

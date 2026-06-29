@@ -515,8 +515,12 @@ The log is made up of several sections, each explained below.
 
 A per-record-type table with a coloured bar for each row showing the split of
 **Imported (new)** in green, **Already there (skipped, safe)** in grey, and
-**Failed** in red, plus a total row. This is the same breakdown you saw on the
-results screen, kept for the record.
+**Failed** in red, plus **Imported**, **Already there**, **Warnings**, and
+**Failed** count columns and a total row. The **Warnings** column counts records
+that imported but had a dependent piece (an address, a contact, an opening balance,
+and so on) dropped, so a partial drop is visible here and not only on the results
+screen; the detail is in the issues table below. This is the same breakdown you saw
+on the results screen, kept for the record.
 
 ### Reconciliation: opening trial balance
 
@@ -735,6 +739,10 @@ Migrator handles a real-world wrinkle in Tally data.
 - **Invalid GSTIN.** A structurally invalid GSTIN is dropped from the party (and its
   address) so it does not block import, but the party still imports as Unregistered.
   The pre-flight flags it so you can fix it.
+- **Invalid PAN.** Tally's Income Tax Number maps to the party's PAN, but a value that
+  is not a valid PAN (for example a TAN or a plain number) would otherwise make India
+  Compliance reject the whole party. The app keeps a valid PAN and drops an invalid
+  one, so the party still imports; set the correct PAN in ERPNext afterwards.
 - **PIN that does not match the state.** India Compliance rejects an address whose PIN
   does not match its state. Rather than lose the whole address, the app drops just
   the PIN, keeps the address, and warns you to set the PIN in ERPNext.
@@ -779,6 +787,11 @@ Migrator handles a real-world wrinkle in Tally data.
   cleared so it still lands, and you are told to set a correct one.
 - **Batch and expiry.** An item marked batch-wise in Tally gets batch tracking turned
   on; if it is also perishable, expiry tracking is enabled too.
+- **Opening stock value.** Every item with opening stock is imported with its quantity
+  and rate. ERPNext recomputes each item's valuation when it posts the opening stock,
+  so the total opening stock value on the trial balance can differ from Tally's by a
+  few units of rounding. This is a rounding effect, not missing stock - all items and
+  quantities are imported.
 
 ### Units of measure
 
@@ -800,7 +813,10 @@ Migrator handles a real-world wrinkle in Tally data.
 - **Account ordering.** Groups are created parent-before-child, and any circular
   parent loop is broken rather than crashing (with a pre-flight warning).
 - **Bank ledgers.** A Tally bank ledger carrying the company's own account number and
-  IFSC creates a company Bank Account linked to that GL account.
+  IFSC creates a company Bank Account linked to that GL account. When several bank
+  ledgers share the same account-holder name (Tally often repeats it), each still gets
+  its own Bank Account - the name is made unique with the account number, so no
+  ledger's bank details are lost to a name clash.
 - **Cost centres** import flat or nested, under the company's root cost centre.
 - **Warehouses / godowns** import with their full nesting. A godown that is the parent
   of another is created as a group warehouse so the tree renders correctly. Each
@@ -925,6 +941,13 @@ migration.
   be saved. The party still imported.
 - **"bank account not created"** - usually because the ledger had no bank name. The
   party or account still imported.
+- **"a Tally group with this name matches the existing account ... kept as a ledger"** -
+  a Tally group had the same name as an account ERPNext already ships as a ledger (for
+  example a "Office Equipment" or "TDS Payable" group over the standard ledger of that
+  name). The standard ledger is left exactly as it is (converting it would break ERPNext
+  features that rely on it, like India Compliance's TDS setup), and the Tally group's
+  sub-accounts are placed under that ledger's own parent group instead - so they still
+  import, one level flatter. Nothing for you to do.
 - **"item not imported - its code collides with ..."** - an item code collision (see
   above). Rename one item and re-run.
 - **"GST type ... not recognised - item imported as taxable"** - set the item's GST
@@ -944,6 +967,10 @@ migration.
   quantity times rate; the opening rate was used. Verify in Tally.
 - **"... is held in Temporary Opening to keep your books balanced"** - normal; see
   the Temporary Opening explanation.
+- **"opening balance skipped - account ... exists as a group account"** - the Tally
+  ledger had sub-accounts, so it was created as a group, and ERPNext does not let a
+  group account carry a balance. Its opening amount is held in Temporary Opening
+  instead; the rest of that account class still posts normally.
 - **"this company already has an Opening Entry that was not created by this
   migrator"** - opening balances were skipped to avoid double-posting against a
   manually set-up book. Cancel that entry first if you want this migration to post

@@ -4,7 +4,7 @@ from datetime import datetime
 
 import frappe
 
-from tally_migrator.naming import safe_item_code
+from tally_migrator.naming import safe_item_code, shared_batch_names, batch_id_for
 from tally_migrator.tally.extractors import TallyExtractor
 from .base import ImportResult
 
@@ -34,6 +34,9 @@ class BatchImporter:
 
     def run(self, items: list[dict]) -> ImportResult:
         result = ImportResult(self.doctype)
+        # Names reused across items would collide on ERPNext's global batch id, so
+        # those get scoped per item - by the same rule the opening-stock importer uses.
+        shared = shared_batch_names(items)
         for it in items:
             # Tally stamps every item's opening with an implicit "Primary Batch", so
             # only genuinely batch-tracked items (ISBATCHWISEON=Yes) get Batch masters -
@@ -47,7 +50,8 @@ class BatchImporter:
                 if not batch or batch in seen:
                     continue
                 seen.add(batch)
-                self._upsert(result, code, it.get("_name", ""), batch, row)
+                self._upsert(result, code, it.get("_name", ""),
+                             batch_id_for(batch, code, shared), row)
         return result
 
     def _upsert(self, result: ImportResult, item_code: str, item_name: str,

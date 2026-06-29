@@ -1001,15 +1001,26 @@ function render_summary(frm) {
 	const esc = frappe.utils.escape_html;
 	let totalCreated = 0,
 		totalSkipped = 0,
+		totalWarned = 0,
 		totalFailed = 0;
+
+	// A warned record still imported (the warning is about dependent data that was
+	// dropped), so warnings overlap the "Imported" count and are NOT a slice of the
+	// bar - they get their own column instead, mirroring the wizard's results table.
+	const warnCell = (warned) =>
+		warned
+			? `<span style="display:inline-flex; align-items:center; gap:4px; justify-content:flex-end;">${statusIcon("info")}<strong>${warned}</strong></span>`
+			: warned;
 
 	const rows = entries
 		.map(([label, r]) => {
 			const created = r.created || 0;
 			const skipped = r.skipped || 0;
+			const warned = r.warned || 0;
 			const failed = r.failed || 0;
 			totalCreated += created;
 			totalSkipped += skipped;
+			totalWarned += warned;
 			totalFailed += failed;
 			const total = created + skipped + failed || 1;
 			const pct = (n) => (n / total) * 100;
@@ -1027,6 +1038,10 @@ function render_summary(frm) {
 					<td style="width:45%; vertical-align:middle;">${bar}</td>
 					<td class="text-right text-success" style="vertical-align:middle;">${created}</td>
 					<td class="text-right text-muted" style="vertical-align:middle;">${skipped}</td>
+					<td class="text-right ${warned ? "" : "text-muted"}" style="vertical-align:middle;"
+						${warned ? `title="${warned} warning${warned === 1 ? "" : "s"} - record imported, some detail dropped"` : ""}>
+						${warnCell(warned)}
+					</td>
 					<td class="text-right ${failed ? "text-danger" : "text-muted"}" style="vertical-align:middle;">
 						${failed ? `<strong>${failed}</strong>` : failed}
 					</td>
@@ -1049,6 +1064,7 @@ function render_summary(frm) {
 						<th style="border-top:0;"></th>
 						<th style="border-top:0;" class="text-right">Imported</th>
 						<th style="border-top:0;" class="text-right">Already there</th>
+						<th style="border-top:0;" class="text-right">Warnings</th>
 						<th style="border-top:0;" class="text-right">Failed</th>
 					</tr>
 				</thead>
@@ -1059,6 +1075,9 @@ function render_summary(frm) {
 						<td></td>
 						<td class="text-right text-success"><strong>${totalCreated}</strong></td>
 						<td class="text-right text-muted">${totalSkipped}</td>
+						<td class="text-right ${totalWarned ? "" : "text-muted"}">
+							${totalWarned ? `<strong>${totalWarned}</strong>` : totalWarned}
+						</td>
 						<td class="text-right ${totalFailed ? "text-danger" : "text-muted"}">
 							${totalFailed ? `<strong>${totalFailed}</strong>` : totalFailed}
 						</td>
@@ -1069,6 +1088,9 @@ function render_summary(frm) {
 				${legendItem(BAR_CREATED, "Imported (new)")}
 				${legendItem(BAR_SKIPPED, "Already there (skipped, safe)")}
 				${legendItem(BAR_FAILED, "Failed")}
+			</div>
+			<div class="text-muted small" style="margin-top:6px;">
+				Warnings count records that imported but had some detail dropped - see the issues table below.
 			</div>
 		</div>
 	`));
