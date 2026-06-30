@@ -788,10 +788,11 @@ Migrator handles a real-world wrinkle in Tally data.
 - **Batch and expiry.** An item marked batch-wise in Tally gets batch tracking turned
   on; if it is also perishable, expiry tracking is enabled too.
 - **Opening stock value.** Every item with opening stock is imported with its quantity
-  and rate. ERPNext recomputes each item's valuation when it posts the opening stock,
-  so the total opening stock value on the trial balance can differ from Tally's by a
-  few units of rounding. This is a rounding effect, not missing stock - all items and
-  quantities are imported.
+  and rate, and each item is valued at the rate Tally states for it (its opening rate,
+  or its opening value divided by quantity), so the opening stock value on the trial
+  balance ties back to Tally's. ERPNext stores each rate at its currency precision, so
+  the total can differ by a sub-rupee rounding fraction - that, and only that, is what
+  the trial balance's stock tolerance absorbs; it is never missing stock.
 
 ### Units of measure
 
@@ -861,11 +862,29 @@ Migrator handles a real-world wrinkle in Tally data.
   the original invoice number and reconciles directly. If a bill id clashes with an
   existing document, the invoice is auto-named instead, with a warning, and the Tally
   id stays recoverable.
-- **Opening stock** posts as one Stock Reconciliation. Where Tally carries godown-wise
-  and batch-wise detail, stock is placed per warehouse and per batch. A negative
-  opening quantity cannot be posted and is dropped with a warning. An item with no
-  rate, value, or standard cost posts at a zero valuation rate, with a warning, so its
-  quantity is still recorded.
+- **Opening stock** posts as Stock Reconciliations. Where Tally carries godown-wise
+  and batch-wise detail, stock is placed per warehouse and per batch - but only when
+  that breakdown can be posted faithfully. Each item is valued at the rate Tally states
+  for the item as a whole, so the total always equals Tally's opening stock value for
+  that item, whatever the per-godown detail looks like. A godown breakdown that cannot
+  be posted as is - because it includes a negative allocation (a transfer or oversold
+  godown that ERPNext opening stock cannot hold) or does not add up to the item's total
+  quantity - falls back, for a non-batch item, to a single item-level line at the
+  default warehouse, so the value is always kept and only that item's per-warehouse
+  split is sacrificed. A **batch-tracked** item cannot fall back to a batch-less
+  item-level line (every row needs a batch), so instead its full opening quantity x rate
+  is posted under the single real batch that held the most stock (the largest positive
+  bucket), with a warning. The value and total are always kept and only that item's
+  per-batch split is sacrificed - set the per-batch opening manually if you need it. In
+  the rare case where none of its positive batches map to an existing Batch master, the
+  item is skipped with a warning to set it manually, rather than posted at a wrong value.
+  A whole item with no rate, value, or standard cost anywhere posts at a zero valuation
+  rate, with a warning, so its quantity is still recorded.
+- **Service / non-stock items with an opening quantity.** ERPNext cannot hold stock for
+  a service item, so its opening quantity is not posted as stock (with a warning to
+  record it as a ledger balance instead). The reconciliation does not count it on the
+  Stock value line - which would look like missing stock - but discloses its value as a
+  separate "opening value not migrated as stock" figure, so nothing is hidden.
 
 ### Foreign currency
 
@@ -961,6 +980,17 @@ migration.
   edge cases above.
 - **"opening stock not posted - Tally reports a negative opening quantity"** - set
   this item's opening stock manually.
+- **"opening stock posted as a single batch line"** - this batch-tracked item's Tally
+  batch breakdown includes a negative or non-reconciling batch quantity that ERPNext
+  opening stock cannot hold per batch, so its full opening quantity x rate was posted
+  under one batch (the one that held the most stock). The item's total and value are
+  correct; only the per-batch split was not preserved. Set the per-batch opening stock
+  manually if your business needs batch-level accuracy for this item.
+- **"opening stock not posted - this batch-tracked item's Tally batch allocations
+  cannot be represented as ERPNext opening stock"** - the rarer case where none of the
+  item's positive batches map to an existing Batch master, so its value could not be
+  homed anywhere. Set this item's opening stock manually; the reconciliation shows it as
+  a small Stock value shortfall to review.
 - **"opening stock posted with a zero valuation rate"** - Tally carried no value for
   the item; set a valuation rate in ERPNext if it should carry value.
 - **"opening stock value does not reconcile"** - Tally's recorded value did not match

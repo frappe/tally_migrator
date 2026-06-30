@@ -673,6 +673,14 @@ function render_reconciliation(frm) {
 		? `<div class="text-muted small" style="margin-top:8px;">Stock value across ${r.stock_items} item(s) with opening quantity. Receivables/Payables are the Debtors/Creditors control totals (shown separately from Assets/Liabilities).</div>`
 		: "";
 
+	// Opening value Tally carried on service / non-stock items: ERPNext cannot hold it
+	// as stock, so it is disclosed here rather than counted on the Stock value line
+	// (where it would read as a variance) or dropped silently.
+	const nonStock = r.non_stock || {};
+	const nonStockNote = nonStock.items
+		? `<div class="text-muted small" style="margin-top:4px;">Opening value not migrated as stock: ${fmt(nonStock.value)} across ${nonStock.items} service / non-stock item(s) - ERPNext cannot hold stock for these; record their value as a ledger balance if needed.</div>`
+		: "";
+
 	wrapper.html(section(`
 		<div style="${CARD} max-width:100%;">
 			${callout(v.kind, iconRow(v.kind, v.text), "margin-bottom:8px;")}
@@ -701,6 +709,7 @@ function render_reconciliation(frm) {
 				<tfoot>${foot}</tfoot>
 			</table>
 			${stockNote}
+			${nonStockNote}
 		</div>
 	`));
 }

@@ -487,10 +487,15 @@ class TestERPNextImporter(unittest.TestCase):
         from tally_migrator.erpnext.importers import openings
         res = ImportResult("Stock Reconciliation")
         with mock.patch.object(openings.frappe.db, "get_single_value", return_value=0), \
-             mock.patch.object(openings.frappe.db, "set_single_value") as set_single:
+             mock.patch.object(openings.frappe.db, "set_single_value") as set_single, \
+             mock.patch.object(openings.frappe.db, "commit") as commit:
             StockOpeningImporter._ensure_serial_batch_enabled(res)
         set_single.assert_called_once_with(
             "Stock Settings", "enable_serial_and_batch_no_for_item", 1)
+        # The flip MUST be committed up front: the chunk-posting loop rolls back a
+        # failed chunk, and an uncommitted setting would be reverted by that rollback,
+        # dropping all batch opening stock.
+        commit.assert_called_once()
         self.assertTrue(res.warnings)   # the flip is recorded on the log
 
     def test_ensure_serial_batch_enabled_noop_when_already_on(self):
@@ -1555,6 +1560,171 @@ class TestERPNextImporter(unittest.TestCase):
         self.assertEqual(captured["items"][0]["qty"], 30.0)           # 20 + 10
         self.assertEqual(captured["items"][0]["valuation_rate"], 10.0)  # 300 / 30
         self.assertFalse(any("more than once" in w["reason"] for w in result.warnings))
+
+    # ── Godown-wise opening stock invariant (no DB - placement maths only) ──────
+
+    def _godown_rows(self, item, default="WH - TC"):
+        """Build the opening rows _placements + _add_opening_row produce for ``item``,
+        with the godown→warehouse map stubbed (a named godown migrates to
+        '<godown> - TC', a blank one falls to the default)."""
+        from tally_migrator.erpnext.importers import StockOpeningImporter
+        from tally_migrator.erpnext.importers.base import ImportResult
+        imp = StockOpeningImporter("_TMTest Co", "TC")
+        imp._warehouse_for_godown = lambda g, d: (f"{g} - TC" if g else d)
+        res, by_key = ImportResult("Stock Reconciliation"), {}
+        for wh, q, r, v, b in imp._placements(item, default):
+            imp._add_opening_row(by_key, item["_name"], wh, q, r, v,
+                                 item.get("StandardCost"), res, batch=b)
+        return list(by_key.values()), res
+
+    def test_negative_godown_allocation_falls_back_to_item_level(self):
+        """+99 in one godown and -58 in another net to the item-level 41. ERPNext
+        cannot hold the -58, so post the item-level net (41) at the item rate - never
+        the gross 99, and never at zero value."""
+        item = {"_name": "Case", "IsBatchWiseOn": "No", "OpeningBalance": "41 PCS",
+                "OpeningRate": "758.48/PCS", "OpeningValue": "", "StandardCost": "",
+                "GodownOpenings": [
+                    {"godown": "CHD", "qty": "99 PCS", "rate": "", "value": ""},
+                    {"godown": "Main", "qty": "-58 PCS", "rate": "", "value": ""}]}
+        rows, _ = self._godown_rows(item)
+        self.assertEqual(len(rows), 1)
+        self.assertEqual(rows[0]["qty"], 41.0)
+        self.assertEqual(rows[0]["valuation_rate"], 758.48)
+        self.assertEqual(rows[0]["warehouse"], "WH - TC")   # item-level default
+
+    def test_negative_godown_batch_item_collapses_to_dominant_batch(self):
+        """A BATCH-tracked item whose batch allocations net via a negative cannot post
+        per batch, but its authoritative item-level qty x rate is homed on the single
+        largest positive batch (value kept, split sacrificed) - never the gross 99,
+        never zero value, never dropped."""
+        from tally_migrator.erpnext.importers import StockOpeningImporter
+        from tally_migrator.erpnext.importers.base import ImportResult
+        imp = StockOpeningImporter("_TMTest Co", "TC")
+        imp._warehouse_for_godown = lambda g, d: (f"{g} - TC" if g else d)
+        imp._batch_exists_for_item = lambda batch_id, code: True   # batches created
+        item = {"_name": "Cable", "IsBatchWiseOn": "Yes", "OpeningBalance": "41 PCS",
+                "OpeningRate": "758.48/PCS", "OpeningValue": "", "StandardCost": "",
+                "GodownOpenings": [
+                    {"godown": "CHD", "qty": "99 PCS", "rate": "", "value": "", "batch": "124"},
+                    {"godown": "Main", "qty": "-58 PCS", "rate": "", "value": "", "batch": "Primary"}]}
+        res, by_key = ImportResult("Stock Reconciliation"), {}
+        placements = imp._placements(item, "WH - TC", res)
+        self.assertEqual(len(placements), 1)           # collapsed to one row
+        for wh, q, r, v, b in placements:
+            imp._add_opening_row(by_key, item["_name"], wh, q, r, v,
+                                 item.get("StandardCost"), res, batch=b)
+        rows = list(by_key.values())
+        self.assertEqual(len(rows), 1)
+        self.assertEqual(rows[0]["qty"], 41.0)                 # item-level net, not 99
+        self.assertEqual(rows[0]["valuation_rate"], 758.48)
+        self.assertEqual(rows[0]["warehouse"], "CHD - TC")     # dominant positive bucket
+        self.assertEqual(rows[0]["batch_no"], "124")           # homed on the largest batch
+        self.assertEqual(round(rows[0]["qty"] * rows[0]["valuation_rate"], 2), 31097.68)
+        self.assertIn("single batch line", res.warnings[0]["reason"])
+
+    def test_collapsed_batch_item_homes_on_largest_positive_bucket(self):
+        """With several positive batches and a negative one, the collapsed line lands on
+        the single largest positive (warehouse, batch) bucket, carrying the whole
+        item-level quantity x rate."""
+        from tally_migrator.erpnext.importers import StockOpeningImporter
+        from tally_migrator.erpnext.importers.base import ImportResult
+        imp = StockOpeningImporter("_TMTest Co", "TC")
+        imp._warehouse_for_godown = lambda g, d: (f"{g} - TC" if g else d)
+        imp._batch_exists_for_item = lambda batch_id, code: True
+        item = {"_name": "Cable", "IsBatchWiseOn": "Yes", "OpeningBalance": "59 PCS",
+                "OpeningRate": "100.00/PCS", "OpeningValue": "", "StandardCost": "",
+                "GodownOpenings": [
+                    {"godown": "CHD", "qty": "20 PCS", "rate": "", "value": "", "batch": "A"},
+                    {"godown": "HSP", "qty": "53 PCS", "rate": "", "value": "", "batch": "B"},
+                    {"godown": "MOH", "qty": "-14 PCS", "rate": "", "value": "", "batch": "C"}]}
+        res, by_key = ImportResult("Stock Reconciliation"), {}
+        for wh, q, r, v, b in imp._placements(item, "WH - TC", res):
+            imp._add_opening_row(by_key, item["_name"], wh, q, r, v,
+                                 item.get("StandardCost"), res, batch=b)
+        rows = list(by_key.values())
+        self.assertEqual(len(rows), 1)
+        self.assertEqual(rows[0]["warehouse"], "HSP - TC")   # 53 is the largest bucket
+        self.assertEqual(rows[0]["batch_no"], "B")
+        self.assertEqual(rows[0]["qty"], 59.0)               # full item total
+        self.assertEqual(rows[0]["qty"] * rows[0]["valuation_rate"], 5900.0)
+
+    def test_negative_godown_batch_item_skips_when_no_batch_master(self):
+        """When no positive bucket maps to an existing Batch (e.g. every batch id
+        clashed cross-item and was skipped by the Batch importer), the value cannot be
+        homed anywhere, so the item posts nothing and warns for manual entry."""
+        from tally_migrator.erpnext.importers import StockOpeningImporter
+        from tally_migrator.erpnext.importers.base import ImportResult
+        imp = StockOpeningImporter("_TMTest Co", "TC")
+        imp._warehouse_for_godown = lambda g, d: (f"{g} - TC" if g else d)
+        imp._batch_exists_for_item = lambda batch_id, code: False   # no Batch master
+        item = {"_name": "Cable", "IsBatchWiseOn": "Yes", "OpeningBalance": "41 PCS",
+                "OpeningRate": "758.48/PCS", "OpeningValue": "", "StandardCost": "",
+                "GodownOpenings": [
+                    {"godown": "CHD", "qty": "99 PCS", "rate": "", "value": "", "batch": "124"},
+                    {"godown": "Main", "qty": "-58 PCS", "rate": "", "value": "", "batch": "Primary"}]}
+        res = ImportResult("Stock Reconciliation")
+        rows = imp._placements(item, "WH - TC", res)
+        self.assertEqual(rows, [])                     # nothing posted
+        self.assertEqual(res.warned, 1)
+        self.assertIn("manually", res.warnings[0]["reason"])
+
+    def test_divergent_per_godown_rate_uses_item_rate(self):
+        """Godowns carrying their own (higher) rate are still valued at the item-level
+        rate, so the posted total ties to item_qty x item_rate, not the godown rates."""
+        item = {"_name": "Pods", "IsBatchWiseOn": "No", "OpeningBalance": "2 Nos",
+                "OpeningRate": "1000.00/Nos", "OpeningValue": "", "StandardCost": "",
+                "GodownOpenings": [
+                    {"godown": "A", "qty": "1 Nos", "rate": "1500.00/Nos", "value": "-1500.00"},
+                    {"godown": "B", "qty": "1 Nos", "rate": "1500.00/Nos", "value": "-1500.00"}]}
+        rows, _ = self._godown_rows(item)
+        self.assertEqual(sum(r["qty"] for r in rows), 2.0)
+        self.assertTrue(all(r["valuation_rate"] == 1000.0 for r in rows))
+
+    def test_godown_qty_mismatch_falls_back_to_item_level(self):
+        """When the godown allocations do not sum to the item-level quantity the split
+        is not faithful, so post the item-level row (which always reconciles)."""
+        item = {"_name": "Widget", "IsBatchWiseOn": "No", "OpeningBalance": "30 Nos",
+                "OpeningRate": "10.00/Nos", "OpeningValue": "", "StandardCost": "",
+                "GodownOpenings": [
+                    {"godown": "A", "qty": "15 Nos", "rate": "", "value": ""},
+                    {"godown": "B", "qty": "10 Nos", "rate": "", "value": ""}]}   # sums to 25
+        rows, _ = self._godown_rows(item)
+        self.assertEqual(len(rows), 1)
+        self.assertEqual(rows[0]["qty"], 30.0)
+        self.assertEqual(rows[0]["valuation_rate"], 10.0)
+        self.assertEqual(rows[0]["warehouse"], "WH - TC")
+
+    def test_clean_godown_split_posts_per_warehouse_at_item_rate(self):
+        """A clean, all-positive split that ties to the item quantity posts one row per
+        warehouse, each at the item-level rate (total == item_qty x item_rate)."""
+        item = {"_name": "Cable", "IsBatchWiseOn": "No", "OpeningBalance": "30 Nos",
+                "OpeningRate": "10.00/Nos", "OpeningValue": "", "StandardCost": "",
+                "GodownOpenings": [
+                    {"godown": "A", "qty": "20 Nos", "rate": "", "value": ""},
+                    {"godown": "B", "qty": "10 Nos", "rate": "", "value": ""}]}
+        rows, _ = self._godown_rows(item)
+        by_wh = {r["warehouse"]: r for r in rows}
+        self.assertEqual(by_wh["A - TC"]["qty"], 20.0)
+        self.assertEqual(by_wh["B - TC"]["qty"], 10.0)
+        self.assertTrue(all(r["valuation_rate"] == 10.0 for r in rows))
+        self.assertEqual(sum(r["qty"] * r["valuation_rate"] for r in rows), 300.0)
+
+    def test_item_opening_qty_and_rate_helpers(self):
+        """The shared qty/rate rule: item level wins, else the godown allocations."""
+        from tally_migrator.tally.extractors import TallyExtractor as TE
+        # qty: item-level OpeningBalance, else summed godown qty
+        self.assertEqual(TE.item_opening_qty({"OpeningBalance": "41 PCS"}), 41.0)
+        self.assertEqual(TE.item_opening_qty(
+            {"OpeningBalance": "", "GodownOpenings": [{"qty": "20 Nos"}, {"qty": "10 Nos"}]}),
+            30.0)
+        # rate: item rate, then value/qty, then summed godown value/qty
+        self.assertEqual(TE.item_opening_rate(
+            {"OpeningBalance": "10 Nos", "OpeningRate": "5.00/Nos"}), 5.0)
+        self.assertEqual(TE.item_opening_rate(
+            {"OpeningBalance": "10 Nos", "OpeningValue": "-250.00"}), 25.0)
+        self.assertEqual(TE.item_opening_rate(
+            {"OpeningBalance": "30 Nos", "GodownOpenings": [
+                {"value": "-200.00"}, {"value": "-100.00"}]}), 10.0)
 
     # ── Opening-balance batching (no DB - residual maths only) ──────────────────
 

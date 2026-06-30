@@ -122,6 +122,49 @@ class TestSourceTotals(unittest.TestCase):
         self.assertEqual(s["temporary_opening"], {"amount": 0.0, "dr_cr": ""})
 
 
+class TestStockNonStockAndGodown(unittest.TestCase):
+    """The reconciliation must count opening stock for exactly the items the importer
+    posts (stock items, valued at the same item rate), so the two sides tie."""
+
+    def test_non_stock_item_excluded_from_stock_and_disclosed(self):
+        # A service item carries an opening quantity. ERPNext cannot hold it as stock
+        # (the importer drops it), so it must not inflate the stock line - it is
+        # disclosed separately instead of silently counted or lost.
+        m = _masters(items=[
+            {"_name": "Mouse", "OpeningBalance": "100 Nos", "OpeningRate": "1.00/Nos",
+             "OpeningValue": "", "StandardCost": ""},
+            {"_name": "Consulting", "OpeningBalance": "10 Nos",
+             "OpeningRate": "100.00/Nos", "OpeningValue": "", "StandardCost": "",
+             "TypeOfSupply": "Services"},
+        ])
+        s = source_totals(_coa([]), m)
+        self.assertEqual(s["stock"]["amount"], 100.0)     # only the stock item
+        self.assertEqual(s["stock_items"], 1)
+        self.assertEqual(s["non_stock_value"], 1000.0)    # service value disclosed
+        self.assertEqual(s["non_stock_items"], 1)
+
+    def test_compare_surfaces_non_stock_note(self):
+        m = _masters(items=[
+            {"_name": "Consulting", "OpeningBalance": "10 Nos",
+             "OpeningRate": "100.00/Nos", "OpeningValue": "", "StandardCost": "",
+             "TypeOfSupply": "Services"}])
+        out = compare(source_totals(_coa([]), m), {"available": False})
+        self.assertEqual(out["non_stock"], {"value": 1000.0, "items": 1})
+
+    def test_godown_only_rate_counted_in_source(self):
+        # The item master carries a quantity but no rate/value; the valuation lives on
+        # the godown allocations. The source must still count it (value/qty), matching
+        # what the importer posts.
+        m = _masters(items=[{
+            "_name": "Pen", "OpeningBalance": "30 Nos", "OpeningRate": "",
+            "OpeningValue": "", "StandardCost": "", "GodownOpenings": [
+                {"godown": "A", "qty": "20 Nos", "rate": "", "value": "-200.00"},
+                {"godown": "B", "qty": "10 Nos", "rate": "", "value": "-100.00"}]}])
+        s = source_totals(_coa([]), m)
+        self.assertEqual(s["stock"]["amount"], 300.0)
+        self.assertEqual(s["stock_items"], 1)
+
+
 class TestCompare(unittest.TestCase):
     def _src(self):
         return source_totals(
@@ -178,6 +221,24 @@ class TestCompare(unittest.TestCase):
             keys,
             ["class_Asset", "class_LiabEquity", "receivables", "payables",
              "stock", "temporary_opening"])
+
+    def test_stock_tolerance_absorbs_rounding_but_flags_real_variance(self):
+        # Opening stock posts qty x a currency-rounded rate, so a large stock value
+        # leaves a tiny proportional residual that must read as reconciled - while a
+        # material variance must still flag. (Other rows are irrelevant here.)
+        src = source_totals(
+            _coa([]), _masters(items=[_item("Bulk", "1000000 Nos", rate="100.00/Nos")]))
+        self.assertEqual(src["stock"]["amount"], 100000000.0)   # 1e8; 0.05% = 50,000
+
+        def _stock_row(erp_stock_amount):
+            erp = {"available": True, "classes": {}, "receivables": {}, "payables": {},
+                   "stock": {"amount": erp_stock_amount, "dr_cr": "Dr"},
+                   "temporary_opening": src["temporary_opening"]}
+            out = compare(src, erp)
+            return next(r for r in out["rows"] if r["key"] == "stock")
+
+        self.assertTrue(_stock_row(100000000.0 - 40)["match"])      # 40 within tolerance
+        self.assertFalse(_stock_row(100000000.0 - 200000)["match"])  # 200k is real
 
 
 class TestCumulativeOpeningsFlag(unittest.TestCase):

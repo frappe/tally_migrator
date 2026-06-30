@@ -7,6 +7,20 @@ import re
 DEBTOR_ROOTS   = {"Sundry Debtors"}
 CREDITOR_ROOTS = {"Sundry Creditors"}
 
+# ── Stock vs non-stock item classification ────────────────────────────────────
+
+def is_stock_item(record: dict) -> int:
+    """1 if a Tally Stock Item maps to a stock-tracked ERPNext Item, else 0.
+
+    A Tally item whose GST supply type is 'Services' becomes a non-stock Item in
+    ERPNext (it cannot hold stock); every other supply type stays a stock item.
+    Pure (no Frappe), so both the importer and the read-only reconciliation can
+    share one definition - the reconciliation must count opening stock for exactly
+    the items the importer will post, or a service item with an opening quantity
+    creates a phantom stock variance."""
+    supply = (record.get("TypeOfSupply") or "").strip().lower()
+    return 0 if supply in ("services", "service") else 1
+
 # ── Unit of Measure: Tally → ERPNext ─────────────────────────────────────────
 
 UOM_MAP: dict[str, str] = {

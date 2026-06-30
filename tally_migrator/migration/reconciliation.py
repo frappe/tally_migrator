@@ -32,9 +32,18 @@ only ``erpnext_totals`` touches the database (Frappe imported lazily there).
 from __future__ import annotations
 
 from tally_migrator.tally.extractors import TallyExtractor
+from tally_migrator.tally.mappings import is_stock_item
 
 # A difference below this (currency units) is rounding noise, not a real variance.
 _TOLERANCE = 1.0
+
+# Opening stock is posted as qty x valuation_rate, and ERPNext stores valuation_rate
+# at the company's currency precision (2-3 dp). Re-multiplying that rounded rate by a
+# large quantity leaves a small residual against Tally's full-precision value that
+# grows with the stock value, so the stock line uses a proportional tolerance (this
+# fraction of the stock value, but never less than the flat _TOLERANCE) - genuine
+# sub-precision rounding reads as reconciled, a real variance still shows.
+_STOCK_TOLERANCE_PCT = 0.0005  # 0.05%
 
 # Trial-balance classes in reading order, with display labels. Liability and Equity
 # are merged into one "Liabilities & Equity" row on purpose: Tally and ERPNext
@@ -49,13 +58,6 @@ _CLASS_LABEL = {"Asset": "Assets", "LiabEquity": "Liabilities & Equity",
 
 def _class_of(root_type: str) -> str:
     return "LiabEquity" if root_type in ("Liability", "Equity") else root_type
-
-
-def _to_float(v) -> float:
-    try:
-        return float(str(v or 0).replace(",", "").strip())
-    except (ValueError, TypeError):
-        return 0.0
 
 
 def _signed(amount: float, dr_cr: str) -> float:
@@ -106,19 +108,26 @@ def source_totals(coa, masters) -> dict:
 
     stock_value = 0.0
     stock_items = 0
+    non_stock_value = 0.0
+    non_stock_items = 0
     for it in masters.items:
-        qty = TallyExtractor._parse_quantity(it.get("OpeningBalance"))
+        # The same authoritative qty and rate the importer posts (item level, falling
+        # back to the godown allocations), so both sides tie exactly.
+        qty = TallyExtractor.item_opening_qty(it)
         if qty <= 0:
             continue
-        rate = TallyExtractor._parse_rate(it.get("OpeningRate"))
-        if rate == 0:
-            val = abs(_to_float(it.get("OpeningValue")))
-            if val:
-                rate = val / qty
-        if rate == 0:
-            rate = TallyExtractor._parse_rate(it.get("StandardCost"))
-        stock_value += qty * rate
-        stock_items += 1
+        rate = TallyExtractor.item_opening_rate(it)
+        # Count opening stock for exactly the items the importer posts. A service /
+        # non-stock item cannot hold stock in ERPNext (the importer drops it with a
+        # warning), so counting its opening quantity here would be a phantom stock
+        # variance against an ERPNext side that never held it. Keep its value aside as
+        # an un-migrated note instead, so it is disclosed rather than silently lost.
+        if is_stock_item(it):
+            stock_value += qty * rate
+            stock_items += 1
+        else:
+            non_stock_value += qty * rate
+            non_stock_items += 1
 
     # Temporary Opening is the contra for every opening posting, so it ends holding
     # the negative of (ledger accounts + parties + stock) - exactly Tally's own
@@ -133,6 +142,10 @@ def source_totals(coa, masters) -> dict:
         "payables": _side(supp_net),      # suppliers net Cr (Creditors control)
         "stock": {"amount": round(stock_value, 2), "dr_cr": "Dr" if stock_value else ""},
         "stock_items": stock_items,
+        # Disclosed, not part of the balancing trial balance: opening value Tally
+        # carried on service / non-stock items, which ERPNext cannot hold as stock.
+        "non_stock_value": round(non_stock_value, 2),
+        "non_stock_items": non_stock_items,
         "temporary_opening": _side(temp_net),
     }
 
@@ -289,10 +302,10 @@ def compare(source: dict, erp: dict) -> dict:
         elif side.get("dr_cr") == "Cr":
             totals[cr_key] += side["amount"]
 
-    def add(key, label, src_side, erp_side, is_diff=False):
+    def add(key, label, src_side, erp_side, is_diff=False, tol=_TOLERANCE):
         nonlocal all_match
         has = erp_side is not None
-        match = bool(has and abs(_signed_of(src_side) - _signed_of(erp_side)) < _TOLERANCE)
+        match = bool(has and abs(_signed_of(src_side) - _signed_of(erp_side)) < tol)
         if has and not match:
             all_match = False
         _accumulate(src_side, "src_dr", "src_cr")
@@ -312,8 +325,9 @@ def compare(source: dict, erp: dict) -> dict:
         erp.get("receivables") if available else None)
     add("payables", "Payables", source["payables"],
         erp.get("payables") if available else None)
+    stock_tol = max(_TOLERANCE, _STOCK_TOLERANCE_PCT * abs(_signed_of(source["stock"])))
     add("stock", "Stock value", source["stock"],
-        erp.get("stock") if available else None)
+        erp.get("stock") if available else None, tol=stock_tol)
     add("temporary_opening", "Temporary Opening", source["temporary_opening"],
         erp.get("temporary_opening") if available else None, is_diff=True)
 
@@ -322,6 +336,13 @@ def compare(source: dict, erp: dict) -> dict:
         "verdict": verdict,
         "available": available,
         "stock_items": source.get("stock_items", 0),
+        # Opening value on service / non-stock items that ERPNext cannot hold as
+        # stock - disclosed alongside the trial balance so it is visible, not folded
+        # into the stock line (where it would read as a variance) or lost.
+        "non_stock": {
+            "value": source.get("non_stock_value", 0.0),
+            "items": source.get("non_stock_items", 0),
+        },
         "rows": rows,
         "total": {
             "source": {"dr": round(totals["src_dr"], 2), "cr": round(totals["src_cr"], 2)},
