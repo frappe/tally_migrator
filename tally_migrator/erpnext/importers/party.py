@@ -488,6 +488,19 @@ class PartyImporter(BaseImporter):
             if addr.pincode and ("not associated with" in msg or "postal code" in msg):
                 try:
                     addr.pincode = ""
+                    # Force the name to be re-derived on this second attempt. The first
+                    # insert already ran autoname - which, for a colliding address title,
+                    # bumps a "<title>-<type>-.#" series counter (make_autoname) - then
+                    # failed, and atomic()'s savepoint rolled the counter back. But the
+                    # doc kept the name it claimed (flags.name_set short-circuits
+                    # re-naming in Document.set_new_name), so reusing it would commit a
+                    # name one ahead of the now-rolled-back counter, leaving the series
+                    # permanently behind. The NEXT same-titled address then regenerates
+                    # this number and hits a duplicate-key error (the address is lost).
+                    # Clearing name + name_set makes the retry re-run autoname, bumping
+                    # the counter back in step with what actually commits.
+                    addr.name = None
+                    addr.flags.name_set = False
                     with atomic():
                         addr.insert(ignore_permissions=True)
                     # Drop the failed attempt's queued "Invalid Postal Code" message -

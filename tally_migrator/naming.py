@@ -11,7 +11,19 @@ from collections import defaultdict
 
 def safe_item_code(name: str) -> str:
     """ERPNext item_code caps at 140 chars and dislikes '/'."""
-    return (name or "")[:140].replace("/", "-").strip()
+    code = (name or "")[:140].replace("/", "-").strip()
+    # Frappe reserves the literal string "New {Doctype}" for the unsaved-document
+    # placeholder and refuses to save a real record under it - validate_name raises
+    # NameError for any name starting with "New Item" (frappe/model/naming.py). Items
+    # are named by item_code, so a Tally item literally called "New Item" is unsavable
+    # as-is. Disambiguate just enough to clear the reserved prefix. This is the single
+    # Tally-name -> item_code mapping every consumer shares (the Item itself AND every
+    # batch / BOM / price / opening-stock reference to it), so the links stay
+    # consistent and a re-run still matches. The original label is kept as item_name.
+    # Matches frappe's own case-sensitive check, so only names it would reject change.
+    if code.startswith("New Item"):
+        code = f"Item - {code}"[:140]
+    return code
 
 
 def company_scoped(base: str, abbr: str) -> str:
