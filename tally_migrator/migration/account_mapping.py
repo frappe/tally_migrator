@@ -105,11 +105,18 @@ def _signed(amount: float, dr_cr: str) -> float:
 
 
 def _classify_party(party_type: str, signed: float, is_advance: bool) -> str:
-    """Mirror of PartyOpeningImporter._classify: an outstanding invoice (party's
-    natural side, not flagged advance) vs an advance/credit. Customer natural side
-    = Dr (signed > 0); Supplier = Cr (signed < 0); Tally's ISADVANCE forces advance."""
-    if is_advance:
-        return "advance"
+    """Mirror of PartyOpeningImporter._classify: an outstanding invoice (the party's
+    natural side) vs an advance/credit (the opposite side). Customer natural side =
+    Dr (signed > 0); Supplier = Cr (signed < 0).
+
+    Tally's ``is_advance`` is deliberately NOT used to force 'advance' - the flag is
+    kept in the signature (callers pass the real value) but ignored, so this preview
+    counts exactly what the importer posts. A genuine advance already sits on the
+    opposite side; some exports also tag a NATURAL-side bill ISADVANCE, and the
+    importer posts that as an outstanding invoice (routing by side keeps every bill's
+    GL effect equal to Tally's). Forcing those to 'advance' here over-counted advances
+    on the Step-4 screen versus what actually migrated. See
+    ``PartyOpeningImporter._classify`` for the full rationale and the matching tests."""
     on_natural_side = (signed > 0) if party_type == "Customer" else (signed < 0)
     return "invoice" if on_natural_side else "advance"
 
@@ -123,8 +130,9 @@ def _party_openings(masters, bills) -> dict:
 
       * **invoices**   - outstanding bills on the party's natural side -> one
         opening Sales/Purchase Invoice each.
-      * **advances**   - ISADVANCE bills (or bills on the opposite side) -> one
-        opening Payment Entry each.
+      * **advances**   - bills on the side opposite the party's natural side -> one
+        opening Payment Entry each. (Tally's ISADVANCE flag is not used to force this:
+        the importer routes purely by side, so the preview matches it.)
       * **on_account** - parties whose bills did not add up to the ledger opening;
         the gap posts as one 'On Account' opening (a mismatch worth reviewing).
       * **lump**       - parties with an opening but no bill detail -> a single

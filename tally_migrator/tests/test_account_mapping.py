@@ -116,6 +116,35 @@ class TestAccountMapping(unittest.TestCase):
         # No bill detail in this fixture, so it posts a single lump opening document.
         self.assertEqual(acme["documents"], 1)
 
+    def test_natural_side_advance_flagged_bill_counts_as_invoice(self):
+        # Regression: a bill on the party's NATURAL side that Tally also tags
+        # ISADVANCE must be previewed as an outstanding invoice, NOT an advance -
+        # that is exactly what PartyOpeningImporter._classify posts (it routes by side
+        # and ignores ISADVANCE). The Step-4 screen must report what migrates, so its
+        # advance/invoice split has to match the importer. The old preview forced
+        # ISADVANCE to 'advance' and over-counted advances versus what actually posted.
+        from tally_migrator.tally.file_source import FileTallySource
+
+        xml = (
+            '<ENVELOPE><BODY><IMPORTDATA><REQUESTDATA>'
+            '<TALLYMESSAGE><GROUP NAME="Sundry Debtors"><NAME>Sundry Debtors</NAME>'
+            '<PARENT>Primary</PARENT></GROUP></TALLYMESSAGE>'
+            '<TALLYMESSAGE><LEDGER NAME="Acme Corp"><NAME>Acme Corp</NAME>'
+            '<PARENT>Sundry Debtors</PARENT><OPENINGBALANCE>-5000.00</OPENINGBALANCE>'
+            '<BILLALLOCATIONS.LIST><NAME>INV-1</NAME><BILLDATE>20260401</BILLDATE>'
+            '<ISADVANCE>Yes</ISADVANCE><OPENINGBALANCE>-5000.00</OPENINGBALANCE>'
+            '</BILLALLOCATIONS.LIST>'
+            '</LEDGER></TALLYMESSAGE>'
+            '</REQUESTDATA></IMPORTDATA></BODY></ENVELOPE>'
+        )
+        p = account_mapping(FileTallySource(xml))["party_openings"]
+        self.assertEqual(p["invoices"], 1)     # the natural-side bill -> invoice
+        self.assertEqual(p["advances"], 0)     # NOT forced to an advance by ISADVANCE
+        row = next(r for r in p["parties_list"] if r["name"] == "Acme Corp")
+        self.assertEqual(row["invoices"], 1)
+        self.assertEqual(row["advances"], 0)
+        self.assertEqual(row["documents"], 1)  # net ties to ledger, so no extra plug
+
     def test_balanced_book_reads_clean(self):
         ledgers = [
             _l("HDFC Bank", "Bank Accounts", "50000.00 Dr"),
