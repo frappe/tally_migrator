@@ -1,3 +1,6 @@
+import os
+import sys
+import resource
 from dataclasses import dataclass
 from typing import Callable
 
@@ -7,6 +10,26 @@ from tally_migrator.tally.config import TallyConfig
 from tally_migrator.tally.extractors import TallyExtractor, ExtractedMasters
 from tally_migrator.erpnext.importers import ERPNextImporter, ImportResult
 from tally_migrator.migration.overrides import apply_record_overrides, uom_edits
+
+
+def _rss_mb() -> tuple[float, float]:
+    """``(current_rss_mb, peak_rss_mb)`` for this process.
+
+    Current resident memory is read from ``/proc`` on Linux (the Frappe Cloud worker),
+    falling back to the rusage peak where ``/proc`` is absent (e.g. macOS dev). It is a
+    single cheap read, safe to call on the migration's hot path. Used to stream a memory
+    curve into the progress cache so a run that is OOM-killed mid-way still reveals where
+    its memory went (see ``MasterMigrator._record_mem``)."""
+    peak = resource.getrusage(resource.RUSAGE_SELF).ru_maxrss
+    # ru_maxrss is bytes on macOS, kibibytes on Linux.
+    peak_mb = peak / 1048576 if sys.platform == "darwin" else peak / 1024
+    try:
+        with open("/proc/self/statm") as fh:
+            resident_pages = int(fh.read().split()[1])
+        cur_mb = resident_pages * os.sysconf("SC_PAGE_SIZE") / 1048576
+    except Exception:
+        cur_mb = peak_mb
+    return round(cur_mb, 1), round(peak_mb, 1)
 
 
 def _collapse_identical(rows: list[dict], sample: int = 5) -> list[dict]:
@@ -226,6 +249,12 @@ class MasterMigrator:
         # comparison. Folded into the log's extracted_counts under "_phase_seconds" at
         # finalize and logged. Pure measurement - no effect on what gets imported.
         self._timings: dict[str, float] = {}
+        # Memory checkpoints (current + peak RSS per phase), streamed to the durable
+        # progress cache so a run that is OOM-killed mid-way still leaves its memory curve
+        # up to the kill point. Pure measurement, like _timings - never affects the import.
+        self._mem_trail: list[dict] = []
+        self._last_pct: int = 0
+        self._last_desc: str = ""
 
     # ── Public ────────────────────────────────────────────────────────────────
 
@@ -253,6 +282,18 @@ class MasterMigrator:
             frappe.logger().info(
                 f"[Tally Migrator] Extracted: {masters.summary} | COA: {coa.summary} "
                 f"| bills: {len(bills)} | extract {self._timings['Extract']}s")
+            self._mem_checkpoint("extracted (parsed file still resident)")
+            # Free the parsed file now. Everything below works only off the extracted
+            # dicts (masters / coa / bills); the source records are never read again
+            # (reconciliation at finalize also uses the dicts, not the source). On a
+            # large export the retained elements are the bulk of peak memory, so this
+            # keeps them from sitting resident through the long import. Best-effort: a
+            # failure here must never abort an otherwise-good run.
+            try:
+                self.client.release()
+            except Exception:
+                pass
+            self._mem_checkpoint("parsed file freed")
 
             results: dict[str, ImportResult] = {}
             steps = self._pipeline(masters, coa, bills)
@@ -421,12 +462,16 @@ class MasterMigrator:
         # own step-5 bar updates - publish_progress also triggers Frappe's native
         # progress dialog, which double-rendered on top of our bar.
         desc = description or self.STEPS.get(pct, "")
+        self._last_pct, self._last_desc = pct, desc
+        cur_mb, peak_mb = _rss_mb()
         frappe.publish_realtime(
             "tally_migration_progress",
             {
                 "title": "Tally Masters Migration",
                 "percent": pct,
                 "description": desc,
+                "rss_mb": cur_mb,
+                "peak_mb": peak_mb,
             },
             user=frappe.session.user,
         )
@@ -434,13 +479,39 @@ class MasterMigrator:
         # polling (see api.run_progress). Realtime is best-effort - a page that reloads
         # mid-run misses past events - so the poll is the reliable source of truth and
         # this is what stops the reconnected bar from sitting at 0%.
-        # Best-effort: progress reporting is cosmetic and runs inside the migration's
-        # critical path, so a cache/Redis hiccup must never abort an otherwise-good run.
+        self._record_mem(pct, desc, cur_mb, peak_mb)
+
+    def _mem_checkpoint(self, label: str) -> None:
+        """Record an extra memory sample (no bar move) at the current percent - used to
+        capture the before/after of a discrete step like freeing the parsed file."""
+        cur_mb, peak_mb = _rss_mb()
+        self._record_mem(self._last_pct, label, cur_mb, peak_mb)
+
+    def _record_mem(self, pct: int, label: str, cur_mb: float, peak_mb: float) -> None:
+        """Append a memory checkpoint to the bounded trail and stream it to the progress
+        cache + worker log. The cache lives outside the worker, so a run that is later
+        OOM-killed still leaves the curve up to the kill point (see api.run_progress).
+
+        Best-effort: memory reporting is diagnostic and runs inside the migration's
+        critical path, so a cache/Redis/log hiccup must never abort an otherwise-good run.
+        """
+        self._mem_trail.append(
+            {"percent": pct, "phase": label, "rss_mb": cur_mb, "peak_mb": peak_mb})
+        # Bound the trail so a long run can't grow the cached payload without limit;
+        # keep the most recent samples (the supplier/stock tail is where it chokes).
+        if len(self._mem_trail) > 400:
+            del self._mem_trail[:-400]
+        try:
+            frappe.logger().info(
+                f"[Tally Migrator][mem] {pct}% rss={cur_mb}MB peak={peak_mb}MB - {label}")
+        except Exception:
+            pass
         if self.log:
             try:
                 frappe.cache().set_value(
                     f"tally_migration_progress:{self.log.name}",
-                    {"percent": pct, "description": desc},
+                    {"percent": pct, "description": self._last_desc,
+                     "rss_mb": cur_mb, "peak_mb": peak_mb, "mem_trail": self._mem_trail},
                     expires_in_sec=6 * 60 * 60,
                 )
             except Exception:
