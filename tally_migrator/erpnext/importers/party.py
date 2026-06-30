@@ -104,13 +104,28 @@ _SUSPENDED_PARTY_HOOKS = (
     # per contact. A cosmetic telephony convenience, re-derivable; irrelevant here.
     ("erpnext.telephony.doctype.call_log.call_log",
      ("link_existing_conversations",)),
+    # India Compliance GSTIN autofill: when GST Settings has the API + autofill on,
+    # validating a party with a GSTIN calls the GST portal to fetch its registered
+    # name/category (and enqueues request-log jobs). IC already skips this under
+    # `frappe.flags.in_import`, which the migrator deliberately does NOT set (it would
+    # also skip default population + link validation). Left active it fires once per
+    # party: on a 13k-supplier book that is 13k GST-portal fetches whose log jobs
+    # saturate the background queue ("Too many queued background jobs"), stalling the
+    # run near the end of the party phase. Patched to return None so the gate
+    # (`is_autofill_party_info_enabled()`) reads falsy - exactly as if autofill were
+    # off - and IC falls back to the offline `guess_gst_category`. The party still
+    # imports with its GSTIN; the user can refresh portal info later if they want it.
+    ("india_compliance.gst_india.overrides.party",
+     ("is_autofill_party_info_enabled",)),
 )
 
 
 @contextlib.contextmanager
 def _party_side_effect_hooks_suspended():
-    """Neutralise the per-contact Google-Contacts sync and Call-Log linking hooks for
-    the duration of the party phase, then restore them. No-op-safe: a module or symbol
+    """Neutralise per-party external side-effects for the duration of the party phase,
+    then restore them: the Google-Contacts sync, Call-Log linking, and India
+    Compliance's per-party GST-portal autofill (see the table above). No-op-safe: a
+    module or symbol
     that is not installed is skipped, leaving Frappe/ERPNext untouched. Migrations are
     serialised by the single-active-run guard, so the process-local patch can never
     bleed into a concurrent migration (same contract as _gravatar_lookup_suspended)."""
