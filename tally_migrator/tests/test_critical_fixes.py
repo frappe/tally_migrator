@@ -488,6 +488,21 @@ class TestPartyOpeningClassification(unittest.TestCase):
         self.assertEqual(PartyOpeningImporter._signed(100.0, "Dr"), 100.0)
         self.assertEqual(PartyOpeningImporter._signed(100.0, "Cr"), -100.0)
 
+    def test_preview_classifier_matches_importer(self):
+        # The Step-4 preview keeps its own copy of this routing
+        # (account_mapping._classify_party) so it can run pure, with no Frappe. The two
+        # diverged once - the preview forced ISADVANCE to an advance while the importer
+        # ignored it - so the screen over-counted advances versus what actually posted.
+        # Lock them together across the full input matrix so they can never drift again.
+        from tally_migrator.migration.account_mapping import _classify_party
+        for party_type in ("Customer", "Supplier"):
+            for signed in (5000.0, -5000.0, 0.0):
+                for is_advance in (True, False):
+                    self.assertEqual(
+                        _classify_party(party_type, signed, is_advance),
+                        PartyOpeningImporter._classify(party_type, signed, is_advance),
+                        msg=f"{party_type} signed={signed} is_advance={is_advance}")
+
 
 class TestPartyOpeningOrchestration(unittest.TestCase):
     """_process routes bills, reconciles to the ledger opening, and plugs the gap.
