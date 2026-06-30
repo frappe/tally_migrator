@@ -22,6 +22,7 @@ from tally_migrator.tally.mappings import (
     gst_category_from_type,
 )
 from tally_migrator.naming import safe_item_code, company_scoped
+from tally_migrator.migration import profiler as _profiler
 from tally_migrator.tally.extractors import TallyExtractor
 from tally_migrator.validation.engine import (
     infer_gst_category, validate_gstin, GSTIN_STATE_CODES,
@@ -179,16 +180,22 @@ class BaseImporter:
         total = len(records)
         pending = 0   # newly-written records not yet committed
         for done, record in enumerate(self.iter_records(records), 1):
-            name, created = self._upsert(result, self.build_doc(record))
-            # after_insert (e.g. address creation) must run ONLY for newly
-            # created records - otherwise a re-run duplicates side effects for
-            # records that were skipped because they already exist.
-            if name and created:
-                self.after_insert(name, record, result)
-                pending += 1
-                if pending >= self._COMMIT_BATCH_SIZE:
-                    frappe.db.commit()
-                    pending = 0
+            # Per-record + per-op timing for the run profiler. No-op (a bare yield) when
+            # no run is being profiled, so this adds nothing to a normal import.
+            with _profiler.record(record.get("_name") or "", record):
+                with _profiler.op("build"):
+                    doc = self.build_doc(record)
+                with _profiler.op("upsert"):
+                    name, created = self._upsert(result, doc)
+                # after_insert (e.g. address creation) must run ONLY for newly
+                # created records - otherwise a re-run duplicates side effects for
+                # records that were skipped because they already exist.
+                if name and created:
+                    self.after_insert(name, record, result)
+                    pending += 1
+                    if pending >= self._COMMIT_BATCH_SIZE:
+                        frappe.db.commit()
+                        pending = 0
             if on_progress:
                 on_progress(done, total)
         # Flush the final partial batch (and make every phase end on a clean commit,

@@ -24,6 +24,7 @@ from tally_migrator.tally.mappings import (
     gst_category_from_type,
 )
 from tally_migrator.naming import safe_item_code, company_scoped
+from tally_migrator.migration import profiler as _profiler
 from tally_migrator.tally.extractors import TallyExtractor
 from tally_migrator.validation.engine import (
     infer_gst_category, validate_gstin, GSTIN_STATE_CODES,
@@ -221,18 +222,24 @@ class PartyImporter(BaseImporter):
         return self.default_group
 
     def after_insert(self, name: str, record: dict, result: "ImportResult") -> None:
-        address_name = self._save_address(name, self.doctype, record, result)
-        self._save_extra_addresses(name, self.doctype, record, result)
-        contact_name = self._save_contact(name, self.doctype, record, result)
-        self._save_extra_contacts(name, self.doctype, record, result)
-        self._save_bank_account(name, self.doctype, record, result)
+        with _profiler.op("address"):
+            address_name = self._save_address(name, self.doctype, record, result)
+        with _profiler.op("extra_addresses"):
+            self._save_extra_addresses(name, self.doctype, record, result)
+        with _profiler.op("contact"):
+            contact_name = self._save_contact(name, self.doctype, record, result)
+        with _profiler.op("extra_contacts"):
+            self._save_extra_contacts(name, self.doctype, record, result)
+        with _profiler.op("bank"):
+            self._save_bank_account(name, self.doctype, record, result)
         # ERPNext does not back-populate the party's primary_* fields when an Address/
         # Contact is inserted with links: Customer.create_primary_address only fires
         # when the Customer doc itself carries address_line1, which a migrated party
         # never does (addresses are created here, after the party). So mark the main
         # billing address / primary contact explicitly and link them on the party,
         # or every migrated party shows no primary address/contact.
-        self._set_primary_links(name, address_name, contact_name, result)
+        with _profiler.op("primary_links"):
+            self._set_primary_links(name, address_name, contact_name, result)
 
     def _set_primary_links(self, party_name: str, address_name: str,
                            contact_name: str, result: "ImportResult") -> None:

@@ -10,6 +10,7 @@ from tally_migrator.tally.config import TallyConfig
 from tally_migrator.tally.extractors import TallyExtractor, ExtractedMasters
 from tally_migrator.erpnext.importers import ERPNextImporter, ImportResult
 from tally_migrator.migration.overrides import apply_record_overrides, uom_edits
+from tally_migrator.migration import profiler
 
 
 def _rss_mb() -> tuple[float, float]:
@@ -255,6 +256,10 @@ class MasterMigrator:
         self._mem_trail: list[dict] = []
         self._last_pct: int = 0
         self._last_desc: str = ""
+        # Run profiler: per-phase/op timing, SQL/commit counts, enqueues, HTTP, and the
+        # slowest records with content. Diagnostic only; streamed to the progress cache
+        # and written to the log. Best-effort, never affects the import.
+        self._profiler = profiler.RunProfiler(mem_fn=_rss_mb)
 
     # ── Public ────────────────────────────────────────────────────────────────
 
@@ -262,6 +267,9 @@ class MasterMigrator:
         # Reuse a log handed in by the dispatcher (background runs); otherwise
         # create one now so an interrupted run is still recorded.
         self.log = self.log or self._create_log()
+        # Profile the whole run (installs SQL/enqueue/HTTP hooks); removed in the finally.
+        _sess = profiler.session(self._profiler)
+        _sess.__enter__()
         try:
             import time as _time
             self._progress(0)
@@ -270,14 +278,15 @@ class MasterMigrator:
 
             self._progress(10)
             _t = _time.monotonic()
-            masters = self.extractor.extract_all()
-            apply_record_overrides(masters, self.record_overrides, self.applied_edits)
-            self._record_uom_edits()
-            coa = self.extractor.extract_coa()
-            # Bill-wise party opening detail (BILLALLOCATIONS) - empty when the
-            # source can't supply child lists, so party openings then degrade to a
-            # single lump opening invoice per party (no bill breakdown).
-            bills = self.extractor.extract_bill_allocations()
+            with self._profiler.phase("Extract"):
+                masters = self.extractor.extract_all()
+                apply_record_overrides(masters, self.record_overrides, self.applied_edits)
+                self._record_uom_edits()
+                coa = self.extractor.extract_coa()
+                # Bill-wise party opening detail (BILLALLOCATIONS) - empty when the
+                # source can't supply child lists, so party openings then degrade to a
+                # single lump opening invoice per party (no bill breakdown).
+                bills = self.extractor.extract_bill_allocations()
             self._timings["Extract"] = round(_time.monotonic() - _t, 2)
             frappe.logger().info(
                 f"[Tally Migrator] Extracted: {masters.summary} | COA: {coa.summary} "
@@ -306,10 +315,11 @@ class MasterMigrator:
                 self.importer.on_progress = self._step_progress_cb(
                     step.label, step.percent, band_end)
                 _t = _time.monotonic()
-                try:
-                    results[step.label] = step.importer(step.records)
-                finally:
-                    self.importer.on_progress = None
+                with self._profiler.phase(step.label, len(step.records)):
+                    try:
+                        results[step.label] = step.importer(step.records)
+                    finally:
+                        self.importer.on_progress = None
                 self._timings[step.label] = round(_time.monotonic() - _t, 2)
                 frappe.logger().info(
                     f"[Tally Migrator] Phase '{step.label}': {len(step.records)} records "
@@ -326,6 +336,11 @@ class MasterMigrator:
         except Exception as exc:
             self._fail_log(exc)
             raise
+        finally:
+            try:
+                _sess.__exit__(None, None, None)
+            except Exception:
+                pass
 
     def _pipeline(self, masters: ExtractedMasters, coa, bills) -> list[PipelineStep]:
         """Entity import order. Adding an entity = add one step here.
@@ -511,7 +526,8 @@ class MasterMigrator:
                 frappe.cache().set_value(
                     f"tally_migration_progress:{self.log.name}",
                     {"percent": pct, "description": self._last_desc,
-                     "rss_mb": cur_mb, "peak_mb": peak_mb, "mem_trail": self._mem_trail},
+                     "rss_mb": cur_mb, "peak_mb": peak_mb, "mem_trail": self._mem_trail,
+                     "profile": self._profiler.compact()},
                     expires_in_sec=6 * 60 * 60,
                 )
             except Exception:
@@ -601,7 +617,8 @@ class MasterMigrator:
         try:
             self.log.reload()
             self.log.extracted_counts = frappe.as_json(
-                {**masters.summary, **coa.summary, "_phase_seconds": self._timings})
+                {**masters.summary, **coa.summary, "_phase_seconds": self._timings,
+                 "_profile": self._profiler.report()})
             self.log.applied_edits = frappe.as_json(self.applied_edits)
             manifest = summary.created_records()
             self._track_wizard_uoms(manifest)

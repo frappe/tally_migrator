@@ -515,6 +515,11 @@ def run_progress(log_name: str = "") -> dict:
         "rss_mb": cached.get("rss_mb"),
         "peak_mb": cached.get("peak_mb"),
         "mem_trail": cached.get("mem_trail"),
+        # Live per-phase profile (timing / SQL / commits / enqueues / HTTP / op
+        # breakdown), streamed from the same crash-proof cache. The full report
+        # (percentiles + slowest records with content) lands in the log's
+        # extracted_counts._profile at finalize.
+        "profile": cached.get("profile"),
     }
 
 
