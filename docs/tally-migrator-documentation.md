@@ -770,6 +770,10 @@ Migrator handles a real-world wrinkle in Tally data.
   ERPNext item code (codes are truncated to 140 characters and "/" becomes "-"). The
   first wins; the second is skipped with a warning naming both, so you can rename one
   in Tally. The pre-flight flags this too.
+- **Reserved item name.** ERPNext refuses to save any record literally named "New
+  Item" (it reserves that for a blank, unsaved item), so a Tally item with that exact
+  name is imported with a slightly adjusted code ("Item - New Item") while keeping its
+  original name. Nothing for you to do.
 - **Unit resolution.** An item's Tally base unit maps to an ERPNext UOM: your chosen
   mapping first, then the built-in unit map, then the Tally unit's own name if a UOM
   by that name exists, and only "Nos" as a last resort.

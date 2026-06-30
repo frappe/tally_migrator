@@ -952,17 +952,29 @@ class TestERPNextImporter(unittest.TestCase):
         """India Compliance rejects a pincode whose digits don't match the state. The
         importer must keep the address (dropping just the PIN) instead of losing it -
         and never crash. Regression for the PIN/state warning aborting the migration."""
+        import types
         from unittest import mock
         from tally_migrator.erpnext.importers import CustomerImporter, ImportResult
 
         class FakeAddr:
             def __init__(self):
                 self.links = []
+                # A real frappe doc always carries these; the retry re-derives the name
+                # by clearing them so autoname runs again (see _save_address).
+                self.flags = types.SimpleNamespace(name_set=False)
+                self.name = None
+                self.name_set_at_retry = None
             def append(self, t, r):
                 self.links.append(r)
             def insert(self, **k):
                 if getattr(self, "pincode", ""):   # IC rejects the bad PIN
+                    # Mimic frappe: autoname claims a name and marks it set, then the
+                    # DB insert raises on the pincode/state mismatch.
+                    self.name = "X-Billing"
+                    self.flags.name_set = True
                     raise Exception("Postal Code 166982 is not associated with Kerala")
+                # Retry path: record what the importer left for re-derivation.
+                self.name_set_at_retry = (self.name, self.flags.name_set)
                 self.inserted = True
 
         fake = FakeAddr()
@@ -978,6 +990,10 @@ class TestERPNextImporter(unittest.TestCase):
 
         self.assertTrue(getattr(fake, "inserted", False))   # address still created
         self.assertEqual(fake.pincode, "")                  # only the PIN was dropped
+        # The retry cleared the claimed name + name_set so autoname re-runs and the
+        # naming-series counter is bumped back in step (no duplicate-key on the next
+        # same-titled address).
+        self.assertEqual(fake.name_set_at_retry, (None, False))
         self.assertEqual(len(result.errors), 0)             # no hard failure
         self.assertTrue(any("without its PIN" in w["reason"] for w in result.warnings))
 
