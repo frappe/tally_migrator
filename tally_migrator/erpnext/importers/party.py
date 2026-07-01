@@ -146,6 +146,92 @@ def _party_side_effect_hooks_suspended():
             setattr(mod, nm, fn)
 
 
+# Modules that hold their own `set_link_title` binding (imported at module load), so
+# both must be repointed to patch the calls made from Address.validate / Contact.validate.
+_LINK_TITLE_MODULES = (
+    "frappe.contacts.doctype.address.address",
+    "frappe.contacts.doctype.contact.contact",
+)
+
+
+@lru_cache(maxsize=None)
+def _uses_default_get_title(doctype: str) -> bool:
+    """True when ``doctype`` does not override ``Document.get_title`` - i.e. its title is
+    exactly the title-field value, so a single ``get_value`` reproduces it. False (=> use
+    stock) for any doctype with a custom ``get_title`` so we never guess a title wrong."""
+    from frappe.model.document import Document
+    from frappe.model.base_document import get_controller
+    try:
+        return get_controller(doctype).get_title is Document.get_title
+    except Exception:
+        return False
+
+
+def _lightweight_set_link_title(doc):
+    """Drop-in for frappe's ``set_link_title`` that avoids loading the whole linked doc.
+
+    Stock ``set_link_title`` does ``frappe.get_doc(link_doctype, link_name)`` per link -
+    for a party that pulls the full Supplier/Customer plus all four of its child tables
+    (~5 queries) only to read one title. Since ``get_title()`` is just the title-field
+    value for a doctype that doesn't override it, we read that field with a single
+    ``get_value`` instead. The resulting ``link_title`` is byte-identical to stock; any
+    link whose doctype overrides ``get_title`` (or any error) defers to the stock
+    function, so the stored value can never diverge. Restored after the party phase.
+    """
+    try:
+        links = getattr(doc, "links", None)
+        if not links:
+            return
+        # Only take the fast path when EVERY link's doctype uses the default get_title
+        # (title == title-field value); if any overrides it, defer wholesale to stock.
+        if all(_uses_default_get_title(l.link_doctype) for l in links):
+            for link in links:
+                title_field = frappe.get_meta(link.link_doctype).get_title_field()
+                doc_title = frappe.db.get_value(
+                    link.link_doctype, link.link_name, title_field) or ""
+                if link.link_title != doc_title:
+                    link.link_title = doc_title or link.link_name
+            return
+    except Exception:
+        pass
+    # A non-default doctype, or any error: fall back to stock so link_title can never
+    # diverge. Resolve the original robustly even if called outside the context manager.
+    orig = _ORIG_SET_LINK_TITLE
+    if orig is None:
+        from frappe.contacts.address_and_contact import set_link_title as orig
+    return orig(doc)
+
+
+# Captured original, used by the lightweight version's fallback. Set when the context
+# manager installs the patch; None until then.
+_ORIG_SET_LINK_TITLE = None
+
+
+@contextlib.contextmanager
+def _link_title_lightweight():
+    """Swap frappe's per-link full-doc load (``set_link_title``) for the lightweight
+    title read above, for the party phase only. No-op-safe (skips when the symbol is
+    absent) and restored in ``finally``; same process-local contract as the gravatar /
+    side-effect suspensions (serialised by the single-active-run guard)."""
+    global _ORIG_SET_LINK_TITLE
+    saved = []
+    for path in _LINK_TITLE_MODULES:
+        try:
+            mod = importlib.import_module(path)
+        except Exception:
+            continue
+        if hasattr(mod, "set_link_title"):
+            if _ORIG_SET_LINK_TITLE is None:
+                _ORIG_SET_LINK_TITLE = mod.set_link_title
+            saved.append((mod, mod.set_link_title))
+            mod.set_link_title = _lightweight_set_link_title
+    try:
+        yield
+    finally:
+        for mod, fn in saved:
+            mod.set_link_title = fn
+
+
 # ── Party importers (Customer / Supplier) ──────────────────────────────────────
 
 class PartyImporter(BaseImporter):
@@ -166,11 +252,13 @@ class PartyImporter(BaseImporter):
 
     def run(self, records: list[dict], on_progress=None) -> "ImportResult":
         """Import parties with the per-contact integration hooks suspended - the
-        gravatar network lookup plus the Google-Contacts sync and Call-Log linking
-        hooks, all data-irrelevant per-record cost of the phase (see
-        ``_gravatar_lookup_suspended`` / ``_party_side_effect_hooks_suspended``).
+        gravatar network lookup, the Google-Contacts sync and Call-Log linking hooks,
+        and the full-doc load in ``set_link_title`` (all data-irrelevant per-record cost
+        of the phase; see ``_gravatar_lookup_suspended`` /
+        ``_party_side_effect_hooks_suspended`` / ``_link_title_lightweight``).
         Everything else is the standard template."""
-        with _gravatar_lookup_suspended(), _party_side_effect_hooks_suspended():
+        with _gravatar_lookup_suspended(), _party_side_effect_hooks_suspended(), \
+                _link_title_lightweight():
             return super().run(records, on_progress=on_progress)
 
     def before_run(self, records: list[dict], result: "ImportResult") -> None:

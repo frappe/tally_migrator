@@ -121,6 +121,57 @@ class TestERPNextImporter(unittest.TestCase):
             for mod, nm, fn in saved:
                 setattr(mod, nm, fn)
 
+    def test_lightweight_set_link_title_uses_get_value_not_get_doc(self):
+        """The lightweight set_link_title reads the linked doc's title with one get_value
+        (title field), never a full get_doc - and writes the same link_title stock would."""
+        import types
+        from unittest import mock
+        from tally_migrator.erpnext.importers import party as P
+        link = types.SimpleNamespace(link_doctype="Supplier", link_name="SUP-1",
+                                     link_title=None)
+        doc = types.SimpleNamespace(links=[link])
+        with mock.patch.object(P, "_uses_default_get_title", return_value=True), \
+                mock.patch("frappe.get_meta") as gm, \
+                mock.patch("frappe.db.get_value", return_value="Acme Traders") as gv, \
+                mock.patch("frappe.get_doc") as gd:
+            gm.return_value.get_title_field.return_value = "supplier_name"
+            P._lightweight_set_link_title(doc)
+        self.assertEqual(link.link_title, "Acme Traders")
+        gv.assert_called_once_with("Supplier", "SUP-1", "supplier_name")
+        gd.assert_not_called()                    # the point: no full-doc load
+
+    def test_lightweight_set_link_title_defers_for_overridden_title(self):
+        """A doctype that overrides get_title (title not just the title field) must fall
+        back to stock set_link_title, so the stored title can never diverge."""
+        import types
+        from unittest import mock
+        from tally_migrator.erpnext.importers import party as P
+        link = types.SimpleNamespace(link_doctype="Weird", link_name="W-1", link_title=None)
+        doc = types.SimpleNamespace(links=[link])
+        called = []
+        orig = P._ORIG_SET_LINK_TITLE
+        P._ORIG_SET_LINK_TITLE = lambda d: called.append(d)
+        try:
+            with mock.patch.object(P, "_uses_default_get_title", return_value=False):
+                P._lightweight_set_link_title(doc)
+        finally:
+            P._ORIG_SET_LINK_TITLE = orig
+        self.assertEqual(called, [doc])           # deferred to stock; we touched nothing
+
+    def test_link_title_lightweight_patches_and_restores(self):
+        """The context manager repoints set_link_title in both the address and contact
+        modules for its duration, then restores the originals."""
+        import importlib
+        from tally_migrator.erpnext.importers.party import _link_title_lightweight
+        am = importlib.import_module("frappe.contacts.doctype.address.address")
+        cm = importlib.import_module("frappe.contacts.doctype.contact.contact")
+        before_a, before_c = am.set_link_title, cm.set_link_title
+        with _link_title_lightweight():
+            self.assertIsNot(am.set_link_title, before_a)
+            self.assertIsNot(cm.set_link_title, before_c)
+        self.assertIs(am.set_link_title, before_a)
+        self.assertIs(cm.set_link_title, before_c)
+
     def test_party_import_does_not_fire_contact_integration_hooks(self):
         """A normal Contact insert fires the Google-Contacts/Call-Log hooks; importing
         a party that creates a Contact must not (they are suspended), while the Contact
