@@ -1015,7 +1015,7 @@ class StockOpeningImporter:
     # failure's blast radius, and bounds the per-document memory/transaction size.
     _CHUNK = 100
 
-    def run(self, items: list, posting_date: str) -> ImportResult:
+    def run(self, items: list, posting_date: str, on_progress=None) -> ImportResult:
         result = ImportResult(self.doctype)
         warehouse = self._default_warehouse()
         if not warehouse:
@@ -1078,6 +1078,8 @@ class StockOpeningImporter:
         # Memoise the per-item Accounting Dimension lookup ERPNext repeats on every
         # GL/SLE posting (a company-wide constant) - the dominant avoidable round-trip
         # cost of this phase, especially on Frappe Cloud. See _accounting_dimensions_cached.
+        total = len(pending)
+        done = 0
         with _accounting_dimensions_cached():
             for i in range(0, len(pending), self._CHUNK):
                 chunk = pending[i:i + self._CHUNK]
@@ -1087,6 +1089,12 @@ class StockOpeningImporter:
                     # their opening stock. A 1-row doc also submits synchronously.
                     for row in chunk:
                         self._post_doc([row], posting_date, result, isolate=True)
+                # Opening stock posts ~100 rows per submit over a long, DB-heavy phase;
+                # tick the "x of N" count per chunk so the bar keeps moving instead of
+                # sitting frozen on a single static message for minutes.
+                done += len(chunk)
+                if on_progress:
+                    on_progress(done, total)
         return result
 
     def _post_doc(self, rows: list, posting_date: str, result: ImportResult,

@@ -115,7 +115,8 @@ class ERPNextImporter:
                     "finishes to fill any gaps.")
                 return result
             return StockOpeningImporter(self.company, self.abbr).run(
-                items, self._opening_date(posting_date))
+                items, self._opening_date(posting_date),
+                on_progress=self.on_progress)
 
     def import_stock_groups(self, groups: list[dict]) -> ImportResult:
         return StockGroupImporter(self.company, self.abbr).run(groups)
