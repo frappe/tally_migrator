@@ -30,9 +30,12 @@ class PriceImporter:
     # List named "MRP" with one Item Price per item - mirroring how price levels map.
     MRP_PRICE_LIST = "MRP"
 
-    def run(self, items: list[dict]) -> ImportResult:
+    def run(self, items: list[dict], on_progress=None) -> ImportResult:
         result = ImportResult(self.doctype)
-        for it in items:
+        total = len(items)
+        for idx, it in enumerate(items, 1):
+            if on_progress:
+                on_progress(idx, total)
             for lv in (it.get("PriceLevels") or []):
                 self._import_level(result, it.get("_name", ""), lv)
             self._import_mrp(result, it.get("_name", ""), it.get("Mrp"))

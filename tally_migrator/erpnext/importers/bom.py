@@ -26,9 +26,12 @@ class BomImporter:
         self.currency = frappe.get_cached_value(
             "Company", company, "default_currency") or "INR"
 
-    def run(self, items: list[dict]) -> ImportResult:
+    def run(self, items: list[dict], on_progress=None) -> ImportResult:
         result = ImportResult(self.doctype)
-        for it in items:
+        total = len(items)
+        for idx, it in enumerate(items, 1):
+            if on_progress:
+                on_progress(idx, total)
             boms = it.get("Boms") or []
             if not boms:
                 continue

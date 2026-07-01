@@ -1383,6 +1383,58 @@ class TestERPNextImporter(unittest.TestCase):
         self.assertEqual(result.skipped, 1)
         self.assertIn("already posted", result.warnings[-1]["reason"])
 
+    def test_opening_stock_reports_progress_per_chunk(self):
+        """The opening-stock phase posts ~100 rows per submit over a long, DB-heavy
+        run. It must tick on_progress with a cumulative "done of total" per chunk so
+        the bar keeps moving instead of sitting frozen on one static message."""
+        from tally_migrator.erpnext.importers import StockOpeningImporter
+
+        imp = StockOpeningImporter("_TMTest Co", "TC")
+        imp._default_warehouse = lambda: "Stores - TC"
+        imp._posted_keys = lambda: set()
+        imp._drop_non_stock_rows = lambda rows, items, result: rows
+        # Each item contributes exactly one row, without touching frappe.
+        imp._placements = lambda it, wh, result: [(wh, 1.0, 10.0, 10.0, None)]
+
+        def add_row(by_key, name, wh, q, r, v, sc, result, batch=None):
+            by_key[(name, wh)] = {"item_code": name, "warehouse": wh}
+        imp._add_opening_row = add_row
+
+        def post_doc(chunk, date, result, isolate=False):
+            for row in chunk:
+                result.add_created(f"SR-{row['item_code']}")
+            return True
+        imp._post_doc = post_doc
+
+        ticks = []
+        items = [{"_name": f"I{i}"} for i in range(250)]
+        imp.run(items, "2024-04-01",
+                on_progress=lambda done, total: ticks.append((done, total)))
+        # 250 rows -> chunks of 100, 100, 50 -> cumulative counts against a fixed total.
+        self.assertEqual(ticks, [(100, 250), (200, 250), (250, 250)])
+
+    def test_batch_importer_reports_progress_per_item(self):
+        """Batches is a multi-second phase (one Batch insert + commit per row) that used
+        to sit frozen. It must tick on_progress with 'x of N' per item - verified via the
+        non-batch skip path so no DB is needed (the tick precedes any item work)."""
+        from tally_migrator.erpnext.importers.batch import BatchImporter
+        imp = BatchImporter("_TMTest Co", "TC")
+        # Items without IsBatchWiseOn=Yes are skipped, but must still advance the bar.
+        items = [{"_name": f"I{i}"} for i in range(3)]
+        ticks = []
+        imp.run(items, on_progress=lambda done, total: ticks.append((done, total)))
+        self.assertEqual(ticks, [(1, 3), (2, 3), (3, 3)])
+
+    def test_price_importer_reports_progress_per_item(self):
+        """Prices ticks 'x of N' per item (checked via items with no price levels/MRP,
+        which the importer skips without touching the DB)."""
+        from tally_migrator.erpnext.importers.prices import PriceImporter
+        imp = PriceImporter("_TMTest Co", "TC")
+        items = [{"_name": f"I{i}"} for i in range(3)]
+        ticks = []
+        imp.run(items, on_progress=lambda done, total: ticks.append((done, total)))
+        self.assertEqual(ticks, [(1, 3), (2, 3), (3, 3)])
+
     def test_default_warehouse_skips_other_company_global_default(self):
         """Stock Settings' default_warehouse is global. On a multi-company site it
         can point at another company's warehouse; using it makes the Opening Stock
