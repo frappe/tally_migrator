@@ -1302,6 +1302,48 @@ class TallyMigratorPage {
 		}
 		return `<span class="tm-pill" style="background:${tone};">${text}</span>`;
 	}
+
+	// Human elapsed time: "45s", "3m", "3m 20s".
+	static fmtElapsed(secs) {
+		secs = Math.max(0, Math.round(secs || 0));
+		if (secs < 60) return `${secs}s`;
+		const m = Math.floor(secs / 60), s = secs % 60;
+		return s ? `${m}m ${s}s` : `${m}m`;
+	}
+
+	// The single, truthful status line for a tracked run - pure so it is unit-testable.
+	// Every branch reflects a real signal, never a time-only guess:
+	//   reconnecting  -> the poll request is failing (transient); still tracking
+	//   alive === false (with status still Running) -> the worker genuinely stopped
+	//   otherwise -> running (a slow phase that reports infrequently is normal)
+	// Returns { text, stopped }: `stopped` tells the caller to surface the "open log"
+	// affordance and stop claiming live progress.
+	static runStatusMessage({ phase, elapsedS, alive, reconnecting } = {}) {
+		const t = TallyMigratorPage.fmtElapsed(elapsedS);
+		if (reconnecting) {
+			return {
+				text: `Reconnecting to the server - the migration is still running in ` +
+					`the background (${t} elapsed). This page will update automatically.`,
+				stopped: false,
+			};
+		}
+		if (alive === false) {
+			return {
+				text: `The migration worker has stopped responding (${t} elapsed). It ` +
+					`will be marked failed - open the migration log for details. Records ` +
+					`imported before it stopped are kept, so it is safe to run again.`,
+				stopped: true,
+			};
+		}
+		const p = phase ? `${phase} - ` : "";
+		return {
+			text: `${p}still running (${t} elapsed). This step can be slow and reports ` +
+				`infrequently; it is safe to leave this page - the result appears here ` +
+				`when it finishes.`,
+			stopped: false,
+		};
+	}
+
 	// Inline (i) that reveals `text` on hover/focus - for secondary explanation we
 	// don't want occupying a line of body copy. Keyboard-reachable (tabindex) and
 	// screen-reader labelled. Use ONLY for "what does this mean / why", never for
@@ -2108,11 +2150,10 @@ class TallyMigratorPage {
 		this.stopHeartbeat();
 		this._heartbeat = setInterval(() => {
 			if (Date.now() - this._lastProgress < 8000) return;
-			const secs = Math.round((Date.now() - this._runStart) / 1000);
-			$("#progress-desc").text(
-				`Still working... ${secs}s elapsed. Live updates may have paused; the ` +
-				`result will appear here when the migration finishes.`
-			);
+			const secs = (Date.now() - this._runStart) / 1000;
+			const m = TallyMigratorPage.runStatusMessage(
+				{ phase: this._lastSeenDesc, elapsedS: secs });
+			$("#progress-desc").text(m.text);
 		}, 5000);
 	}
 
@@ -2233,6 +2274,16 @@ class TallyMigratorPage {
 		// "Keep checking" and a post-failure retry can re-arm.
 		if (this._trackingLog === logName) return;
 		this._trackingLog = logName;
+		// pollLog is now the single owner of the step-5 status message (it knows the
+		// real status via run_progress and the real liveness via run_liveness). Stop the
+		// time-only heartbeat so the two don't fight over #progress-desc.
+		this.stopHeartbeat();
+		this._trackStart = Date.now();     // when we started tracking (for elapsed)
+		this._lastChange = Date.now();     // last time percent/description actually moved
+		this._lastSeenPct = null;
+		this._lastSeenDesc = null;
+		this._pollFails = 0;               // consecutive failed polls (-> "reconnecting")
+		this._lastLiveCheck = 0;           // throttle the liveness cross-check
 		const finishFromLog = (doc) => {
 			this._trackingLog = null;
 			frappe.realtime.off("tally_migration_progress", this._onProgress);
@@ -2280,9 +2331,15 @@ class TallyMigratorPage {
 		// alive (a very large import), so the terminal state is non-committal and
 		// offers to keep checking rather than claiming failure.
 		const POLL_CAP_MS = 30 * 60 * 1000;
+		// How long percent/description may sit unchanged before we stop guessing and
+		// ask the server (run_liveness) whether the job is genuinely alive.
+		const STALE_MS = 20 * 1000;
 		const start = Date.now();
 
-		const stalled = () => {
+		// confirmedStopped=true means run_liveness told us the worker is genuinely gone
+		// (not just quiet), so the copy states that plainly instead of "may still be
+		// running". Exposed on the instance so _reportRunStatus can trigger it.
+		const stalled = (confirmedStopped) => {
 			this._trackingLog = null;
 			frappe.realtime.off("tally_migration_progress", this._onProgress);
 			this.stopHeartbeat();
@@ -2291,7 +2348,9 @@ class TallyMigratorPage {
 			// Freeze the bar where it stalled - drop the active animation so it no longer
 			// implies live progress, but leave it visible as context for how far it got.
 			$("#progress-bar").removeClass("active progress-bar-striped");
-			$("#progress-desc").text("This is taking longer than expected.");
+			$("#progress-desc").text(confirmedStopped
+				? "The migration has stopped before completing."
+				: "This is taking longer than expected.");
 			// The stall notice and its actions live in their own callout (not inline in
 			// the progress text and not the error callout) so the "Keep checking" action
 			// reads as a real button in a tidy row rather than mid-sentence.
@@ -2300,8 +2359,12 @@ class TallyMigratorPage {
 					'<div style="display:flex; align-items:center; justify-content:space-between; ' +
 						'gap:var(--margin-md); flex-wrap:wrap;">' +
 						'<span style="flex:1; min-width:240px; line-height:1.5;">' +
-							"The migration may still be running in the background. " +
-							"Keep checking, or open the migration log for its live status." +
+							(confirmedStopped
+								? "The migration worker stopped before finishing (it will be " +
+									"marked failed). Records imported before it stopped are kept, " +
+									"so it is safe to run again. Open the migration log for details."
+								: "The migration may still be running in the background. " +
+									"Keep checking, or open the migration log for its live status.") +
 						"</span>" +
 						'<span style="display:flex; gap:var(--margin-sm); flex-shrink:0;">' +
 							'<button class="btn btn-default btn-sm" id="btn-open-log">Open migration log</button>' +
@@ -2321,29 +2384,84 @@ class TallyMigratorPage {
 			});
 		};
 
+		// Called when percent/description has been unchanged for STALE_MS while still
+		// Running. Throttled ask to run_liveness: if the worker is genuinely gone, switch
+		// to the "stopped" state; otherwise show an honest running-but-slow line. Never
+		// declares "stopped" on a transient lookup blip - run_liveness biases to alive.
+		const reportRunStatus = () => {
+			const nowMs = Date.now();
+			if (nowMs - (this._lastLiveCheck || 0) < 12000) return;   // throttle
+			this._lastLiveCheck = nowMs;
+			frappe.call({
+				method: "tally_migrator.api.run_liveness",
+				args: { log_name: logName },
+				callback: (r) => {
+					const live = r.message || {};
+					// Terminal caught here too - let the next run_progress poll render it.
+					if (live.status && live.status !== "Running") return;
+					const secs = (Date.now() - this._trackStart) / 1000;
+					const m = TallyMigratorPage.runStatusMessage(
+						{ phase: this._lastSeenDesc, elapsedS: secs, alive: live.alive !== false });
+					if (m.stopped) { stalled(true); return; }
+					$("#progress-desc").text(m.text);
+				},
+				// Can't tell right now - stay quiet (keep the last real phase text) rather
+				// than alarming; the next poll/liveness check will resolve it.
+				error: () => {},
+			});
+		};
+
 		const poll = () => {
-			if (Date.now() - start > POLL_CAP_MS) { stalled(); return; }
+			if (Date.now() - start > POLL_CAP_MS) { stalled(false); return; }
 			frappe.call({
 				method: "tally_migrator.api.run_progress",
 				args: { log_name: logName },
 				callback: (r) => {
 					const doc = r.message;
 					if (!doc) { setTimeout(poll, 3000); return; }
+					this._pollFails = 0;              // a good poll clears any "reconnecting"
 					if (doc.status === "Running" || !doc.status) {
 						// Drive the bar from the persisted progress so a reconnected page
 						// advances even when it missed the realtime events (which is what
 						// otherwise left it stuck at 0%). Realtime stays the fast-path.
+						const moved = doc.percent !== this._lastSeenPct ||
+							doc.description !== this._lastSeenDesc;
 						if (typeof doc.percent === "number") {
 							this._lastProgress = Date.now();
+							this._lastSeenPct = doc.percent;
 							$("#progress-bar").css("width", doc.percent + "%").text(doc.percent + "%");
-							if (doc.description) $("#progress-desc").text(doc.description);
+						}
+						if (doc.description) {
+							this._lastSeenDesc = doc.description;
+							$("#progress-desc").text(doc.description);
+						}
+						if (moved) {
+							this._lastChange = Date.now();
+							$("#stall-section").hide();   // recovered - drop any stopped/stall notice
+						} else if (Date.now() - this._lastChange > STALE_MS) {
+							// Updates have gone quiet. Don't guess "still working" from the
+							// clock - ASK the server whether the job is genuinely alive, and
+							// say the truth (running-but-slow vs actually stopped).
+							reportRunStatus();
 						}
 						setTimeout(poll, 3000);
 						return;
 					}
 					finishFromLog(doc);
 				},
-				error: () => setTimeout(poll, 5000),
+				// A failed poll (e.g. a 502 while the DB-heavy tail saturates the web
+				// workers) must not silently strand the bar. Show an honest "reconnecting"
+				// state, keep retrying, and let a recovered poll render the terminal state.
+				error: () => {
+					this._pollFails = (this._pollFails || 0) + 1;
+					if (this._pollFails >= 2) {
+						const secs = (Date.now() - this._trackStart) / 1000;
+						const m = TallyMigratorPage.runStatusMessage(
+							{ phase: this._lastSeenDesc, elapsedS: secs, reconnecting: true });
+						$("#progress-desc").text(m.text);
+					}
+					setTimeout(poll, this._pollFails >= 3 ? 5000 : 2000);
+				},
 			});
 		};
 		// Poll immediately so a reconnected bar paints the real percent within a tick,
