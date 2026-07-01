@@ -413,6 +413,10 @@ class TallyMigratorPage {
 		$("#btn-back-check").on("click", () => this.show("section-configure"));
 		$("#btn-startover-check").on("click", () => this.confirmStartOver());
 		$("#btn-next-check").on("click", () => {
+			// Defense in depth: never advance while the gate says blocked (still
+			// loading, readiness blockers, or errors without ticked consent) even if a
+			// stray render left the button clickable.
+			if (this._updateCheckContinue()) return;
 			if (this.readiness && this.readiness.ready === false) {
 				frappe.msgprint(
 					__("This company isn't ready to receive masters. Resolve the blockers shown above, then Re-check.")
@@ -820,12 +824,20 @@ class TallyMigratorPage {
 		$("#coverage-section").hide();
 		this.show("section-check");
 
+		// Gate Continue for the whole load window: it stays disabled until both scans
+		// return and the gates (readiness / error-consent) permit it - so the user
+		// can't click through to Step 4 on data that hasn't loaded yet.
+		this._checkLoading = true;
+		this._updateCheckContinue();
+
 		// Two independent read-only scans run in parallel: data-quality (GST / HSN /
 		// duplicates / collisions) and UOM resolution. Render once both return.
 		let pending = 2;
 		const done = () => {
 			if (--pending > 0) return;
 			$("#check-loading").hide();
+			this._checkLoading = false;
+			this._updateCheckContinue();
 			const noUom = !this.uomIssues.length;
 			const noDq = !this.qualityReport || this.qualityReport.clean;
 			if (noUom && noDq) {
@@ -892,15 +904,33 @@ class TallyMigratorPage {
 		});
 	}
 
+	// Single owner of the Step-3 Continue button's enabled state. The two async
+	// renders (data-quality + readiness) and the consent checkbox all feed into this
+	// one function instead of each writing the button directly - so no render can
+	// clobber another's gate (the race that let Continue enable without consent), and
+	// the button can't be clicked mid-load. Continue is enabled only when: the scans
+	// have finished loading, AND the company has no readiness blockers, AND (there are
+	// no import errors OR the user ticked the error-consent box). Returns the blocked
+	// state so the click handler can double-check before advancing.
+	_updateCheckContinue() {
+		const loading = !!this._checkLoading;
+		const blockers = !!(this.readiness && (this.readiness.blockers || []).length);
+		const report = this.qualityReport;
+		const hasErrors = !!(report && !report.clean && (report.error_count || 0) > 0);
+		const consented = $("#dq-consent-check").is(":checked");
+		const blocked = loading || blockers || (hasErrors && !consented);
+		$("#btn-next-check").prop("disabled", blocked);
+		return blocked;
+	}
+
 	// Company-readiness gate. Blockers (a whole entity would fail) disable
 	// Continue; warnings (partial degradation) are shown but don't block.
 	renderReadiness() {
 		const report = this.readiness;
 		const $sec = $("#readiness-section");
-		const $btn = $("#btn-next-check");
 		if (!report || (report.ready && !(report.warnings || []).length)) {
 			$sec.hide().empty();
-			$btn.prop("disabled", false);
+			this._updateCheckContinue();
 			return;
 		}
 		const esc = frappe.utils.escape_html;
@@ -929,7 +959,7 @@ class TallyMigratorPage {
 		`)).show();
 
 		$("#btn-recheck-readiness").on("click", () => this.recheckReadiness());
-		$btn.prop("disabled", hasBlockers);
+		this._updateCheckContinue();
 	}
 
 	// Re-run only the readiness check (after the user fixes setup in another tab),
@@ -1356,7 +1386,7 @@ class TallyMigratorPage {
 					TallyMigratorPage.callout("success", TallyMigratorPage.iconRow("success", `All flagged data issues are resolved.`))
 				);
 				$("#dq-consent").hide();
-				$("#btn-next-check").prop("disabled", false);
+				this._updateCheckContinue();
 				$("#dq-section").show();
 			} else {
 				$("#dq-section").hide();
@@ -1420,17 +1450,18 @@ class TallyMigratorPage {
 		$("#dq-list .dq-edit").on("input change", (e) => this.captureEdit(e.currentTarget));
 		$("#btn-dq-recheck").on("click", () => this.recheck());
 
-		// Errors require explicit consent before Continue.
+		// Errors require explicit consent before Continue. The checkbox feeds the
+		// single gate owner (not the button directly), so a later readiness render
+		// can't re-enable Continue behind an unticked box.
 		if (report.error_count > 0) {
 			$("#dq-consent").show();
-			$("#btn-next-check").prop("disabled", true);
-			$("#dq-consent-check").prop("checked", false).off("change").on("change", (e) => {
-				$("#btn-next-check").prop("disabled", !e.target.checked);
+			$("#dq-consent-check").prop("checked", false).off("change").on("change", () => {
+				this._updateCheckContinue();
 			});
 		} else {
 			$("#dq-consent").hide();
-			$("#btn-next-check").prop("disabled", false);
 		}
+		this._updateCheckContinue();
 		$("#dq-section").show();
 	}
 
@@ -2430,6 +2461,8 @@ class TallyMigratorPage {
 		this.qualityReport = null;
 		this.coverageReport = null;
 		this.accountMapping = null;
+		this.readiness = null;
+		this._checkLoading = false;
 		this.recordOverrides = {};
 		this.states = [];
 		$("#review-summary, #review-exceptions, #review-all, #review-parties").empty();
@@ -2448,7 +2481,7 @@ class TallyMigratorPage {
 		$("#coverage-section").hide().empty();
 		$("#dq-consent").hide();
 		$("#dq-consent-check").prop("checked", false);
-		$("#btn-next-check").prop("disabled", false);
+		this._updateCheckContinue();
 		$("#progress-section").hide();
 		$("#results-section").hide().html("");
 		$("#error-section").hide();
