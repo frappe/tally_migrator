@@ -232,6 +232,58 @@ def _link_title_lightweight():
             mod.set_link_title = fn
 
 
+# ── Skip ERPNext's internal-supplier uniqueness scan for external suppliers ──────
+# ERPNext's Supplier.validate_internal_supplier runs a uniqueness scan of `tabSupplier`
+# on EVERY supplier save. Unlike Customer.validate_internal_customer - which returns
+# early for a non-internal customer - the Supplier version is missing that early return
+# (erpnext/buying/doctype/supplier/supplier.py), so the scan fires once per supplier
+# regardless. On a real book it is the single largest cost of the party phase: an
+# `is_internal_supplier=1` filter the growing table isn't indexed for, degrading toward
+# O(n^2) - measured ~106s (28% of the phase) for 13k suppliers on Frappe Cloud.
+#
+# A migrated supplier is never internal (the importer sets neither is_internal_supplier
+# nor represents_company), so that scan can only ever return nothing for our data. We
+# swap in exactly the behaviour Customer already has - clear represents_company for a
+# non-internal party and skip the scan - and DELEGATE to the original for a genuine
+# internal supplier, so the uniqueness guarantee is fully preserved and we track any
+# future ERPNext revision of that path instead of forking its query. Data-neutral and
+# no GST/compliance surface (neither field relates to India Compliance). Customer needs
+# no patch - it already returns early.
+def _make_fast_validate_internal_supplier(original):
+    """Build a drop-in for ``Supplier.validate_internal_supplier`` that short-circuits
+    the uniqueness scan for a non-internal supplier and delegates to ``original`` for a
+    genuine internal one. Mirrors ``Customer.validate_internal_customer`` exactly."""
+    def _fast_validate_internal_supplier(self):
+        if not self.is_internal_supplier:
+            self.represents_company = ""
+            return
+        return original(self)
+    return _fast_validate_internal_supplier
+
+
+@contextlib.contextmanager
+def _internal_supplier_scan_skipped():
+    """Skip ERPNext's per-supplier internal-uniqueness scan for external suppliers for
+    the party phase, then restore it. No-op-safe: if ERPNext or the method is absent
+    (e.g. renamed upstream) leave it untouched and yield unchanged - the migration still
+    runs, just without this saving. Restored in ``finally``; process-local, serialised
+    by the single-active-run guard (same contract as the suspensions above)."""
+    try:
+        from erpnext.buying.doctype.supplier.supplier import Supplier
+    except Exception:
+        yield
+        return
+    original = getattr(Supplier, "validate_internal_supplier", None)
+    if original is None:
+        yield
+        return
+    Supplier.validate_internal_supplier = _make_fast_validate_internal_supplier(original)
+    try:
+        yield
+    finally:
+        Supplier.validate_internal_supplier = original
+
+
 # ── Party importers (Customer / Supplier) ──────────────────────────────────────
 
 class PartyImporter(BaseImporter):
@@ -255,10 +307,12 @@ class PartyImporter(BaseImporter):
         gravatar network lookup, the Google-Contacts sync and Call-Log linking hooks,
         and the full-doc load in ``set_link_title`` (all data-irrelevant per-record cost
         of the phase; see ``_gravatar_lookup_suspended`` /
-        ``_party_side_effect_hooks_suspended`` / ``_link_title_lightweight``).
-        Everything else is the standard template."""
+        ``_party_side_effect_hooks_suspended`` / ``_link_title_lightweight``) - and with
+        ERPNext's per-supplier internal-uniqueness scan skipped for external suppliers
+        (see ``_internal_supplier_scan_skipped``). Everything else is the standard
+        template."""
         with _gravatar_lookup_suspended(), _party_side_effect_hooks_suspended(), \
-                _link_title_lightweight():
+                _link_title_lightweight(), _internal_supplier_scan_skipped():
             return super().run(records, on_progress=on_progress)
 
     def before_run(self, records: list[dict], result: "ImportResult") -> None:
