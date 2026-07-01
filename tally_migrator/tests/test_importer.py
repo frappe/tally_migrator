@@ -172,6 +172,52 @@ class TestERPNextImporter(unittest.TestCase):
         self.assertIs(am.set_link_title, before_a)
         self.assertIs(cm.set_link_title, before_c)
 
+    def test_fast_internal_supplier_skips_scan_for_external_supplier(self):
+        """A non-internal supplier must clear represents_company and NOT run the
+        uniqueness scan (the original is never called) - the exact behaviour Customer
+        already has, and the whole point of the optimisation."""
+        from types import SimpleNamespace
+        from tally_migrator.erpnext.importers.party import (
+            _make_fast_validate_internal_supplier)
+
+        called = {"n": 0}
+        fast = _make_fast_validate_internal_supplier(lambda self: called.__setitem__("n", called["n"] + 1))
+        doc = SimpleNamespace(is_internal_supplier=0, represents_company="ACME")
+        fast(doc)
+        self.assertEqual(called["n"], 0)          # scan skipped
+        self.assertEqual(doc.represents_company, "")   # normalised like Customer does
+
+    def test_fast_internal_supplier_delegates_for_internal_supplier(self):
+        """A genuine internal supplier must still run ERPNext's real uniqueness check -
+        the optimisation only short-circuits the non-internal case, so the guarantee is
+        fully preserved."""
+        from types import SimpleNamespace
+        from tally_migrator.erpnext.importers.party import (
+            _make_fast_validate_internal_supplier)
+
+        seen = {}
+        fast = _make_fast_validate_internal_supplier(
+            lambda self: seen.setdefault("self", self))
+        doc = SimpleNamespace(is_internal_supplier=1, represents_company="ACME")
+        fast(doc)
+        self.assertIs(seen.get("self"), doc)      # original delegated to, unchanged
+        self.assertEqual(doc.represents_company, "ACME")   # left intact for internal
+
+    def test_internal_supplier_scan_context_patches_and_restores(self):
+        """The context manager repoints Supplier.validate_internal_supplier for its
+        duration and restores the original. Also asserts the method still exists on
+        ERPNext's Supplier - so this test fails loudly if a future ERPNext renames or
+        removes it (the no-op-safe guard would otherwise hide that silently)."""
+        from erpnext.buying.doctype.supplier.supplier import Supplier
+        from tally_migrator.erpnext.importers.party import (
+            _internal_supplier_scan_skipped)
+
+        original = Supplier.validate_internal_supplier      # fails here if renamed
+        self.assertTrue(callable(original))
+        with _internal_supplier_scan_skipped():
+            self.assertIsNot(Supplier.validate_internal_supplier, original)
+        self.assertIs(Supplier.validate_internal_supplier, original)
+
     def test_party_import_does_not_fire_contact_integration_hooks(self):
         """A normal Contact insert fires the Google-Contacts/Call-Log hooks; importing
         a party that creates a Contact must not (they are suspended), while the Contact
