@@ -35,6 +35,7 @@ from __future__ import annotations
 
 import contextlib
 import heapq
+import re
 import threading
 import time
 
@@ -71,6 +72,43 @@ def _trim(content) -> dict | None:
     return out
 
 
+# ── SQL fingerprinting (which queries dominate a phase) ─────────────────────────
+# Frappe passes templated queries (literals live in a separate values tuple, the
+# string carries %s placeholders), so a query "fingerprint" is almost free to derive
+# and collapses thousands of calls onto the handful of distinct statement shapes that
+# actually drive a phase. That is what turns "322k queries" into "which 5 queries".
+# Best-effort and bounded: a raw->fingerprint cache avoids recomputation, both the
+# cache and the per-phase fingerprint table are size-capped so a pathological run
+# can't grow them without bound, and any failure falls back to a single "?" bucket.
+_FP_CACHE: dict[str, str] = {}
+_FP_CACHE_MAX = 5000
+_FP_STR = re.compile(r"'(?:[^'\\]|\\.)*'")          # inline string literal -> ?
+_FP_NUM = re.compile(r"\b\d+\b")                    # inline number literal -> ?
+_FP_LIST = re.compile(r"\(\s*(?:\?|%s)(?:\s*,\s*(?:\?|%s))+\s*\)")  # IN (?,?,..) -> (?)
+
+
+def _fingerprint(query) -> str:
+    try:
+        q = query if isinstance(query, str) else str(query)
+    except Exception:
+        return "?"
+    cached = _FP_CACHE.get(q)
+    if cached is not None:
+        return cached
+    try:
+        s = " ".join(q.split())          # collapse whitespace/newlines
+        s = _FP_STR.sub("?", s)          # drop any inline string literals
+        s = _FP_NUM.sub("?", s)          # drop any inline numeric literals
+        s = _FP_LIST.sub("(?)", s)       # collapse variable-length IN lists
+        if len(s) > 300:
+            s = s[:300]
+    except Exception:
+        s = "?"
+    if len(_FP_CACHE) < _FP_CACHE_MAX:
+        _FP_CACHE[q] = s
+    return s
+
+
 # ── Per-phase accumulator ──────────────────────────────────────────────────────
 
 class _Phase:
@@ -87,6 +125,7 @@ class _Phase:
         self.ops: dict[str, list] = {}            # name -> [count, total_ms]
         self.sql_count = 0
         self.sql_ms = 0.0
+        self.sql_fp: dict[str, list] = {}         # fingerprint -> [count, total_ms]
         self.commit_count = 0
         self.commit_ms = 0.0
         self.enqueues = 0
@@ -118,6 +157,15 @@ class _Phase:
         else:
             o[0] += 1
             o[1] += ms
+
+    # hot path - one dict lookup per query; table capped so it can't grow unbounded.
+    def add_sql_fp(self, fp: str, ms: float) -> None:
+        e = self.sql_fp.get(fp)
+        if e is not None:
+            e[0] += 1
+            e[1] += ms
+        elif len(self.sql_fp) < 2000:
+            self.sql_fp[fp] = [1, ms]
 
     def _live_wall_ms(self) -> float:
         if self.wall_ms:
@@ -158,6 +206,12 @@ class _Phase:
                 "per_record": round(self.sql_count / self.count, 1) if self.count else 0,
                 "pct_of_phase": round(100 * self.sql_ms / wall, 1),
             },
+            "top_sql": [
+                {"count": c, "time_s": round(t / 1000, 2),
+                 "avg_ms": round(t / c, 3) if c else 0, "q": fp}
+                for fp, (c, t) in sorted(
+                    self.sql_fp.items(), key=lambda x: -x[1][1])[:20]
+            ],
             "commits": {"count": self.commit_count, "time_s": round(self.commit_ms / 1000, 2)},
             "enqueues": self.enqueues,
             "http": {"count": self.http_count, "time_s": round(self.http_ms / 1000, 2)},
@@ -173,12 +227,19 @@ class _Phase:
         """Small snapshot for the live cache stream (no durations/content)."""
         top_ops = sorted(((n, round(t / 1000, 2)) for n, (c, t) in self.ops.items()),
                          key=lambda x: -x[1])[:4]
+        # Top few query shapes by time, so a stalled/never-finalised run still shows
+        # (from the live cache) which SQL is eating the phase.
+        top_sql = [
+            {"count": c, "time_s": round(t / 1000, 1), "q": fp[:120]}
+            for fp, (c, t) in sorted(self.sql_fp.items(), key=lambda x: -x[1][1])[:3]
+        ]
         return {
             "wall_s": round(self._live_wall_ms() / 1000, 2),
             "records": self.count,
             "avg_ms": round(self.total_ms / self.count, 2) if self.count else 0,
             "sql": self.sql_count,
             "sql_s": round(self.sql_ms / 1000, 1),
+            "top_sql": top_sql,
             "enqueues": self.enqueues,
             "http": self.http_count,
             "rss_mb": self.rss_mb,
@@ -292,8 +353,15 @@ def _install_hooks(prof: "RunProfiler"):
                 try:
                     return orig(*a, **k)
                 finally:
+                    ms = (time.monotonic() - t0) * 1000
                     ph.sql_count += 1
-                    ph.sql_ms += (time.monotonic() - t0) * 1000
+                    ph.sql_ms += ms
+                    try:
+                        q = a[0] if a else k.get("query")
+                        if q is not None:
+                            ph.add_sql_fp(_fingerprint(q), ms)
+                    except Exception:
+                        pass
             return sql
         _patch_attr(db, "sql", make_sql)
 
