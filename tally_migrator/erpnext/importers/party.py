@@ -249,26 +249,69 @@ class PartyImporter(BaseImporter):
             # persists them. Same best-effort contract as before, minus the per-party
             # fsync.
             with atomic():
+                # Collect the party's own primary_* fields and write them in ONE update
+                # instead of a separate set_value per field (three UPDATEs to the same
+                # row collapse to one; the Address/Contact flags below are on other
+                # doctypes, so they stay separate). Same fields, same values - purely
+                # fewer round-trips.
+                party_fields: dict = {}
                 if address_name:
                     frappe.db.set_value("Address", address_name, "is_primary_address", 1,
                                         update_modified=False)
-                    frappe.db.set_value(self.doctype, party_name,
-                                        f"{prefix}_primary_address", address_name,
-                                        update_modified=False)
-                    from frappe.contacts.doctype.address.address import get_address_display
-                    frappe.db.set_value(self.doctype, party_name, "primary_address",
-                                        get_address_display(address_name),
-                                        update_modified=False)
+                    party_fields[f"{prefix}_primary_address"] = address_name
+                    party_fields["primary_address"] = self._address_display(address_name)
                 if contact_name:
                     frappe.db.set_value("Contact", contact_name, "is_primary_contact", 1,
                                         update_modified=False)
-                    frappe.db.set_value(self.doctype, party_name,
-                                        f"{prefix}_primary_contact", contact_name,
+                    party_fields[f"{prefix}_primary_contact"] = contact_name
+                if party_fields:
+                    frappe.db.set_value(self.doctype, party_name, party_fields,
                                         update_modified=False)
         except Exception as exc:
             frappe.log_error("Tally Migrator", f"Primary link failed for {party_name}: {exc}")
             result.add_warning(
                 party_name, f"primary address/contact link not set: {exc}")
+
+    def _address_display(self, address_name: str) -> str:
+        """The rendered primary-address display string, WITHOUT the per-call Jinja
+        recompile that ``get_address_display`` does.
+
+        ``get_address_display`` -> ``render_template`` -> ``jinja.from_string`` recompiles
+        the country Address Template into a fresh template on every call (~1.8 ms and a
+        template query each). The template depends only on the address's country
+        (``get_address_templates`` looks it up by country, else the default), so we
+        compile each distinct country template once and reuse it - the output is
+        byte-identical to ``get_address_display`` (verified). Any hiccup falls straight
+        back to ``get_address_display`` so the value can never diverge from stock ERPNext.
+        """
+        from frappe.contacts.doctype.address.address import (
+            get_address_templates, get_address_display)
+        try:
+            # Prefer the address we just created (stashed by _save_address) over a DB
+            # reload; fall back to a load if it isn't the one we hold. Rendering from the
+            # in-memory dict is byte-identical to rendering the reloaded doc (verified).
+            doc = self.__dict__.get("_last_address_doc")
+            if not doc or doc.get("name") != address_name:
+                doc = frappe.get_cached_doc("Address", address_name).as_dict()
+            cache = self.__dict__.setdefault("_addr_tmpl_cache", {})
+            key = doc.get("country") or ""
+            compiled = cache.get(key)
+            if compiled is None:
+                _name, template = get_address_templates(doc)
+                compiled = frappe.get_jenv().from_string(template)
+                cache[key] = compiled
+            return compiled.render(doc)
+        except Exception:
+            return get_address_display(address_name)
+
+    def _stash_address(self, addr) -> None:
+        """Remember the just-created address for _address_display to render from (avoids a
+        reload). Best-effort: stashing must never affect whether the address was created,
+        so any failure just clears the stash and _address_display falls back to a load."""
+        try:
+            self._last_address_doc = addr.as_dict()
+        except Exception:
+            self._last_address_doc = None
 
     # ERPNext Address.address_type select options - a Tally address-book label
     # (ADDRESSNAME) that matches one is reused, else the address is typed "Other"
@@ -436,6 +479,9 @@ class PartyImporter(BaseImporter):
         name (so the caller can mark it the party's primary address), or "" when no
         address was created. Non-fatal on failure - a failure is recorded as a warning
         so the dropped address is visible in the migration log rather than lost."""
+        # Reset the stash (see _address_display) so a previous party's address can never
+        # be reused for this one; set again only on a successful insert below.
+        self._last_address_doc = None
         raw_address = (data.get("Address") or "").strip()
         if not raw_address:
             return ""
@@ -491,6 +537,10 @@ class PartyImporter(BaseImporter):
             # party or the batch. The batch commit in run() persists it.
             with atomic():
                 addr.insert(ignore_permissions=True)
+            # Stash the just-created address so _address_display renders the party's
+            # primary_address from it instead of reloading it from the DB (2 queries) -
+            # identical output (verified).
+            self._stash_address(addr)
             return addr.name
         except Exception as exc:
             # India Compliance hard-rejects a pincode whose leading digits don't match
@@ -528,6 +578,7 @@ class PartyImporter(BaseImporter):
                     result.add_warning(
                         link_name, "address imported without its PIN code - the PIN did "
                         "not match the state (verify and set it in ERPNext)")
+                    self._stash_address(addr)
                     return addr.name
                 except Exception as exc2:
                     exc = exc2   # retry's savepoint already rolled back

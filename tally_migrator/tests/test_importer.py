@@ -948,6 +948,87 @@ class TestERPNextImporter(unittest.TestCase):
         self.assertEqual(imp._state_from_pincode("56"), "")
         self.assertEqual(imp._state_from_pincode("560001"), "Karnataka")
 
+    def test_set_primary_links_batches_party_fields(self):
+        """The party's three primary_* fields must be written in ONE set_value, not
+        three, while the Address/Contact is_primary flags stay their own updates (they
+        are different doctypes). Same fields + values, fewer round-trips - the perf fix
+        must not change which fields get set."""
+        import contextlib
+        from unittest import mock
+        from tally_migrator.erpnext.importers import SupplierImporter, ImportResult
+
+        imp = SupplierImporter("_TMTest Co", "TC")
+        imp._address_display = lambda name: "DISPLAY"        # skip DB/Jinja here
+        calls = []
+        with mock.patch("frappe.db.set_value",
+                        side_effect=lambda *a, **k: calls.append(a)), \
+                mock.patch("tally_migrator.erpnext.importers.party.atomic",
+                           return_value=contextlib.nullcontext()):
+            imp._set_primary_links("SUP-1", "ADDR-1", "CON-1", ImportResult("Supplier"))
+
+        # Address is_primary + Contact is_primary + ONE party update = 3 set_values.
+        self.assertEqual(len(calls), 3)
+        party_calls = [c for c in calls if c[0] == "Supplier"]
+        self.assertEqual(len(party_calls), 1)             # collapsed, not three
+        fields = party_calls[0][2]                        # the dict of party fields
+        self.assertEqual(fields, {
+            "supplier_primary_address": "ADDR-1",
+            "primary_address": "DISPLAY",
+            "supplier_primary_contact": "CON-1",
+        })
+
+    def test_address_display_falls_back_to_stock_on_error(self):
+        """_address_display must never diverge from stock get_address_display: on any
+        error in the fast (compile-once) path it falls back to get_address_display."""
+        from unittest import mock
+        from tally_migrator.erpnext.importers import SupplierImporter
+        imp = SupplierImporter("_TMTest Co", "TC")
+        with mock.patch("frappe.get_cached_doc", side_effect=RuntimeError("boom")), \
+                mock.patch("frappe.contacts.doctype.address.address.get_address_display",
+                           return_value="STOCK-VALUE") as stock:
+            out = imp._address_display("ADDR-1")
+        self.assertEqual(out, "STOCK-VALUE")
+        stock.assert_called_once_with("ADDR-1")
+
+    def test_address_display_reuses_stashed_doc_without_reloading(self):
+        """When _save_address has stashed the just-created address, _address_display
+        renders from it and does NOT reload it from the DB."""
+        from unittest import mock
+        from tally_migrator.erpnext.importers import SupplierImporter
+
+        class _Tmpl:
+            def render(self, d):
+                return d.get("address_line1")
+
+        imp = SupplierImporter("_TMTest Co", "TC")
+        imp._last_address_doc = {"name": "ADDR-1", "country": "India",
+                                 "address_line1": "1 Test Road"}
+        imp._addr_tmpl_cache = {"India": _Tmpl()}          # skip compile/get_meta
+        with mock.patch("frappe.get_cached_doc") as gcd:
+            out = imp._address_display("ADDR-1")
+        self.assertEqual(out, "1 Test Road")
+        gcd.assert_not_called()                            # reused the stash, no reload
+
+    def test_address_display_reloads_when_stash_is_a_different_address(self):
+        """If the stash isn't the requested address, _address_display reloads it (never
+        renders the wrong address)."""
+        from unittest import mock
+        from tally_migrator.erpnext.importers import SupplierImporter
+
+        class _Tmpl:
+            def render(self, d):
+                return d.get("name")
+
+        imp = SupplierImporter("_TMTest Co", "TC")
+        imp._last_address_doc = {"name": "OTHER-ADDR", "country": "India"}
+        imp._addr_tmpl_cache = {"India": _Tmpl()}
+        loaded = mock.MagicMock()
+        loaded.as_dict.return_value = {"name": "ADDR-1", "country": "India"}
+        with mock.patch("frappe.get_cached_doc", return_value=loaded) as gcd:
+            out = imp._address_display("ADDR-1")
+        gcd.assert_called_once_with("Address", "ADDR-1")
+        self.assertEqual(out, "ADDR-1")                    # the reloaded one, not the stash
+
     def test_address_kept_without_pincode_on_state_mismatch(self):
         """India Compliance rejects a pincode whose digits don't match the state. The
         importer must keep the address (dropping just the PIN) instead of losing it -
