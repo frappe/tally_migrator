@@ -32,12 +32,17 @@ class BatchImporter:
         self.company = company
         self.abbr = abbr
 
-    def run(self, items: list[dict]) -> ImportResult:
+    def run(self, items: list[dict], on_progress=None) -> ImportResult:
         result = ImportResult(self.doctype)
         # Names reused across items would collide on ERPNext's global batch id, so
         # those get scoped per item - by the same rule the opening-stock importer uses.
         shared = shared_batch_names(items)
-        for it in items:
+        total = len(items)
+        for idx, it in enumerate(items, 1):
+            # Tick per item so this long phase (one Batch insert + commit per batch
+            # row) shows a live "x of N" instead of a frozen static message.
+            if on_progress:
+                on_progress(idx, total)
             # Tally stamps every item's opening with an implicit "Primary Batch", so
             # only genuinely batch-tracked items (ISBATCHWISEON=Yes) get Batch masters -
             # otherwise we'd create a batch for every non-batch item too.

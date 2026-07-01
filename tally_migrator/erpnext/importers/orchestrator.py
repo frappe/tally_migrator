@@ -62,7 +62,8 @@ class ERPNextImporter:
         self.on_progress = None
 
     def import_accounts(self, accounts: list) -> ImportResult:
-        return AccountImporter(self.company, self.abbr, mode=self._coa_mode).run(accounts)
+        return AccountImporter(self.company, self.abbr, mode=self._coa_mode).run(
+            accounts, on_progress=self.on_progress)
 
     def import_cost_centres(self, centres: list) -> ImportResult:
         return CostCentreImporter(self.company, self.abbr).run(centres)
@@ -125,13 +126,16 @@ class ERPNextImporter:
         return UnitImporter(self.company, self.abbr).run(units)
 
     def import_prices(self, items: list[dict]) -> ImportResult:
-        return PriceImporter(self.company, self.abbr).run(items)
+        return PriceImporter(self.company, self.abbr).run(
+            items, on_progress=self.on_progress)
 
     def import_boms(self, items: list[dict]) -> ImportResult:
-        return BomImporter(self.company, self.abbr).run(items)
+        return BomImporter(self.company, self.abbr).run(
+            items, on_progress=self.on_progress)
 
     def import_batches(self, items: list[dict]) -> ImportResult:
-        return BatchImporter(self.company, self.abbr).run(items)
+        return BatchImporter(self.company, self.abbr).run(
+            items, on_progress=self.on_progress)
 
     def import_warehouses(self, warehouses: list[dict]) -> ImportResult:
         return WarehouseImporter(self.company, self.abbr).run(

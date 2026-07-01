@@ -57,13 +57,16 @@ class AccountImporter:
         # (see _build_redirects). Empty until run() builds it.
         self._redirect: dict[str, str] = {}
 
-    def run(self, accounts: list) -> ImportResult:
+    def run(self, accounts: list, on_progress=None) -> ImportResult:
         result = ImportResult(self.doctype)
         ordered = self._ordered(self._select(accounts))
         # Decide up front which Tally groups collide with an existing account we must
         # leave intact, so child parent-resolution can re-home them (order-independent).
         self._build_redirects(ordered, result)
-        for node in ordered:
+        total = len(ordered)
+        for idx, node in enumerate(ordered, 1):
+            if on_progress:
+                on_progress(idx, total)
             parent = self._resolve_parent(node)
             if not parent:
                 result.add_error(node.name, "could not resolve a parent account")
