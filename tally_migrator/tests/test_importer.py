@@ -990,6 +990,45 @@ class TestERPNextImporter(unittest.TestCase):
         self.assertEqual(out, "STOCK-VALUE")
         stock.assert_called_once_with("ADDR-1")
 
+    def test_address_display_reuses_stashed_doc_without_reloading(self):
+        """When _save_address has stashed the just-created address, _address_display
+        renders from it and does NOT reload it from the DB."""
+        from unittest import mock
+        from tally_migrator.erpnext.importers import SupplierImporter
+
+        class _Tmpl:
+            def render(self, d):
+                return d.get("address_line1")
+
+        imp = SupplierImporter("_TMTest Co", "TC")
+        imp._last_address_doc = {"name": "ADDR-1", "country": "India",
+                                 "address_line1": "1 Test Road"}
+        imp._addr_tmpl_cache = {"India": _Tmpl()}          # skip compile/get_meta
+        with mock.patch("frappe.get_cached_doc") as gcd:
+            out = imp._address_display("ADDR-1")
+        self.assertEqual(out, "1 Test Road")
+        gcd.assert_not_called()                            # reused the stash, no reload
+
+    def test_address_display_reloads_when_stash_is_a_different_address(self):
+        """If the stash isn't the requested address, _address_display reloads it (never
+        renders the wrong address)."""
+        from unittest import mock
+        from tally_migrator.erpnext.importers import SupplierImporter
+
+        class _Tmpl:
+            def render(self, d):
+                return d.get("name")
+
+        imp = SupplierImporter("_TMTest Co", "TC")
+        imp._last_address_doc = {"name": "OTHER-ADDR", "country": "India"}
+        imp._addr_tmpl_cache = {"India": _Tmpl()}
+        loaded = mock.MagicMock()
+        loaded.as_dict.return_value = {"name": "ADDR-1", "country": "India"}
+        with mock.patch("frappe.get_cached_doc", return_value=loaded) as gcd:
+            out = imp._address_display("ADDR-1")
+        gcd.assert_called_once_with("Address", "ADDR-1")
+        self.assertEqual(out, "ADDR-1")                    # the reloaded one, not the stash
+
     def test_address_kept_without_pincode_on_state_mismatch(self):
         """India Compliance rejects a pincode whose digits don't match the state. The
         importer must keep the address (dropping just the PIN) instead of losing it -
