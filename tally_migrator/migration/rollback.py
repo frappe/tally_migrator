@@ -24,6 +24,8 @@ Supplier, UOM, Item Group) a migration creates. We reuse its safety helpers
 (:func:`_protected_doctypes`) but not its company-wide engine.
 """
 
+import contextlib
+
 import frappe
 from frappe import _
 from frappe.utils import get_link_to_form, now_datetime, time_diff_in_seconds
@@ -252,7 +254,8 @@ def _purge_party_links(party_type: str, party: str) -> list[dict]:
                                  {"parent": nm, "parenttype": linked_dt,
                                   "link_doctype": party_type, "link_name": party})
             else:
-                frappe.delete_doc(linked_dt, nm, ignore_permissions=True)
+                frappe.delete_doc(linked_dt, nm, ignore_permissions=True,
+                                  delete_permanently=True)
                 purged.append({"doctype": linked_dt, "name": nm})
     # A Bank Account created for the party (from Tally bank details) links it via its
     # own party_type/party fields and blocks the delete too. It belongs to exactly one
@@ -261,7 +264,8 @@ def _purge_party_links(party_type: str, party: str) -> list[dict]:
                              filters={"party_type": party_type, "party": party},
                              pluck="name"):
         if frappe.db.exists("Bank Account", nm):
-            frappe.delete_doc("Bank Account", nm, ignore_permissions=True)
+            frappe.delete_doc("Bank Account", nm, ignore_permissions=True,
+                              delete_permanently=True)
             purged.append({"doctype": "Bank Account", "name": nm})
     return purged
 
@@ -289,7 +293,27 @@ def _delete_one(row: dict, protected: set) -> str | None:
     try:
         doc = frappe.get_doc(doctype, name)
         if getattr(doc, "docstatus", 0) == 1:
-            doc.cancel()
+            # Clear any stale document lock before cancelling. A large doc whose cancel
+            # was previously routed to the background Submission Queue (see below) leaves a
+            # lock file that its never-run async job never releases; on a re-run that lock
+            # would raise "currently locked and queued" and wedge this record again. We own
+            # the teardown (single active revert) and are about to delete this doc, so
+            # clearing its lock is safe. Best-effort: no lock -> harmless no-op.
+            try:
+                doc.unlock()
+            except Exception:
+                pass
+            # Cancel synchronously. Some ERPNext doctypes route cancel() to a background
+            # Submission Queue when the document is large (e.g. a Journal Entry with more
+            # than 100 account rows - an opening-balance entry always is). In a background
+            # revert that path can't complete: it enqueues an async cancel and returns with
+            # the doc still submitted (so the delete below fails and the record is wrongly
+            # kept) or contends on the doc lock. Call the internal _cancel() - the exact
+            # action the queue would have run (frappe's queue_action maps "cancel" ->
+            # "_cancel"), still firing before_cancel/on_cancel via save - so cancellation
+            # always happens inline. Fall back to cancel() for anything without _cancel.
+            cancel_inline = getattr(doc, "_cancel", None) or doc.cancel
+            cancel_inline()
             for ledger in _LEDGER_DOCTYPES:
                 frappe.db.delete(ledger, {"voucher_no": name})
             # The opening Stock Reconciliation auto-creates a Serial and Batch Bundle
@@ -306,7 +330,8 @@ def _delete_one(row: dict, protected: set) -> str | None:
                         "Serial and Batch Bundle",
                         filters={"voucher_no": name}, pluck="name"):
                     frappe.delete_doc("Serial and Batch Bundle", bundle,
-                                      force=True, ignore_permissions=True)
+                                      force=True, ignore_permissions=True,
+                                      delete_permanently=True)
         # Clear ERPNext's derived side-effect rows for this master (Repost Item
         # Valuation, UOM Conversion Factor, GST UOM Map) before the delete, so they
         # don't block it. Scoped to this master's name, inside the savepoint, so a
@@ -331,7 +356,8 @@ def _delete_one(row: dict, protected: set) -> str | None:
         # links to the record (the run's own invoices/JE/stock recon are deleted
         # first), so the unforced delete still succeeds; only genuinely re-linked
         # records raise LinkExistsError, are caught, and are kept + reported.
-        frappe.delete_doc(doctype, name, ignore_permissions=True)
+        frappe.delete_doc(doctype, name, ignore_permissions=True,
+                          delete_permanently=True)
         return None
     except Exception as exc:
         _safe_savepoint_rollback(savepoint)
@@ -341,6 +367,78 @@ def _delete_one(row: dict, protected: set) -> str | None:
         return str(exc) or exc.__class__.__name__
     finally:
         _drop_queued_messages(msg_mark)
+
+
+@contextlib.contextmanager
+def _quiet_framework():
+    """Silence the per-record framework bookkeeping that dominates a large revert.
+
+    A revert of tens of thousands of documents spends almost all of its wall-clock
+    time not on the deletes themselves but on the side work each delete/cancel
+    triggers:
+
+    * a realtime ``list_update`` / ``doc_update`` event per document (and per Error
+      Log / Comment the cancel path writes); any desk client watching the revert then
+      re-runs its notification open-count aggregation - measured on a real run as the
+      bulk of the runtime (~14k aggregations over Error Log and other doctypes);
+    * an activity ``Comment`` feed row per delete (``insert_feed``);
+    * one enqueued ``delete_dynamic_links`` job per document, which also floods the
+      background queue (the earlier "Queue Overloaded" failure).
+
+    None of it is needed for an undo - we keep our own audit in the revert's
+    ``records`` table, and the site is not serving those list views mid-revert. We set
+    ``frappe.flags.in_import`` (which ``notify_update`` and ``insert_feed`` already
+    honour as "bulk data churn, do not emit") and run the dynamic-link cleanup inline
+    instead of enqueuing a job per record. Both are saved and restored, so normal
+    behaviour resumes the instant the revert finishes or raises. The flag only gates
+    validate/insert/naming and notification paths - never the cancel/delete logic this
+    revert relies on - so correctness is unchanged; it purely quietens the framework.
+    """
+    prev_in_import = frappe.flags.in_import
+    real_enqueue = frappe.enqueue
+
+    def _inline_enqueue(method=None, **kwargs):
+        name = method if isinstance(method, str) else getattr(method, "__name__", "")
+        if name.endswith("delete_dynamic_links"):
+            # Keep the cleanup, drop the per-record job: run it now, synchronously.
+            for k in ("queue", "timeout", "now", "enqueue_after_commit",
+                      "job_name", "at_front", "job_id"):
+                kwargs.pop(k, None)
+            return frappe.call(method, **kwargs)
+        return real_enqueue(method, **kwargs)
+
+    frappe.flags.in_import = True
+    frappe.enqueue = _inline_enqueue
+    try:
+        yield
+    finally:
+        frappe.flags.in_import = prev_in_import
+        frappe.enqueue = real_enqueue
+
+
+def _record_row(parent: str, idx: int, *, deleted: int, doctype: str,
+                name: str, entity: str, reason: str) -> None:
+    """Persist one revert audit row immediately, rather than buffering to the end.
+
+    Inserts a ``Tally Migration Revert Item`` child directly so a killed worker keeps
+    the audit for everything it had already deleted. The old path appended every row
+    to the parent in memory and wrote them all with a single ``revert.save()`` at the
+    very end: a job that hit the 60-minute timeout mid-run then persisted nothing and
+    reported 0 deleted though thousands were already gone. A direct child insert is
+    O(1) per row (``revert.save()`` would rewrite the whole child table each batch,
+    O(n^2)), and committing per batch bounds what a crash loses."""
+    frappe.get_doc({
+        "doctype": "Tally Migration Revert Item",
+        "parenttype": "Tally Migration Revert",
+        "parentfield": "records",
+        "parent": parent,
+        "idx": idx,
+        "deleted": deleted,
+        "reference_doctype": doctype,
+        "reference_name": name,
+        "entity": entity,
+        "reason": reason,
+    }).db_insert()
 
 
 @frappe.whitelist(methods=["POST"])
@@ -447,80 +545,82 @@ def run_revert(revert_name: str) -> None:
         rows = _deletion_order(frappe.parse_json(log.created_records or "{}"))
         protected = _protected_doctypes()
 
-        # Records absent before we start (manifest entries this run never actually
-        # created, or ones a user removed earlier) are reported honestly as "already
-        # absent" rather than counted among this undo's deletions. Snapshot now,
-        # before the loop, so a record that genuinely cascades with a parent we delete
-        # this run is NOT mistaken for one that was already gone.
-        pre_absent = {id(r) for r in rows
-                      if not frappe.db.exists(r["doctype"], r["name"])}
+        # Split off records already absent before we start (manifest entries this run
+        # never actually created, or ones removed earlier - including everything a
+        # prior, timed-out revert already deleted). Snapshot now, before the loop, so a
+        # record that genuinely cascades with a parent we delete this run is NOT
+        # mistaken for one that was already gone. Absent records are audited up front as
+        # "already absent" and kept out of the delete loop so they are not recounted as
+        # deletions; this is also what makes a re-run of a killed revert resumable.
+        pending, pre_absent = [], []
+        for r in rows:
+            (pre_absent if not frappe.db.exists(r["doctype"], r["name"]) else pending).append(r)
 
-        # Delete in dependency order, then retry whatever was kept. A record can be
-        # blocked on the first pass by a sibling removed later in the same run (a UOM
-        # still held by an Item deleted afterwards; a party still linked by a voucher
+        idx = 0
+        for r in pre_absent:
+            idx += 1
+            _record_row(revert.name, idx, deleted=0, doctype=r["doctype"],
+                        name=r["name"], entity=r["label"],
+                        reason=_("Already absent before this undo - not created by this "
+                                 "run, or removed earlier."))
+        frappe.db.commit()
+
+        # Delete in dependency order, retrying whatever was kept. A record can be
+        # blocked on one pass by a sibling removed later in the same run (a UOM still
+        # held by an Item deleted afterwards; a party still linked by a voucher
         # processed later). Repeat until a pass deletes nothing new, so only records
-        # genuinely re-linked by post-migration activity are left kept. Completed
-        # deletions are committed in batches (see _COMMIT_BATCH) to release locks and
-        # bound how much a crash can roll back.
-        done_ids: set[int] = set()
-        since_commit = 0
-        pending = list(rows)
-        while pending:
-            still, progressed = [], False
-            for row in pending:
-                reason = _delete_one(row, protected)
-                if reason:
-                    row["_reason"] = reason
-                    still.append(row)
-                else:
+        # genuinely re-linked by post-migration activity are left kept. Each deletion is
+        # audited and its batch committed as we go (see _record_row / _COMMIT_BATCH), so
+        # a killed worker leaves a truthful partial result and a re-run resumes from what
+        # is left. The loop runs inside _quiet_framework() so the per-record realtime /
+        # feed / backup / queue churn - not the deletes - stops dominating the runtime.
+        deleted = kept = since_commit = 0
+        with _quiet_framework():
+            while pending:
+                still, progressed = [], False
+                for row in pending:
+                    reason = _delete_one(row, protected)
+                    if reason:
+                        row["_reason"] = reason
+                        still.append(row)
+                        continue
                     progressed = True
-                    done_ids.add(id(row))
+                    idx += 1
+                    _record_row(revert.name, idx, deleted=1, doctype=row["doctype"],
+                                name=row["name"], entity=row["label"], reason="")
+                    deleted += 1
+                    # Party-attached business data (addresses, contacts, bank accounts)
+                    # removed alongside the party - audited so the trail shows them too.
+                    for p in row.get("_purged", []):
+                        idx += 1
+                        _record_row(revert.name, idx, deleted=1, doctype=p["doctype"],
+                                    name=p["name"],
+                                    entity=_("{0} (linked to {1})").format(
+                                        row["label"], row["name"]),
+                                    reason="")
+                        deleted += 1
                     since_commit += 1
                     if since_commit >= _COMMIT_BATCH:
-                        frappe.db.commit()
+                        revert.db_set("deleted_count", deleted,
+                                      update_modified=False, commit=True)
                         since_commit = 0
-            pending = still
-            if not progressed:
-                break
+                pending = still
+                if not progressed:
+                    break
         frappe.db.commit()  # flush the final, partial batch of deletions
 
-        deleted = kept = 0
-        for row in rows:
-            rid = id(row)
-            # Checked before done_ids: a record absent at the start also returns "no
-            # reason" from _delete_one (nothing to delete), so it lands in done_ids too -
-            # but it must be reported as already-absent, not counted as a deletion.
-            if rid in pre_absent:
-                revert.append("records", {
-                    "deleted": 0, "reference_doctype": row["doctype"],
-                    "reference_name": row["name"], "entity": row["label"],
-                    "reason": _("Already absent before this undo - not created by this "
-                                "run, or removed earlier.")})
-            elif rid in done_ids:
-                revert.append("records", {
-                    "deleted": 1, "reference_doctype": row["doctype"],
-                    "reference_name": row["name"], "entity": row["label"], "reason": ""})
-                deleted += 1
-                # Party-attached business data (addresses, contacts, bank accounts)
-                # removed alongside the party - listed so the audit shows them too.
-                for p in row.get("_purged", []):
-                    revert.append("records", {
-                        "deleted": 1, "reference_doctype": p["doctype"],
-                        "reference_name": p["name"],
-                        "entity": _("{0} (linked to {1})").format(row["label"], row["name"]),
-                        "reason": ""})
-                    deleted += 1
-            else:
-                revert.append("records", {
-                    "deleted": 0, "reference_doctype": row["doctype"],
-                    "reference_name": row["name"], "entity": row["label"],
-                    "reason": row.get("_reason", "")})
-                kept += 1
+        # Whatever is still pending after the loop is genuinely kept (re-linked by
+        # later activity, or a protected doctype); audit each with its reason.
+        for row in pending:
+            idx += 1
+            _record_row(revert.name, idx, deleted=0, doctype=row["doctype"],
+                        name=row["name"], entity=row["label"],
+                        reason=row.get("_reason", ""))
+            kept += 1
 
-        revert.deleted_count = deleted
-        revert.kept_count = kept
-        revert.status = "Completed with Errors" if kept else "Completed"
-        revert.save(ignore_permissions=True)
+        revert.db_set("deleted_count", deleted, update_modified=False)
+        revert.db_set("kept_count", kept, update_modified=False)
+        revert.db_set("status", "Completed with Errors" if kept else "Completed")
 
         # The one honest edit to the log: its status must tell the truth everywhere
         # (list view, form, filters). The import path never sets this value. A clean
