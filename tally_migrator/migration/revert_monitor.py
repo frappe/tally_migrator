@@ -243,3 +243,40 @@ def import_show(log_name: str | None = None) -> dict:
     except Exception:
         traceback.print_exc()
         return {"error": True}
+
+
+@frappe.whitelist()
+def profile_import(log_name: str = "") -> dict:
+    """Diagnostics REST endpoint: the full streamed IMPORT profile from the progress
+    cache - percent, description, rss, and the compact profiler snapshot (top SQL
+    fingerprints, per-op build/upsert split, commit/enqueue counts). Defaults to the
+    latest run. Read-only. Never merged to main."""
+    from tally_migrator.api import ALLOWED_ROLES
+    frappe.only_for(ALLOWED_ROLES)
+    if not log_name:
+        rows = frappe.get_all("Tally Migration Log", fields=["name"],
+                              order_by="creation desc", limit=1)
+        log_name = rows[0].name if rows else ""
+    if not log_name:
+        return {}
+    cached = frappe.cache().get_value(f"tally_migration_progress:{log_name}") or {}
+    status = frappe.db.get_value("Tally Migration Log", log_name, "status")
+    return {"log": log_name, "status": status, "live": cached}
+
+
+@frappe.whitelist()
+def profile_revert(revert_name: str = "") -> dict:
+    """Diagnostics REST endpoint: the live REVERT profile from cache plus the revert
+    doc's persisted status/counts. Defaults to the latest revert. Read-only."""
+    from tally_migrator.api import ALLOWED_ROLES
+    frappe.only_for(ALLOWED_ROLES)
+    if not revert_name:
+        rows = frappe.get_all("Tally Migration Revert", fields=["name"],
+                              order_by="creation desc", limit=1)
+        revert_name = rows[0].name if rows else ""
+    if not revert_name:
+        return {}
+    doc = frappe.db.get_value("Tally Migration Revert", revert_name,
+                              ["status", "deleted_count", "kept_count"], as_dict=True)
+    return {"revert": revert_name, "doc": doc,
+            "live": frappe.cache().get_value(f"tally_revert_progress:{revert_name}") or {}}
