@@ -235,6 +235,10 @@ class _Phase:
         ]
         return {
             "wall_s": round(self._live_wall_ms() / 1000, 2),
+            # ``planned`` is the phase's record count (always known); ``records`` is how
+            # many were per-record timed - equal for the revert and base-loop importers,
+            # 0 for importers with a custom run() where only phase-level SQL is captured.
+            "planned": self.planned,
             "records": self.count,
             "avg_ms": round(self.total_ms / self.count, 2) if self.count else 0,
             "sql": self.sql_count,
