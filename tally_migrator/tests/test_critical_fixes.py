@@ -22,6 +22,7 @@ from tally_migrator.erpnext import importers
 from tally_migrator.erpnext.importers import (
     OpeningBalanceImporter,
     PartyOpeningImporter,
+    StockOpeningImporter,
     WarehouseImporter,
     StockGroupImporter,
     AccountImporter,
@@ -163,6 +164,39 @@ class TestOpeningEntrySubmitsSynchronously(unittest.TestCase):
         self.assertIn("_submit", calls)
         self.assertNotIn("submit", calls)        # never the background-gated path
         self.assertEqual(result.created_names, ["ACC-JV-0001"])
+
+
+class TestOpeningStockSubmitsSynchronously(unittest.TestCase):
+    """The opening Stock Reconciliation must post synchronously. ERPNext's
+    StockReconciliation.submit() enqueues a BACKGROUND job when the entry has > 100
+    items; that returns before the stock ledger is posted, so on a long single-worker
+    run the ledger lands only after the migration finalizes. _post_doc must therefore
+    call doc._submit() (the same synchronous path submit() takes for <=100 rows), never
+    the size-gated submit() - so it stays correct independent of the _CHUNK cap."""
+
+    def test_post_doc_calls_underlying_submit_not_gated_submit(self):
+        imp = StockOpeningImporter(company="_T Co", abbr="TC")
+        result = ImportResult("Opening Stock")
+        calls = []
+
+        class _FakeSR:
+            name = "MAT-SR-0001"
+            def insert(self, *a, **k):
+                calls.append("insert")
+            def submit(self):                 # the size-gated one - must NOT run
+                calls.append("submit")
+            def _submit(self):                # the synchronous one - must run
+                calls.append("_submit")
+
+        rows = [{"item_code": "Widget - TC", "qty": 5, "valuation_rate": 10}]
+        with mock.patch("frappe.get_doc", return_value=_FakeSR()), \
+                mock.patch("frappe.db.commit"):
+            ok = imp._post_doc(rows, "2026-01-01", result)
+
+        self.assertTrue(ok)
+        self.assertIn("_submit", calls)
+        self.assertNotIn("submit", calls)        # never the background-gated path
+        self.assertEqual(result.created_names, ["MAT-SR-0001"])
 
 
 class TestPLOpeningSkipped(unittest.TestCase):

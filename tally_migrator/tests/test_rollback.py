@@ -5,6 +5,7 @@ endpoint's guard rails (feature flag, company confirmation, already-reverted) ar
 tested with light mocking. The full live-DB delete happy-path is exercised by the
 integration suite, which has a real company to create and tear down.
 """
+import contextlib
 import unittest
 from unittest import mock
 
@@ -135,6 +136,37 @@ class TestDeleteOneSafety(unittest.TestCase):
         self.addCleanup(lambda: [p.stop() for p in patches])
         reason = rollback._delete_one({"doctype": "Item", "name": "Widget"}, set())
         self.assertIn("SI-9", reason)                          # kept + reported, not deleted
+
+    def test_submitted_doc_cancelled_synchronously_and_unlocked(self):
+        # A submitted doc must be cancelled via the synchronous _cancel(), NOT the
+        # size-gated cancel(): ERPNext routes a >100-row Journal Entry / Stock
+        # Reconciliation cancel to a background Submission Queue job that never runs in
+        # a revert, leaving the doc submitted so the delete fails and it is wrongly
+        # kept. Any stale lock (from a prior queued attempt) is cleared first.
+        calls = []
+        doc = mock.Mock(docstatus=1)
+        doc._cancel = lambda: calls.append("_cancel")
+        doc.cancel = lambda: calls.append("cancel")     # the gated path - must NOT run
+        doc.unlock = lambda: calls.append("unlock")
+        patches = [
+            mock.patch.object(rollback.frappe.db, "exists", return_value=True),
+            mock.patch.object(rollback.frappe.db, "savepoint", lambda *a, **k: None),
+            mock.patch.object(rollback.frappe.db, "rollback", lambda *a, **k: None),
+            mock.patch.object(rollback.frappe.db, "delete", lambda *a, **k: None),
+            mock.patch.object(rollback.frappe.db, "table_exists", return_value=False),
+            mock.patch.object(rollback.frappe, "get_all", return_value=[]),
+            mock.patch.object(rollback.frappe, "get_doc", return_value=doc),
+            mock.patch.object(rollback.frappe, "delete_doc", lambda *a, **k: None),
+            mock.patch.object(rollback.frappe, "local", mock.Mock(message_log=[])),
+        ]
+        for p in patches:
+            p.start()
+        self.addCleanup(lambda: [p.stop() for p in patches])
+        reason = rollback._delete_one(
+            {"doctype": "Journal Entry", "name": "ACC-JV-1"}, set())
+        self.assertIsNone(reason)                          # cancelled + deleted cleanly
+        # Stale lock cleared BEFORE cancel, and only the synchronous path was used.
+        self.assertEqual(calls, ["unlock", "_cancel"])
 
     def test_recon_bundle_force_deleted_before_voucher(self):
         # The opening Stock Reconciliation auto-creates a Serial and Batch Bundle per
@@ -328,6 +360,136 @@ class TestRevertGuards(unittest.TestCase):
             rollback.revert_migration("TML-1", "Frappe Tech")
         # The corpse was flagged Failed rather than blocking the new revert.
         self.assertEqual(set_calls.get("REV-OLD", {}).get("status"), "Failed")
+
+
+class TestQuietFramework(unittest.TestCase):
+    """_quiet_framework silences the per-record framework churn and always restores."""
+
+    def setUp(self):
+        # These tests mutate the process-global frappe.flags.in_import; capture and
+        # restore the real value so a leaked truthy flag can't skip _set_defaults in a
+        # later test (which would surface as an unrelated MandatoryError elsewhere).
+        orig = frappe.flags.in_import
+        self.addCleanup(lambda: setattr(frappe.flags, "in_import", orig))
+
+    def test_sets_and_restores_in_import(self):
+        frappe.flags.in_import = "sentinel"
+        real = rollback.frappe.enqueue
+        with rollback._quiet_framework():
+            self.assertTrue(frappe.flags.in_import)          # bulk-churn mode on
+            self.assertIsNot(rollback.frappe.enqueue, real)  # enqueue intercepted
+        self.assertEqual(frappe.flags.in_import, "sentinel")  # prior value restored
+        self.assertIs(rollback.frappe.enqueue, real)
+
+    def test_restores_even_on_exception(self):
+        frappe.flags.in_import = False
+        real = rollback.frappe.enqueue
+        with self.assertRaises(RuntimeError):
+            with rollback._quiet_framework():
+                raise RuntimeError("boom")
+        self.assertFalse(frappe.flags.in_import)             # not left stuck on
+        self.assertIs(rollback.frappe.enqueue, real)
+
+    def test_delete_dynamic_links_runs_inline_not_queued(self):
+        called = {}
+        with mock.patch.object(rollback.frappe, "call",
+                               side_effect=lambda m, **k: called.update(method=m, kwargs=k)), \
+             mock.patch.object(rollback.frappe, "enqueue") as real_enqueue:
+            with rollback._quiet_framework():
+                frappe.enqueue("frappe.model.delete_doc.delete_dynamic_links",
+                               doctype="Item", name="W", now=False,
+                               enqueue_after_commit=True)
+            # Cleanup ran inline (frappe.call), with the queue-only kwargs stripped, and
+            # was NOT pushed onto the background queue.
+            self.assertEqual(called["method"],
+                             "frappe.model.delete_doc.delete_dynamic_links")
+            self.assertEqual(called["kwargs"], {"doctype": "Item", "name": "W"})
+            real_enqueue.assert_not_called()
+
+    def test_other_enqueue_calls_are_delegated(self):
+        with mock.patch.object(rollback.frappe, "enqueue") as real_enqueue:
+            with rollback._quiet_framework():
+                frappe.enqueue("some.other.repost", foo=1)
+            real_enqueue.assert_called_once_with("some.other.repost", foo=1)
+
+
+class TestRecordRow(unittest.TestCase):
+    """_record_row inserts a child audit row directly so a killed job keeps its trail."""
+
+    def test_inserts_child_directly(self):
+        captured, doc = {}, mock.Mock()
+        with mock.patch.object(rollback.frappe, "get_doc",
+                               side_effect=lambda d: captured.update(d) or doc):
+            rollback._record_row("REV-1", 3, deleted=1, doctype="Item",
+                                 name="W", entity="Items", reason="")
+        self.assertEqual(captured["doctype"], "Tally Migration Revert Item")
+        self.assertEqual(captured["parenttype"], "Tally Migration Revert")
+        self.assertEqual(captured["parentfield"], "records")
+        self.assertEqual((captured["parent"], captured["idx"]), ("REV-1", 3))
+        self.assertEqual(captured["deleted"], 1)
+        doc.db_insert.assert_called_once()   # direct insert, no O(n^2) parent save
+
+
+class TestRunRevertPersistence(unittest.TestCase):
+    """run_revert must audit each deletion as it happens (inside _quiet_framework),
+    delete permanently (no Deleted Document backup), and set truthful terminal state."""
+
+    def test_deletions_recorded_incrementally_with_status(self):
+        revert = mock.Mock(name="revert")
+        revert.name, revert.migration_log = "REV-1", "TML-1"
+        log = mock.Mock()
+        log.created_records = ('{"Items": [{"name": "W1", "doctype": "Item"}, '
+                               '{"name": "W2", "doctype": "Item"}]}')
+
+        def gd(dt, *a, **k):
+            return revert if dt == "Tally Migration Revert" else log
+
+        recorded, quiet = [], {"entered": False}
+
+        @contextlib.contextmanager
+        def fake_quiet():
+            quiet["entered"] = True
+            yield
+
+        with mock.patch.object(rollback.frappe, "get_doc", side_effect=gd), \
+             mock.patch.object(rollback, "_protected_doctypes", return_value=set()), \
+             mock.patch.object(rollback.frappe.db, "exists", return_value=True), \
+             mock.patch.object(rollback.frappe.db, "commit", lambda *a, **k: None), \
+             mock.patch.object(rollback.frappe.db, "get_value", return_value="user@x"), \
+             mock.patch.object(rollback.frappe, "publish_realtime", lambda *a, **k: None), \
+             mock.patch.object(rollback, "_delete_one", return_value=None), \
+             mock.patch.object(rollback, "_quiet_framework", fake_quiet), \
+             mock.patch.object(rollback, "_record_row",
+                               side_effect=lambda parent, idx, **k: recorded.append(k)):
+            rollback.run_revert("REV-1")
+
+        self.assertTrue(quiet["entered"])                       # loop ran quietened
+        self.assertEqual(sum(1 for k in recorded if k["deleted"] == 1), 2)
+        revert.db_set.assert_any_call("status", "Completed")     # clean undo
+        log.db_set.assert_any_call("status", "Reverted")
+
+    def test_kept_record_marks_reverted_with_errors(self):
+        revert = mock.Mock()
+        revert.name, revert.migration_log = "REV-1", "TML-1"
+        log = mock.Mock()
+        log.created_records = '{"Items": [{"name": "W1", "doctype": "Item"}]}'
+
+        def gd(dt, *a, **k):
+            return revert if dt == "Tally Migration Revert" else log
+
+        with mock.patch.object(rollback.frappe, "get_doc", side_effect=gd), \
+             mock.patch.object(rollback, "_protected_doctypes", return_value=set()), \
+             mock.patch.object(rollback.frappe.db, "exists", return_value=True), \
+             mock.patch.object(rollback.frappe.db, "commit", lambda *a, **k: None), \
+             mock.patch.object(rollback.frappe.db, "get_value", return_value="user@x"), \
+             mock.patch.object(rollback.frappe, "publish_realtime", lambda *a, **k: None), \
+             mock.patch.object(rollback, "_delete_one", return_value="Linked with SI-9"), \
+             mock.patch.object(rollback, "_quiet_framework", contextlib.nullcontext), \
+             mock.patch.object(rollback, "_record_row", lambda *a, **k: None):
+            rollback.run_revert("REV-1")
+
+        revert.db_set.assert_any_call("status", "Completed with Errors")
+        log.db_set.assert_any_call("status", "Reverted with Errors")
 
 
 if __name__ == "__main__":

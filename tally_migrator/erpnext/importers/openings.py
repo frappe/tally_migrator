@@ -1113,7 +1113,17 @@ class StockOpeningImporter:
                 "items": rows,
             })
             doc.insert(ignore_permissions=True)
-            doc.submit()
+            # Submit synchronously. ERPNext's StockReconciliation.submit() enqueues the
+            # submission as a BACKGROUND job when the entry has > 100 items, returning
+            # before the stock ledger is posted; the single migration worker is then busy
+            # until the run ends, so that queued submit only lands AFTER finalize and the
+            # trial balance / stock reads a chunk as absent. Chunks are capped at _CHUNK
+            # (100) today so submit() stays synchronous, but that is safe-by-coincidence:
+            # _submit() is exactly the path submit() takes for <=100-row entries, so we
+            # force the same synchronous posting regardless of chunk size (mirrors the
+            # Opening Entry above). Safe here because the migration runs off the web
+            # request, so there is no request-timeout reason to defer.
+            doc._submit()
             frappe.db.commit()
             result.add_created(doc.name)
             return True
