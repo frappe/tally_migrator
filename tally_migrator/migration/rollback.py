@@ -31,6 +31,23 @@ from frappe import _
 from frappe.utils import get_link_to_form, now_datetime, time_diff_in_seconds
 
 from tally_migrator.api import ALLOWED_ROLES
+from tally_migrator.migration import profiler
+
+
+def _stream_revert_progress(revert_name, pct, desc, deleted, total, prof):
+    """Diagnostics: stream revert progress + the compact profile to a crash-proof
+    cache the monitor can poll (mirrors MasterMigrator's progress cache). Best-effort:
+    a cache hiccup must never abort an otherwise-good revert. Never merged to main."""
+    try:
+        frappe.cache().set_value(
+            f"tally_revert_progress:{revert_name}",
+            {"percent": pct, "description": desc, "deleted": deleted, "total": total,
+             "profile": prof.compact() if prof else {}},
+            expires_in_sec=6 * 60 * 60,
+        )
+    except Exception:
+        pass
+
 
 # The background job's own timeout (see ``enqueue`` below). A revert still flagged
 # Queued/In Progress for longer than this, plus a margin, cannot still be running -
@@ -539,11 +556,22 @@ def run_revert(revert_name: str) -> None:
     the revert ``Failed`` with a traceback rather than leaving it stuck ``Queued``.
     """
     revert = frappe.get_doc("Tally Migration Revert", revert_name)
+    # Diagnostics: profile the revert (SQL fingerprints, per-record timing, commits,
+    # enqueues, RSS) and stream progress + a compact profile to a crash-proof cache the
+    # monitor polls. Best-effort and fully restored in `finally`. Never merged to main.
+    prof = profiler.RunProfiler()
+    _sess = profiler.session(prof)
+    _sess.__enter__()
+    _phase_cm = None
     try:
         revert.db_set("status", "In Progress")
         log = frappe.get_doc("Tally Migration Log", revert.migration_log)
         rows = _deletion_order(frappe.parse_json(log.created_records or "{}"))
         protected = _protected_doctypes()
+
+        _phase_cm = prof.phase("Revert", len(rows))
+        _phase_cm.__enter__()
+        _stream_revert_progress(revert_name, 0, "Starting revert...", 0, len(rows), prof)
 
         # Split off records already absent before we start (manifest entries this run
         # never actually created, or ones removed earlier - including everything a
@@ -555,6 +583,7 @@ def run_revert(revert_name: str) -> None:
         pending, pre_absent = [], []
         for r in rows:
             (pre_absent if not frappe.db.exists(r["doctype"], r["name"]) else pending).append(r)
+        total_deletable = len(pending)
 
         idx = 0
         for r in pre_absent:
@@ -579,7 +608,8 @@ def run_revert(revert_name: str) -> None:
             while pending:
                 still, progressed = [], False
                 for row in pending:
-                    reason = _delete_one(row, protected)
+                    with profiler.record(f"{row['doctype']} {row['name']}", row):
+                        reason = _delete_one(row, protected)
                     if reason:
                         row["_reason"] = reason
                         still.append(row)
@@ -604,6 +634,11 @@ def run_revert(revert_name: str) -> None:
                         revert.db_set("deleted_count", deleted,
                                       update_modified=False, commit=True)
                         since_commit = 0
+                        _pct = int(90 * deleted / total_deletable) if total_deletable else 90
+                        _stream_revert_progress(
+                            revert_name, _pct,
+                            f"Deleting {deleted} of {total_deletable}...",
+                            deleted, len(rows), prof)
                 pending = still
                 if not progressed:
                     break
@@ -629,6 +664,13 @@ def run_revert(revert_name: str) -> None:
         # so the user can retry after fixing the cause (a re-run is idempotent).
         log.db_set("status", "Reverted with Errors" if kept else "Reverted")
         frappe.db.commit()
+        if _phase_cm is not None:
+            _phase_cm.__exit__(None, None, None)
+            _phase_cm = None
+        _stream_revert_progress(
+            revert_name, 100,
+            f"Revert complete - deleted {deleted}, kept {kept}.",
+            deleted, deleted + kept, prof)
     except Exception:
         frappe.db.rollback()
         revert.reload()
@@ -637,6 +679,17 @@ def run_revert(revert_name: str) -> None:
         frappe.db.commit()
         raise
     finally:
+        # Diagnostics: close the profiler phase/session (restores the SQL/enqueue hooks)
+        # even on failure, so a crashed revert still leaves its captured profile in cache.
+        try:
+            if _phase_cm is not None:
+                _phase_cm.__exit__(None, None, None)
+        except Exception:
+            pass
+        try:
+            _sess.__exit__(None, None, None)
+        except Exception:
+            pass
         # Notify the user who launched the undo (the revert's owner) - in a background
         # job frappe.session.user is the worker's, not theirs, so it would not reach
         # the form they are watching.

@@ -1,3 +1,6 @@
+import os
+import resource
+import sys
 from dataclasses import dataclass
 from typing import Callable
 
@@ -7,6 +10,26 @@ from tally_migrator.tally.config import TallyConfig
 from tally_migrator.tally.extractors import TallyExtractor, ExtractedMasters
 from tally_migrator.erpnext.importers import ERPNextImporter, ImportResult
 from tally_migrator.migration.overrides import apply_record_overrides, uom_edits
+from tally_migrator.migration import profiler
+
+
+def _rss_mb() -> tuple[float, float]:
+    """``(current_rss_mb, peak_rss_mb)`` for this process. Diagnostics only.
+
+    Current resident memory is read from ``/proc`` on Linux (the Frappe Cloud worker),
+    falling back to the rusage peak where ``/proc`` is absent (e.g. macOS dev). A single
+    cheap read, safe on the migration's hot path, so a run OOM-killed mid-way still
+    reveals where its memory went."""
+    peak = resource.getrusage(resource.RUSAGE_SELF).ru_maxrss
+    # ru_maxrss is bytes on macOS, kibibytes on Linux.
+    peak_mb = peak / 1048576 if sys.platform == "darwin" else peak / 1024
+    try:
+        with open("/proc/self/statm") as fh:
+            resident_pages = int(fh.read().split()[1])
+        cur_mb = resident_pages * os.sysconf("SC_PAGE_SIZE") / 1048576
+    except Exception:
+        cur_mb = peak_mb
+    return round(cur_mb, 1), round(peak_mb, 1)
 
 
 def _collapse_identical(rows: list[dict], sample: int = 5) -> list[dict]:
@@ -233,6 +256,12 @@ class MasterMigrator:
         # Reuse a log handed in by the dispatcher (background runs); otherwise
         # create one now so an interrupted run is still recorded.
         self.log = self.log or self._create_log()
+        # Run profiler (diagnostics only): per-phase/op timing, SQL/commit/enqueue counts,
+        # HTTP, RSS, streamed into the progress cache. No-op-cheap and fully restored in
+        # `finally`, so it never affects what gets imported. Never merged to main.
+        self._profiler = profiler.RunProfiler(mem_fn=_rss_mb)
+        _sess = profiler.session(self._profiler)
+        _sess.__enter__()
         try:
             import time as _time
             self._progress(0)
@@ -241,14 +270,15 @@ class MasterMigrator:
 
             self._progress(10)
             _t = _time.monotonic()
-            masters = self.extractor.extract_all()
-            apply_record_overrides(masters, self.record_overrides, self.applied_edits)
-            self._record_uom_edits()
-            coa = self.extractor.extract_coa()
-            # Bill-wise party opening detail (BILLALLOCATIONS) - empty when the
-            # source can't supply child lists, so party openings then degrade to a
-            # single lump opening invoice per party (no bill breakdown).
-            bills = self.extractor.extract_bill_allocations()
+            with self._profiler.phase("Extract"):
+                masters = self.extractor.extract_all()
+                apply_record_overrides(masters, self.record_overrides, self.applied_edits)
+                self._record_uom_edits()
+                coa = self.extractor.extract_coa()
+                # Bill-wise party opening detail (BILLALLOCATIONS) - empty when the
+                # source can't supply child lists, so party openings then degrade to a
+                # single lump opening invoice per party (no bill breakdown).
+                bills = self.extractor.extract_bill_allocations()
             self._timings["Extract"] = round(_time.monotonic() - _t, 2)
             frappe.logger().info(
                 f"[Tally Migrator] Extracted: {masters.summary} | COA: {coa.summary} "
@@ -266,7 +296,8 @@ class MasterMigrator:
                     step.label, step.percent, band_end)
                 _t = _time.monotonic()
                 try:
-                    results[step.label] = step.importer(step.records)
+                    with self._profiler.phase(step.label, len(step.records)):
+                        results[step.label] = step.importer(step.records)
                 finally:
                     self.importer.on_progress = None
                 self._timings[step.label] = round(_time.monotonic() - _t, 2)
@@ -285,6 +316,13 @@ class MasterMigrator:
         except Exception as exc:
             self._fail_log(exc)
             raise
+        finally:
+            # Close the profiler session (restores the SQL/enqueue/HTTP hooks) even on
+            # failure, so a crashed run still leaves its captured profile in the cache.
+            try:
+                _sess.__exit__(None, None, None)
+            except Exception:
+                pass
 
     def _pipeline(self, masters: ExtractedMasters, coa, bills) -> list[PipelineStep]:
         """Entity import order. Adding an entity = add one step here.
@@ -438,9 +476,22 @@ class MasterMigrator:
         # critical path, so a cache/Redis hiccup must never abort an otherwise-good run.
         if self.log:
             try:
+                payload = {"percent": pct, "description": desc}
+                # Diagnostics: fold the live profile + memory into the same cache the
+                # page/monitor already polls, so an OOM-killed/stalled run still reveals
+                # where its time and memory went. Guarded: _progress(0) runs before the
+                # profiler exists, and profiling must never break progress reporting.
+                prof = getattr(self, "_profiler", None)
+                if prof is not None:
+                    try:
+                        cur_mb, peak_mb = _rss_mb()
+                        payload.update(rss_mb=cur_mb, peak_mb=peak_mb,
+                                       profile=prof.compact())
+                    except Exception:
+                        pass
                 frappe.cache().set_value(
                     f"tally_migration_progress:{self.log.name}",
-                    {"percent": pct, "description": desc},
+                    payload,
                     expires_in_sec=6 * 60 * 60,
                 )
             except Exception:
