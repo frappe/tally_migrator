@@ -35,13 +35,21 @@ from tally_migrator.migration import profiler
 
 
 def _stream_revert_progress(revert_name, pct, desc, deleted, total, prof):
-    """Diagnostics: stream revert progress + the compact profile to a crash-proof
-    cache the monitor can poll (mirrors MasterMigrator's progress cache). Best-effort:
-    a cache hiccup must never abort an otherwise-good revert. Never merged to main."""
+    """Diagnostics: stream revert progress + the compact profile + a memory point-sample
+    to a crash-proof cache the monitor can poll (mirrors MasterMigrator's progress cache).
+    Best-effort: a cache hiccup must never abort an otherwise-good revert. The continuous
+    memory curve comes from the watchdog heartbeat; this adds the per-checkpoint RSS so a
+    revert that OOMs still shows its memory (parity with the import). Never merged to main."""
     try:
+        cur_mb = peak_mb = None
+        try:
+            cur_mb, peak_mb = profiler.rss_mb()
+        except Exception:
+            pass
         frappe.cache().set_value(
             f"tally_revert_progress:{revert_name}",
             {"percent": pct, "description": desc, "deleted": deleted, "total": total,
+             "rss_mb": cur_mb, "peak_mb": peak_mb,
              "profile": prof.compact() if prof else {}},
             expires_in_sec=6 * 60 * 60,
         )
@@ -559,8 +567,10 @@ def run_revert(revert_name: str) -> None:
     # Diagnostics: profile the revert (SQL fingerprints, per-record timing, commits,
     # enqueues, RSS) and stream progress + a compact profile to a crash-proof cache the
     # monitor polls. Best-effort and fully restored in `finally`. Never merged to main.
-    prof = profiler.RunProfiler()
-    _sess = profiler.session(prof)
+    prof = profiler.RunProfiler(mem_fn=profiler.rss_mb)
+    # heartbeat_name starts the watchdog so a revert that hangs or is OOM-killed still
+    # shows its memory curve and the doctype/name it was deleting when it stopped.
+    _sess = profiler.session(prof, heartbeat_name=revert_name)
     _sess.__enter__()
     _phase_cm = None
     try:

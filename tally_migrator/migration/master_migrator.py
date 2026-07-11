@@ -1,6 +1,4 @@
-import os
-import sys
-import resource
+import time as _time_mod
 from dataclasses import dataclass
 from typing import Callable
 
@@ -12,25 +10,25 @@ from tally_migrator.erpnext.importers import ERPNextImporter, ImportResult
 from tally_migrator.migration.overrides import apply_record_overrides, uom_edits
 from tally_migrator.migration import profiler
 
+# Monotonic clock for throttling the tracemalloc snapshot (never wall-clock, which can
+# jump). Module-level so _record_mem stays cheap.
+_now = _time_mod.monotonic
 
-def _rss_mb() -> tuple[float, float]:
-    """``(current_rss_mb, peak_rss_mb)`` for this process.
 
-    Current resident memory is read from ``/proc`` on Linux (the Frappe Cloud worker),
-    falling back to the rusage peak where ``/proc`` is absent (e.g. macOS dev). It is a
-    single cheap read, safe to call on the migration's hot path. Used to stream a memory
-    curve into the progress cache so a run that is OOM-killed mid-way still reveals where
-    its memory went (see ``MasterMigrator._record_mem``)."""
-    peak = resource.getrusage(resource.RUSAGE_SELF).ru_maxrss
-    # ru_maxrss is bytes on macOS, kibibytes on Linux.
-    peak_mb = peak / 1048576 if sys.platform == "darwin" else peak / 1024
+# Resident-memory reading now lives in profiler.py (shared by import, revert and the
+# watchdog, so all three report memory identically). Kept as a thin local alias so the
+# rest of this module and its tests keep calling _rss_mb().
+_rss_mb = profiler.rss_mb
+
+
+def _trace_enabled() -> bool:
+    """Whether to start tracemalloc for this run (allocation-level OOM attribution).
+    Off unless ``tally_migrator_tracemalloc`` is truthy in site config - it has real
+    overhead, so it is an opt-in a site owner turns on only while chasing an OOM."""
     try:
-        with open("/proc/self/statm") as fh:
-            resident_pages = int(fh.read().split()[1])
-        cur_mb = resident_pages * os.sysconf("SC_PAGE_SIZE") / 1048576
+        return bool(frappe.conf.get("tally_migrator_tracemalloc"))
     except Exception:
-        cur_mb = peak_mb
-    return round(cur_mb, 1), round(peak_mb, 1)
+        return False
 
 
 def _collapse_identical(rows: list[dict], sample: int = 5) -> list[dict]:
@@ -256,6 +254,12 @@ class MasterMigrator:
         self._mem_trail: list[dict] = []
         self._last_pct: int = 0
         self._last_desc: str = ""
+        # Latest tracemalloc top-allocators snapshot (only when tracing is opted in via
+        # site config), captured at most once every few seconds so the snapshot cost never
+        # dominates. Streamed alongside the memory curve so an OOM shows the object holding
+        # the memory, not just the phase.
+        self._alloc_top: list[dict] = []
+        self._last_trace_ts: float = 0.0
         # Run profiler: per-phase/op timing, SQL/commit counts, enqueues, HTTP, and the
         # slowest records with content. Diagnostic only; streamed to the progress cache
         # and written to the log. Best-effort, never affects the import.
@@ -268,7 +272,11 @@ class MasterMigrator:
         # create one now so an interrupted run is still recorded.
         self.log = self.log or self._create_log()
         # Profile the whole run (installs SQL/enqueue/HTTP hooks); removed in the finally.
-        _sess = profiler.session(self._profiler)
+        # heartbeat_name starts the watchdog (RSS + in-flight record streamed to Redis every
+        # few seconds), so a run that hangs or is OOM-killed between checkpoints still shows
+        # where it was. trace starts tracemalloc only when the site opts in.
+        _sess = profiler.session(
+            self._profiler, heartbeat_name=self.log.name, trace=_trace_enabled())
         _sess.__enter__()
         try:
             import time as _time
@@ -516,6 +524,16 @@ class MasterMigrator:
         # keep the most recent samples (the supplier/stock tail is where it chokes).
         if len(self._mem_trail) > 400:
             del self._mem_trail[:-400]
+        # Allocation-level attribution when tracing is opted in, throttled to ~10s so the
+        # snapshot cost stays off the hot path. Best-effort - never breaks progress.
+        if getattr(self._profiler, "tracing", False):
+            try:
+                now = _now()
+                if now - self._last_trace_ts > 10:
+                    self._alloc_top = profiler.top_allocations(12)
+                    self._last_trace_ts = now
+            except Exception:
+                pass
         try:
             frappe.logger().info(
                 f"[Tally Migrator][mem] {pct}% rss={cur_mb}MB peak={peak_mb}MB - {label}")
@@ -527,6 +545,7 @@ class MasterMigrator:
                     f"tally_migration_progress:{self.log.name}",
                     {"percent": pct, "description": self._last_desc,
                      "rss_mb": cur_mb, "peak_mb": peak_mb, "mem_trail": self._mem_trail,
+                     "alloc_top": self._alloc_top,
                      "profile": self._profiler.compact()},
                     expires_in_sec=6 * 60 * 60,
                 )
@@ -723,13 +742,31 @@ class MasterMigrator:
             rec["other_exports"] = files
 
     def _fail_log(self, exc: Exception) -> None:
-        """Mark the log 'Failed' with a traceback. Best-effort; never re-raises."""
+        """Mark the log 'Failed' with a traceback. Best-effort; never re-raises.
+
+        Also flush the diagnostics profile (phase timings, compact profile, memory trail)
+        onto the log, so a failed run keeps its profile *durably* - the finalize path that
+        normally persists it never ran. Without this the profile of a crash survives only
+        in the 6h progress cache; here it is written to the log itself, so the Diagnostics
+        view still explains a failure days later."""
         try:
             frappe.db.rollback()
             if self.log:
                 self.log.reload()
                 self.log.status = "Failed"
                 self.log.error_log = frappe.get_traceback() or str(exc)
+                # Best-effort durable profile snapshot (guarded twice: a missing/failing
+                # profiler must never stop us recording the failure itself).
+                try:
+                    self.log.extracted_counts = frappe.as_json({
+                        "_phase_seconds": self._timings,
+                        "_profile": self._profiler.report(),
+                        "_mem_trail": self._mem_trail,
+                        "_alloc_top": self._alloc_top,
+                        "_failed": True,
+                    })
+                except Exception:
+                    pass
                 self.log.save(ignore_permissions=True)
                 frappe.db.commit()
         except Exception as inner:

@@ -1405,15 +1405,90 @@ function tally_diagnostics_dialog(frm, data) {
 			</table>`
 		: "";
 
-	const peak = data.peak_mb || Math.max(0, ...trail.map((m) => m.peak_mb || 0));
+	const env = data.env || {};
+	const hb = data.heartbeat || {};
+	const hbLast = hb.last || {};
+	const preview = data.preview_parse || {};
+	const peak = data.peak_mb || preview.peak_mb || hbLast.peak_mb ||
+		Math.max(0, ...trail.map((m) => m.peak_mb || 0));
 	const header = `<div class="text-muted small" style="margin-bottom:8px;">
 		Status <strong>${esc(String(data.status || "-"))}</strong>
 		${data.percent != null ? ` · reached <strong>${data.percent}%</strong>` : ""}
 		${peak ? ` · peak memory <strong>${num(peak)} MB</strong>` : ""}
 	</div>`;
 
+	// OOM verdict: the single most useful line. When the worker's memory cap is known and
+	// a peak got close to (or over) it, say so plainly - that is "why the OOM".
+	const cap = env.worker_memory_limit_mb;
+	let verdict = "";
+	if (cap && peak) {
+		const ratio = peak / cap;
+		if (ratio >= 0.9) {
+			verdict = callout(
+				"error",
+				iconRow(
+					"error",
+					`Peak memory <strong>${num(peak)} MB</strong> reached
+					<strong>${Math.round(ratio * 100)}%</strong> of this worker's
+					<strong>${num(cap)} MB</strong> limit - an out-of-memory kill is the likely
+					cause. A larger plan, or splitting the file, would avoid it.`
+				),
+				"margin-bottom:8px;"
+			);
+		} else {
+			verdict = callout(
+				"info",
+				iconRow("info", `Peak memory <strong>${num(peak)} MB</strong> of the worker's
+					<strong>${num(cap)} MB</strong> limit - memory was not the constraint.`),
+				"margin-bottom:8px;"
+			);
+		}
+	}
+
+	// Where it was when it stopped (watchdog) - the answer for a hang/kill between checkpoints.
+	const hbBlock = hbLast.rss_mb
+		? `<div style="font-weight:500; margin:14px 0 4px;">Last seen (watchdog)</div>
+			<div class="text-muted small">Phase <strong>${esc(String(hbLast.phase || "-"))}</strong>
+			${hbLast.record ? ` · record <strong>${esc(String(hbLast.record))}</strong>` : ""}
+			· RSS <strong>${num(hbLast.rss_mb)} MB</strong> (peak ${num(hbLast.peak_mb)} MB)
+			${hbLast.ts ? ` · at ${esc(new Date(hbLast.ts * 1000).toLocaleString())}` : ""}</div>`
+		: "";
+
+	// Web-request parse (preview/validate) - where a small-plan OOM happens before the run.
+	const pvBlock = preview.peak_mb
+		? `<div style="font-weight:500; margin:14px 0 4px;">Upload / preview parse</div>
+			<div class="text-muted small">${esc(String(preview.label || "Parse"))} peaked at
+			<strong>${num(preview.peak_mb)} MB</strong>${preview.seconds != null ? ` in ${num(preview.seconds, 1)}s` : ""}.</div>`
+		: "";
+
+	// Errors captured for this run (the "why" of a 500 / Failed run).
+	const errs = data.errors || {};
+	const errBlock = errs.count
+		? `<div style="font-weight:500; margin:14px 0 4px;">Errors (${errs.count})</div>
+			<div class="text-muted small" style="line-height:1.7;">${(errs.entries || [])
+				.map((e) => `${esc(String(e.exception || e.method || "Error"))}${e.when ? ` <span class="text-muted">(${esc(String(e.when))})</span>` : ""}`)
+				.join("<br>")}</div>`
+		: "";
+
+	// Allocation hotspots (only when tracemalloc was opted in).
+	const alloc = Array.isArray(data.alloc_top) ? data.alloc_top : [];
+	const allocBlock = alloc.length
+		? `<div style="font-weight:500; margin:14px 0 4px;">Top allocations</div>
+			<table class="table table-condensed" style="margin:0; font-size:12px;"><tbody>${alloc
+				.slice(0, 10)
+				.map((a) => `<tr><td class="text-right" style="width:70px;">${num(a.size_mb, 1)} MB</td><td class="text-muted" style="font-family:monospace; word-break:break-all;">${esc(String(a.where || ""))}</td></tr>`)
+				.join("")}</tbody></table>`
+		: "";
+
+	const envBlock = `<div class="text-muted small" style="margin-top:12px;">
+		${env.frappe_version ? `Frappe ${esc(String(env.frappe_version))} · ` : ""}
+		${env.python ? `Python ${esc(String(env.python))} · ` : ""}
+		${cap ? `worker cap ${num(cap)} MB · ` : ""}
+		${env.source_file_mb ? `file ${num(env.source_file_mb, 1)} MB` : ""}
+	</div>`;
+
 	const note = `<div class="text-muted small" style="margin-top:10px;">
-		This report contains timings, SQL shapes and the memory curve only - no record
+		This report contains timings, SQL shapes, memory and error types only - no record
 		content. Use <strong>Download JSON</strong> to save it and send it to us; nothing
 		here identifies your data.
 	</div>`;
@@ -1426,9 +1501,15 @@ function tally_diagnostics_dialog(frm, data) {
 				fieldtype: "HTML",
 				options: `<div style="font-size:13px;">
 					${header}
+					${verdict}
 					<div style="font-weight:500; margin:4px 0;">Per-phase profile</div>
 					${phaseTable}
 					${trailTable ? `<div style="font-weight:500; margin:14px 0 4px;">Memory curve</div>${trailTable}` : ""}
+					${hbBlock}
+					${pvBlock}
+					${errBlock}
+					${allocBlock}
+					${envBlock}
 					${note}
 				</div>`,
 			},

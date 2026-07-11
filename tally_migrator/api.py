@@ -1,10 +1,14 @@
+import contextlib
 import json
 import re
 import threading
+import time
 from collections import OrderedDict
 from urllib.parse import urlparse
 
 import frappe
+
+from tally_migrator.migration import profiler
 
 from tally_migrator.tally.config import TallyConfig
 from tally_migrator.tally.file_source import FileTallySource, decode_tally_bytes, unzip_if_zip
@@ -22,6 +26,58 @@ from tally_migrator.migration.master_migrator import MasterMigrator
 ALLOWED_ROLES = ["System Manager", "Tally Migration Manager"]
 
 
+@contextlib.contextmanager
+def _profiled_web_parse(label: str):
+    """Profile a synchronous web-request parse (preview / validate).
+
+    The migration run is profiled in its background job, but the upload -> preview parse
+    happens *here*, in the web worker, and on a large export this ~GB parse is what OOMs a
+    small Frappe Cloud plan - a failure the run profiler never sees. This wrapper captures
+    the parse's wall time, peak RSS and a compact profile into a per-user cache, and starts
+    the watchdog so a parse that kills the web worker still leaves a heartbeat with the
+    memory peak. Fully best-effort: if profiling can't start, the body still runs, so the
+    endpoint never breaks because of diagnostics."""
+    prof = profiler.RunProfiler(mem_fn=profiler.rss_mb)
+    user = getattr(frappe.session, "user", "") or "guest"
+    t0 = time.monotonic()
+    # Track *entry* explicitly: if the session enters but the phase then fails to enter,
+    # we must still tear the session down (restore hooks, stop the watchdog) - nulling the
+    # handles would leak it. ``phase`` is only kept once its own __enter__ has succeeded.
+    sess = phase = None
+    sess_entered = False
+    try:
+        sess = profiler.session(prof, heartbeat_name=f"preview-{user}")
+        sess.__enter__()
+        sess_entered = True
+        _ph = prof.phase(label)
+        _ph.__enter__()
+        phase = _ph
+    except Exception:
+        pass                           # profiling degraded; the body below still runs
+    try:
+        yield
+    finally:
+        try:
+            if phase is not None:
+                phase.__exit__(None, None, None)
+        except Exception:
+            pass
+        if sess_entered:
+            try:
+                cur, peak = profiler.rss_mb()
+                frappe.cache().set_value(
+                    f"tally_preview_profile:{user}",
+                    {"label": label, "seconds": round(time.monotonic() - t0, 2),
+                     "rss_mb": cur, "peak_mb": peak, "profile": prof.compact()},
+                    expires_in_sec=6 * 60 * 60)
+            except Exception:
+                pass
+            try:
+                sess.__exit__(None, None, None)
+            except Exception:
+                pass
+
+
 @frappe.whitelist(methods=["GET", "POST"])
 def preview_masters_file(file_url: str):
     """Parse an uploaded Tally Masters XML and report what it contains.
@@ -31,9 +87,10 @@ def preview_masters_file(file_url: str):
     the migration, so there are no surprises.
     """
     frappe.only_for(ALLOWED_ROLES)
-    _, source = _source_from_file(file_url)
-    extractor = TallyExtractor(source)
-    return {**extractor.extract_all().summary, **extractor.extract_coa().summary}
+    with _profiled_web_parse("Preview parse"):
+        _, source = _source_from_file(file_url)
+        extractor = TallyExtractor(source)
+        return {**extractor.extract_all().summary, **extractor.extract_coa().summary}
 
 
 @frappe.whitelist(methods=["GET", "POST"])
@@ -100,20 +157,21 @@ def validate_masters_data(file_url: str, record_overrides: str = "", erpnext_com
     """
     frappe.only_for(ALLOWED_ROLES)
     overrides = json.loads(record_overrides) if record_overrides else {}
-    _, source = _source_from_file(file_url)
-    extractor = TallyExtractor(source)
-    masters = apply_record_overrides(extractor.extract_all(), overrides)
-    # COA is extracted too so hierarchy checks (cycles) can cover accounts and cost
-    # centres, not just the inventory masters carried on ``masters``.
-    coa = extractor.extract_coa()
-    payload = group_report(
-        validate_extraction(masters=masters, coa=coa), records_by_key(masters))
-    payload["states"] = erpnext_states()
-    payload["coverage"] = coverage_report(source)
-    payload["account_mapping"] = account_mapping(source)
-    if erpnext_company:
-        payload["readiness"] = check_readiness(erpnext_company, posting_date)
-    return payload
+    with _profiled_web_parse("Validate parse"):
+        _, source = _source_from_file(file_url)
+        extractor = TallyExtractor(source)
+        masters = apply_record_overrides(extractor.extract_all(), overrides)
+        # COA is extracted too so hierarchy checks (cycles) can cover accounts and cost
+        # centres, not just the inventory masters carried on ``masters``.
+        coa = extractor.extract_coa()
+        payload = group_report(
+            validate_extraction(masters=masters, coa=coa), records_by_key(masters))
+        payload["states"] = erpnext_states()
+        payload["coverage"] = coverage_report(source)
+        payload["account_mapping"] = account_mapping(source)
+        if erpnext_company:
+            payload["readiness"] = check_readiness(erpnext_company, posting_date)
+        return payload
 
 
 @frappe.whitelist(methods=["POST"])

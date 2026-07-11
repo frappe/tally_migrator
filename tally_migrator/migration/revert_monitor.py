@@ -14,9 +14,13 @@ otherwise mask the real error); on failure it prints a traceback and returns a d
 Never merged to main.
 """
 import json
+import os
+import re
 import traceback
 
 import frappe
+
+from tally_migrator.migration import profiler
 
 
 def _latest_revert() -> str | None:
@@ -312,6 +316,103 @@ def _strip_report(report: dict, include_content: bool) -> dict:
     return safe
 
 
+def _worker_memory_limit_mb() -> float | None:
+    """The container/cgroup memory ceiling in MB, if the OS exposes one (Frappe Cloud runs
+    in a memory-capped cgroup). Read from cgroup v2 then v1; ``None`` off a cgroup (e.g. a
+    dev laptop). This is the number that makes 'peak 900MB' mean 'over your 512MB plan'."""
+    for path in ("/sys/fs/cgroup/memory.max",                  # cgroup v2
+                 "/sys/fs/cgroup/memory/memory.limit_in_bytes"):  # cgroup v1
+        try:
+            with open(path) as fh:
+                raw = fh.read().strip()
+            if raw in ("max", ""):
+                continue
+            val = int(raw)
+            # cgroup v1 reports a huge sentinel when unlimited; treat as no limit.
+            if val <= 0 or val >= (1 << 62):
+                continue
+            return round(val / 1048576, 1)
+        except Exception:
+            continue
+    return None
+
+
+def _env_block(log_row: dict) -> dict:
+    """Environment context so a memory reading is interpretable remotely: framework /
+    Python versions, the worker memory cap, and the source file's size + master counts.
+    All read-only and business-data-free. A failure in any field degrades to None."""
+    import sys as _sys
+    env = {"python": _sys.version.split()[0], "worker_memory_limit_mb": None,
+           "frappe_version": None, "source_file_mb": None, "source_counts": None}
+    try:
+        env["worker_memory_limit_mb"] = _worker_memory_limit_mb()
+    except Exception:
+        pass
+    try:
+        env["frappe_version"] = frappe.__version__
+    except Exception:
+        pass
+    # Source file size (helps explain a parse-time OOM) - the file attached to the log.
+    try:
+        src = (log_row or {}).get("source_file")
+        if src:
+            fpath = frappe.get_doc("File", {"file_url": src}).get_full_path()
+            env["source_file_mb"] = round(os.path.getsize(fpath) / 1048576, 2)
+    except Exception:
+        pass
+    # Master counts extracted (from the preview/finalize summary on the log) - the parse's
+    # working-set driver, without any record content.
+    try:
+        import json as _json
+        ec = _json.loads((log_row or {}).get("extracted_counts") or "{}")
+        counts = {k: v for k, v in ec.items()
+                  if not k.startswith("_") and isinstance(v, (int, float))}
+        env["source_counts"] = counts or None
+    except Exception:
+        pass
+    return env
+
+
+def _related_error_logs(log_name: str, since, include_content: bool) -> dict:
+    """The run's Error Log entries, so 'why did it 500' is answerable without the site's
+    own Error Log. Matched by the tally_migrator method/traceback within the run's time
+    window. Default: a summary (count + titles + exception class) only - tracebacks can
+    carry record values, so full tracebacks are gated behind include_content."""
+    out = {"count": 0, "titles": [], "entries": []}
+    try:
+        filters = {"creation": (">=", since)} if since else {}
+        rows = frappe.get_all(
+            "Error Log", filters=filters,
+            fields=["name", "creation", "method", "error"],
+            order_by="creation desc", limit=40) or []
+    except Exception:
+        return out
+    hits = []
+    for r in rows:
+        blob = f"{r.get('method') or ''}\n{r.get('error') or ''}"
+        if "tally_migrator" in blob or (log_name and log_name in blob) \
+                or "Tally Migrator" in blob:
+            hits.append(r)
+    out["count"] = len(hits)
+    for r in hits[:15]:
+        err = r.get("error") or ""
+        # Exception class = last "Xxx: ..." line of the traceback; safe to show (a type).
+        exc_class = ""
+        for line in reversed(err.strip().splitlines()):
+            m = re.match(r"^([A-Za-z_][\w.]*Error|[A-Za-z_][\w.]*Exception)\b", line.strip())
+            if m:
+                exc_class = m.group(1)
+                break
+        title = (r.get("method") or exc_class or "Error")[:140]
+        out["titles"].append(title)
+        entry = {"when": str(r.get("creation")), "method": r.get("method"),
+                 "exception": exc_class}
+        if include_content:
+            entry["traceback"] = err[:6000]     # full only with consent (may hold values)
+        out["entries"].append(entry)
+    return out
+
+
 @frappe.whitelist()
 def diagnostics_report(log_name: str = "", include_content: int = 0) -> dict:
     """Session-authenticated diagnostics for a migration run, safe to share.
@@ -341,14 +442,41 @@ def diagnostics_report(log_name: str = "", include_content: int = 0) -> dict:
         return {}
     row = frappe.db.get_value(
         "Tally Migration Log", log_name,
-        ["status", "company", "extracted_counts"], as_dict=True) or {}
+        ["status", "company", "extracted_counts", "source_file", "owner",
+         "creation", "error_log"], as_dict=True) or {}
     cached = frappe.cache().get_value(f"tally_migration_progress:{log_name}") or {}
-    # The persisted profile lives inside extracted_counts JSON under two private keys.
+    # The persisted profile lives inside extracted_counts JSON under private keys; on a
+    # *failed* run _fail_log flushes the profile + memory trail there too, so a crash
+    # stays explainable after the 6h cache expires.
     phase_seconds, full_report = {}, {}
+    persisted_mem, persisted_alloc, failed_flag = [], [], False
     try:
         ec = json.loads(row.get("extracted_counts") or "{}")
         phase_seconds = ec.get("_phase_seconds") or {}
         full_report = ec.get("_profile") or {}
+        persisted_mem = ec.get("_mem_trail") or []
+        persisted_alloc = ec.get("_alloc_top") or []
+        failed_flag = bool(ec.get("_failed"))
+    except Exception:
+        pass
+    # Watchdog heartbeat (Redis): the last in-flight record + memory right up to a
+    # hang/kill, even between checkpoints.
+    heartbeat = {}
+    try:
+        heartbeat = profiler.read_heartbeat(log_name)
+    except Exception:
+        pass
+    # Web-request parse profile (preview / validate) for the run's owner and the caller -
+    # this is where a small-plan OOM happens, before any run exists.
+    preview = {}
+    try:
+        for u in {row.get("owner"), frappe.session.user}:
+            if not u:
+                continue
+            pv = frappe.cache().get_value(f"tally_preview_profile:{u}")
+            if pv:
+                preview = pv
+                break
     except Exception:
         pass
     return {
@@ -358,14 +486,22 @@ def diagnostics_report(log_name: str = "", include_content: int = 0) -> dict:
         "generated_at": str(frappe.utils.now()),
         "branch": "fc/e2e-profiler",
         "includes_record_content": include,
-        # Live, crash-proof stream (present even if the run never finalised).
+        "failed": failed_flag,
+        # Live, crash-proof stream (present even if the run never finalised); falls back
+        # to the durable fail-log snapshot once the cache has expired.
         "percent": cached.get("percent"),
         "description": cached.get("description"),
         "rss_mb": cached.get("rss_mb"),
         "peak_mb": cached.get("peak_mb"),
-        "mem_trail": cached.get("mem_trail") or [],
+        "mem_trail": cached.get("mem_trail") or persisted_mem,
+        "alloc_top": cached.get("alloc_top") or persisted_alloc,
         "live_profile": cached.get("profile") or {},
-        # Persisted at finalize (richer, per-phase percentiles + top-20 SQL).
+        # Persisted at finalize / fail (richer, per-phase percentiles + top-20 SQL).
         "phase_seconds": phase_seconds,
         "report": _strip_report(full_report, include),
+        # Watchdog + web-parse + environment + errors.
+        "heartbeat": heartbeat,
+        "preview_parse": preview,
+        "env": _env_block(row),
+        "errors": _related_error_logs(log_name, row.get("creation"), include),
     }

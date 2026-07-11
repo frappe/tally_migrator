@@ -35,7 +35,10 @@ from __future__ import annotations
 
 import contextlib
 import heapq
+import os
 import re
+import resource
+import sys
 import threading
 import time
 
@@ -47,6 +50,28 @@ _holder = threading.local()
 
 def _active() -> "RunProfiler | None":
     return getattr(_holder, "prof", None)
+
+
+# ── Resident-memory reading (shared by import, revert and the watchdog) ──────────
+
+def rss_mb() -> tuple[float, float]:
+    """``(current_rss_mb, peak_rss_mb)`` for this process.
+
+    Current resident memory is read from ``/proc`` on Linux (the Frappe Cloud worker),
+    falling back to the rusage peak where ``/proc`` is absent (e.g. macOS dev). A single
+    cheap read with no allocation, safe on the migration's hot path and safe to call from
+    the watchdog thread (it touches only ``/proc``/``rusage``, never Frappe). The single
+    source of truth so import, revert and the watchdog all report memory identically."""
+    peak = resource.getrusage(resource.RUSAGE_SELF).ru_maxrss
+    # ru_maxrss is bytes on macOS, kibibytes on Linux.
+    peak_mb = peak / 1048576 if sys.platform == "darwin" else peak / 1024
+    try:
+        with open("/proc/self/statm") as fh:
+            resident_pages = int(fh.read().split()[1])
+        cur_mb = resident_pages * os.sysconf("SC_PAGE_SIZE") / 1048576
+    except Exception:
+        cur_mb = peak_mb
+    return round(cur_mb, 1), round(peak_mb, 1)
 
 
 # ── Content capture (bounded) ──────────────────────────────────────────────────
@@ -134,6 +159,11 @@ class _Phase:
         self.rss_mb = 0.0
         self.peak_mb = 0.0
         self._seq = 0
+        # The record currently being processed (set by record() on enter, cleared on
+        # exit). Read by the watchdog thread so a run that hangs or is OOM-killed inside
+        # one record still reveals *which* record was in flight - a single attribute read,
+        # GIL-atomic, so no lock is needed on the hot path.
+        self.current_ident = ""
 
     # hot path - keep cheap
     def add_record(self, ms: float, ident: str, content) -> None:
@@ -256,6 +286,10 @@ class RunProfiler:
         self.phases: dict[str, _Phase] = {}     # insertion-ordered
         self.current: _Phase | None = None
         self._mem_fn = mem_fn
+        # Set by session(): the watchdog thread (or None) and whether tracemalloc is on.
+        self.watchdog = None
+        self.tracing = False
+        self._stop_trace = False
 
     @contextlib.contextmanager
     def phase(self, label: str, count: int = 0):
@@ -297,6 +331,9 @@ def record(ident: str = "", content=None):
     if ph is None:
         yield
         return
+    # Publish the in-flight record so the watchdog can name it if this record hangs or
+    # the worker is killed inside it. Cleared in the finally, even on error.
+    ph.current_ident = ident
     t0 = time.monotonic()
     try:
         yield
@@ -305,6 +342,7 @@ def record(ident: str = "", content=None):
             ph.add_record((time.monotonic() - t0) * 1000, ident, _trim(content))
         except Exception:
             pass
+        ph.current_ident = ""
 
 
 @contextlib.contextmanager
@@ -337,9 +375,24 @@ def _install_hooks(prof: "RunProfiler"):
             orig = getattr(obj, name)
         except Exception:
             return
+        # Was ``name`` the object's *own* attribute, or inherited from its class? For an
+        # inherited method (e.g. Database.commit on a db instance) the pristine restore is
+        # to remove the shadowing attribute we add, not to setattr the captured bound
+        # method (which would leave a permanent instance attribute holding a stale ref).
+        had_own = name in getattr(obj, "__dict__", {})
+
+        def _restore():
+            if had_own:
+                setattr(obj, name, orig)
+            else:
+                try:
+                    delattr(obj, name)
+                except Exception:
+                    setattr(obj, name, orig)
+
         try:
             setattr(obj, name, make(orig))
-            restores.append(lambda: setattr(obj, name, orig))
+            restores.append(_restore)
         except Exception:
             pass
 
@@ -424,15 +477,196 @@ def _install_hooks(prof: "RunProfiler"):
     return restore
 
 
+# ── Watchdog: a wall-clock memory + in-flight-record sampler ─────────────────────
+# The per-record instrumentation above is event-driven: it only emits when a record
+# finishes and the orchestrator next streams (every ~250 records / phase boundary). A
+# run that hangs inside one record, or is OOM-killed mid-parse, therefore leaves its
+# last sample *before* the stall. The watchdog closes that gap: a daemon thread samples
+# RSS + the current phase + the in-flight record every few seconds and writes a
+# heartbeat straight to Redis, so a killed/hung run still shows memory right up to the
+# kill and names the record that was in flight.
+#
+# Thread-safety: the thread touches only rss_mb() (/proc, no Frappe) and a *raw* Redis
+# client bound to the same connection pool but built on the main thread - Frappe's
+# request-local (site/db) is never read off-thread. Keys are pre-namespaced by site on
+# the main thread, so no make_key/frappe.local lookup happens in the worker thread. Fully
+# best-effort: every step swallows its own errors; the thread is a daemon and self-stops.
+
+_HEARTBEAT_TTL = 6 * 60 * 60
+
+
+def _heartbeat_key(name: str) -> str:
+    """Site-namespaced Redis key for a run's heartbeat, built on a thread that has
+    frappe.local (the main thread). The watchdog only ever uses the finished string."""
+    import frappe
+    site = getattr(frappe.local, "site", "") or ""
+    return f"tally_migrator|heartbeat|{site}|{name}"
+
+
+def _raw_redis():
+    """A raw redis client on Frappe's cache connection pool - no key prefixing, thread-
+    safe, so the watchdog can write from its own thread. ``None`` if unavailable."""
+    try:
+        import redis
+        import frappe
+        return redis.Redis(connection_pool=frappe.cache().connection_pool)
+    except Exception:
+        return None
+
+
+class _Watchdog:
+    def __init__(self, prof: "RunProfiler", redis_client, key: str,
+                 interval: float = 2.0, trail_max: int = 300):
+        self._prof = prof
+        self._redis = redis_client
+        self._key = key
+        self._interval = max(0.5, float(interval))
+        self._trail_max = trail_max
+        self._stop = threading.Event()
+        self._thread = None
+        self.trail: list[dict] = []
+        self._peak = 0.0
+
+    def start(self):
+        if self._thread is not None:
+            return
+        self._thread = threading.Thread(
+            target=self._loop, name="tally-profiler-watchdog", daemon=True)
+        self._thread.start()
+
+    def _sample(self) -> dict:
+        try:
+            cur, peak = rss_mb()
+        except Exception:
+            cur = peak = 0.0
+        self._peak = max(self._peak, peak, cur)
+        ph = getattr(self._prof, "current", None)
+        s = {
+            "ts": round(time.time(), 1),
+            "phase": getattr(ph, "label", "") if ph else "",
+            "record": getattr(ph, "current_ident", "") if ph else "",
+            "rss_mb": cur,
+            "peak_mb": round(self._peak, 1),
+        }
+        self.trail.append(s)
+        if len(self.trail) > self._trail_max:
+            del self.trail[:-self._trail_max]
+        return s
+
+    def _flush(self, sample: dict):
+        if self._redis is None or not self._key:
+            return
+        try:
+            import json
+            payload = json.dumps({"last": sample, "trail": self.trail[-60:]})
+            self._redis.set(self._key, payload, ex=_HEARTBEAT_TTL)
+        except Exception:
+            pass
+
+    def _loop(self):
+        # Sample immediately (so a run killed in the first seconds still leaves one point),
+        # then on the interval until stopped.
+        while True:
+            try:
+                self._flush(self._sample())
+            except Exception:
+                pass
+            if self._stop.wait(self._interval):
+                break
+
+    def stop(self):
+        self._stop.set()
+        t = self._thread
+        if t is not None:
+            try:
+                t.join(timeout=self._interval + 1)
+            except Exception:
+                pass
+        self._thread = None
+
+
+def read_heartbeat(name: str) -> dict:
+    """The last watchdog heartbeat (+ recent trail) for a run, read on the main thread.
+    ``{}`` when there is none. Used by the diagnostics endpoint to show where a hung or
+    OOM-killed run actually was when it stopped."""
+    try:
+        import json
+        client = _raw_redis()
+        if client is None:
+            return {}
+        val = client.get(_heartbeat_key(name))
+        return json.loads(val) if val else {}
+    except Exception:
+        return {}
+
+
+# ── Optional allocation tracing (tracemalloc) - off by default (overhead) ────────
+
+def top_allocations(limit: int = 12) -> list[dict]:
+    """Top allocation sites by retained size, when tracemalloc is running (it is started
+    only when the caller opts in, e.g. via site config). ``[]`` otherwise. Pinpoints the
+    object holding memory - the 'why' behind an OOM the phase memory curve only hints at."""
+    try:
+        import tracemalloc
+        if not tracemalloc.is_tracing():
+            return []
+        snap = tracemalloc.take_snapshot()
+        return [
+            {"where": str(s.traceback[0]),
+             "size_mb": round(s.size / 1048576, 2),
+             "blocks": s.count}
+            for s in snap.statistics("lineno")[:limit]
+        ]
+    except Exception:
+        return []
+
+
 @contextlib.contextmanager
-def session(prof: "RunProfiler"):
+def session(prof: "RunProfiler", heartbeat_name: str = "",
+            heartbeat_interval: float = 2.0, trace: bool = False):
     """Make ``prof`` the active profiler and install the global hooks for the duration.
-    Always restores the hooks and clears the active profiler, even on error."""
+    Always restores the hooks and clears the active profiler, even on error.
+
+    ``heartbeat_name`` (a log / revert / preview id) starts the watchdog: a daemon thread
+    streaming RSS + the in-flight record to Redis so a killed/hung run stays observable.
+    ``trace`` starts tracemalloc for allocation-level attribution (opt-in; has overhead).
+    Both are best-effort - a failure to start either never blocks the run."""
     restore = _install_hooks(prof)
     _holder.prof = prof
+    wd = None
+    if heartbeat_name:
+        try:
+            wd = _Watchdog(prof, _raw_redis(), _heartbeat_key(heartbeat_name),
+                           interval=heartbeat_interval)
+            wd.start()
+        except Exception:
+            wd = None
+    prof.watchdog = wd
+    prof.tracing = False
+    if trace:
+        try:
+            import tracemalloc
+            if not tracemalloc.is_tracing():
+                tracemalloc.start()
+                prof._stop_trace = True
+            prof.tracing = True
+        except Exception:
+            prof.tracing = False
     try:
         yield prof
     finally:
+        try:
+            if wd is not None:
+                wd.stop()
+        except Exception:
+            pass
+        if getattr(prof, "_stop_trace", False):
+            prof._stop_trace = False       # reset so a reused profiler can't re-stop later
+            try:
+                import tracemalloc
+                tracemalloc.stop()
+            except Exception:
+                pass
         try:
             restore()
         finally:
