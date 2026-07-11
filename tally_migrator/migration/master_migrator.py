@@ -1,6 +1,6 @@
 import os
-import resource
 import sys
+import resource
 from dataclasses import dataclass
 from typing import Callable
 
@@ -14,12 +14,13 @@ from tally_migrator.migration import profiler
 
 
 def _rss_mb() -> tuple[float, float]:
-    """``(current_rss_mb, peak_rss_mb)`` for this process. Diagnostics only.
+    """``(current_rss_mb, peak_rss_mb)`` for this process.
 
     Current resident memory is read from ``/proc`` on Linux (the Frappe Cloud worker),
-    falling back to the rusage peak where ``/proc`` is absent (e.g. macOS dev). A single
-    cheap read, safe on the migration's hot path, so a run OOM-killed mid-way still
-    reveals where its memory went."""
+    falling back to the rusage peak where ``/proc`` is absent (e.g. macOS dev). It is a
+    single cheap read, safe to call on the migration's hot path. Used to stream a memory
+    curve into the progress cache so a run that is OOM-killed mid-way still reveals where
+    its memory went (see ``MasterMigrator._record_mem``)."""
     peak = resource.getrusage(resource.RUSAGE_SELF).ru_maxrss
     # ru_maxrss is bytes on macOS, kibibytes on Linux.
     peak_mb = peak / 1048576 if sys.platform == "darwin" else peak / 1024
@@ -249,6 +250,16 @@ class MasterMigrator:
         # comparison. Folded into the log's extracted_counts under "_phase_seconds" at
         # finalize and logged. Pure measurement - no effect on what gets imported.
         self._timings: dict[str, float] = {}
+        # Memory checkpoints (current + peak RSS per phase), streamed to the durable
+        # progress cache so a run that is OOM-killed mid-way still leaves its memory curve
+        # up to the kill point. Pure measurement, like _timings - never affects the import.
+        self._mem_trail: list[dict] = []
+        self._last_pct: int = 0
+        self._last_desc: str = ""
+        # Run profiler: per-phase/op timing, SQL/commit counts, enqueues, HTTP, and the
+        # slowest records with content. Diagnostic only; streamed to the progress cache
+        # and written to the log. Best-effort, never affects the import.
+        self._profiler = profiler.RunProfiler(mem_fn=_rss_mb)
 
     # ── Public ────────────────────────────────────────────────────────────────
 
@@ -256,10 +267,7 @@ class MasterMigrator:
         # Reuse a log handed in by the dispatcher (background runs); otherwise
         # create one now so an interrupted run is still recorded.
         self.log = self.log or self._create_log()
-        # Run profiler (diagnostics only): per-phase/op timing, SQL/commit/enqueue counts,
-        # HTTP, RSS, streamed into the progress cache. No-op-cheap and fully restored in
-        # `finally`, so it never affects what gets imported. Never merged to main.
-        self._profiler = profiler.RunProfiler(mem_fn=_rss_mb)
+        # Profile the whole run (installs SQL/enqueue/HTTP hooks); removed in the finally.
         _sess = profiler.session(self._profiler)
         _sess.__enter__()
         try:
@@ -283,6 +291,18 @@ class MasterMigrator:
             frappe.logger().info(
                 f"[Tally Migrator] Extracted: {masters.summary} | COA: {coa.summary} "
                 f"| bills: {len(bills)} | extract {self._timings['Extract']}s")
+            self._mem_checkpoint("extracted (parsed file still resident)")
+            # Free the parsed file now. Everything below works only off the extracted
+            # dicts (masters / coa / bills); the source records are never read again
+            # (reconciliation at finalize also uses the dicts, not the source). On a
+            # large export the retained elements are the bulk of peak memory, so this
+            # keeps them from sitting resident through the long import. Best-effort: a
+            # failure here must never abort an otherwise-good run.
+            try:
+                self.client.release()
+            except Exception:
+                pass
+            self._mem_checkpoint("parsed file freed")
 
             results: dict[str, ImportResult] = {}
             steps = self._pipeline(masters, coa, bills)
@@ -295,11 +315,11 @@ class MasterMigrator:
                 self.importer.on_progress = self._step_progress_cb(
                     step.label, step.percent, band_end)
                 _t = _time.monotonic()
-                try:
-                    with self._profiler.phase(step.label, len(step.records)):
+                with self._profiler.phase(step.label, len(step.records)):
+                    try:
                         results[step.label] = step.importer(step.records)
-                finally:
-                    self.importer.on_progress = None
+                    finally:
+                        self.importer.on_progress = None
                 self._timings[step.label] = round(_time.monotonic() - _t, 2)
                 frappe.logger().info(
                     f"[Tally Migrator] Phase '{step.label}': {len(step.records)} records "
@@ -317,8 +337,6 @@ class MasterMigrator:
             self._fail_log(exc)
             raise
         finally:
-            # Close the profiler session (restores the SQL/enqueue/HTTP hooks) even on
-            # failure, so a crashed run still leaves its captured profile in the cache.
             try:
                 _sess.__exit__(None, None, None)
             except Exception:
@@ -459,12 +477,16 @@ class MasterMigrator:
         # own step-5 bar updates - publish_progress also triggers Frappe's native
         # progress dialog, which double-rendered on top of our bar.
         desc = description or self.STEPS.get(pct, "")
+        self._last_pct, self._last_desc = pct, desc
+        cur_mb, peak_mb = _rss_mb()
         frappe.publish_realtime(
             "tally_migration_progress",
             {
                 "title": "Tally Masters Migration",
                 "percent": pct,
                 "description": desc,
+                "rss_mb": cur_mb,
+                "peak_mb": peak_mb,
             },
             user=frappe.session.user,
         )
@@ -472,26 +494,40 @@ class MasterMigrator:
         # polling (see api.run_progress). Realtime is best-effort - a page that reloads
         # mid-run misses past events - so the poll is the reliable source of truth and
         # this is what stops the reconnected bar from sitting at 0%.
-        # Best-effort: progress reporting is cosmetic and runs inside the migration's
-        # critical path, so a cache/Redis hiccup must never abort an otherwise-good run.
+        self._record_mem(pct, desc, cur_mb, peak_mb)
+
+    def _mem_checkpoint(self, label: str) -> None:
+        """Record an extra memory sample (no bar move) at the current percent - used to
+        capture the before/after of a discrete step like freeing the parsed file."""
+        cur_mb, peak_mb = _rss_mb()
+        self._record_mem(self._last_pct, label, cur_mb, peak_mb)
+
+    def _record_mem(self, pct: int, label: str, cur_mb: float, peak_mb: float) -> None:
+        """Append a memory checkpoint to the bounded trail and stream it to the progress
+        cache + worker log. The cache lives outside the worker, so a run that is later
+        OOM-killed still leaves the curve up to the kill point (see api.run_progress).
+
+        Best-effort: memory reporting is diagnostic and runs inside the migration's
+        critical path, so a cache/Redis/log hiccup must never abort an otherwise-good run.
+        """
+        self._mem_trail.append(
+            {"percent": pct, "phase": label, "rss_mb": cur_mb, "peak_mb": peak_mb})
+        # Bound the trail so a long run can't grow the cached payload without limit;
+        # keep the most recent samples (the supplier/stock tail is where it chokes).
+        if len(self._mem_trail) > 400:
+            del self._mem_trail[:-400]
+        try:
+            frappe.logger().info(
+                f"[Tally Migrator][mem] {pct}% rss={cur_mb}MB peak={peak_mb}MB - {label}")
+        except Exception:
+            pass
         if self.log:
             try:
-                payload = {"percent": pct, "description": desc}
-                # Diagnostics: fold the live profile + memory into the same cache the
-                # page/monitor already polls, so an OOM-killed/stalled run still reveals
-                # where its time and memory went. Guarded: _progress(0) runs before the
-                # profiler exists, and profiling must never break progress reporting.
-                prof = getattr(self, "_profiler", None)
-                if prof is not None:
-                    try:
-                        cur_mb, peak_mb = _rss_mb()
-                        payload.update(rss_mb=cur_mb, peak_mb=peak_mb,
-                                       profile=prof.compact())
-                    except Exception:
-                        pass
                 frappe.cache().set_value(
                     f"tally_migration_progress:{self.log.name}",
-                    payload,
+                    {"percent": pct, "description": self._last_desc,
+                     "rss_mb": cur_mb, "peak_mb": peak_mb, "mem_trail": self._mem_trail,
+                     "profile": self._profiler.compact()},
                     expires_in_sec=6 * 60 * 60,
                 )
             except Exception:
@@ -580,8 +616,16 @@ class MasterMigrator:
         # also lose these. Best-effort, must never revert the terminal state above.
         try:
             self.log.reload()
+            # The diagnostics profile is best-effort: a missing or failing profiler
+            # must never cost us the records-created / reconciliation reports below,
+            # so degrade to an empty profile rather than aborting the whole 2a write.
+            try:
+                _profile = self._profiler.report()
+            except Exception:
+                _profile = {}
             self.log.extracted_counts = frappe.as_json(
-                {**masters.summary, **coa.summary, "_phase_seconds": self._timings})
+                {**masters.summary, **coa.summary, "_phase_seconds": self._timings,
+                 "_profile": _profile})
             self.log.applied_edits = frappe.as_json(self.applied_edits)
             manifest = summary.created_records()
             self._track_wizard_uoms(manifest)

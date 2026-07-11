@@ -319,6 +319,28 @@ class FileTallySource:
         # collections, so memoise each (obj_type, fields) result to avoid
         # re-walking the retained records on every call.
         self._collection_cache: dict = {}
+        # Set by release() once extraction is done. A released source has dropped its
+        # parsed records and can no longer serve get_collection; api._source_from_file
+        # treats a released cached source as a miss and re-parses, so reuse stays correct.
+        self.released = False
+
+    def release(self) -> None:
+        """Drop the parsed record buffers to reclaim memory once extraction is done.
+
+        The streamed record elements (``_by_tag``) and the per-collection dict cache
+        are only needed while the extractor reads them, which happens entirely up front
+        (``MasterMigrator.run`` extracts masters, COA and bill allocations *before* the
+        import pipeline, and never touches the source again). On a large export these
+        retained elements are the bulk of peak memory, so holding them for the whole
+        run keeps the parsed file resident through the long import phases for no benefit
+        - the lever that matters on a RAM-capped worker (e.g. Frappe Cloud).
+
+        Idempotent and safe: after release the source is marked so the request-level
+        cache won't hand it back (it re-parses instead). Best-effort by the caller.
+        """
+        self._by_tag = {}
+        self._collection_cache = {}
+        self.released = True
 
     @staticmethod
     def _stream_records(reader, keep: set) -> dict:

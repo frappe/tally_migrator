@@ -508,6 +508,45 @@ def run_progress(log_name: str = "") -> dict:
         "import_summary": row.import_summary,
         "percent": cached.get("percent"),
         "description": cached.get("description"),
+        # Live memory readings streamed from the worker (see MasterMigrator._record_mem).
+        # ``rss_mb``/``peak_mb`` are the latest sample; ``mem_trail`` is the per-phase
+        # curve. These live in the cache (outside the worker), so they survive a worker
+        # that is OOM-killed mid-run - the trail then shows memory right up to the kill.
+        "rss_mb": cached.get("rss_mb"),
+        "peak_mb": cached.get("peak_mb"),
+        "mem_trail": cached.get("mem_trail"),
+        # Live per-phase profile (timing / SQL / commits / enqueues / HTTP / op
+        # breakdown), streamed from the same crash-proof cache. The full report
+        # (percentiles + slowest records with content) lands in the log's
+        # extracted_counts._profile at finalize.
+        "profile": cached.get("profile"),
+    }
+
+
+@frappe.whitelist(methods=["GET", "POST"])
+def revert_progress(revert_name: str = "") -> dict:
+    """Diagnostics: status + live progress/profile for a revert run, mirroring
+    ``run_progress``. Reads the crash-proof cache streamed by
+    ``rollback.run_revert`` so the monitor can poll a revert the same way it polls a
+    migration. ``{}`` when the revert is unknown. Read-only. Never merged to main."""
+    frappe.only_for(ALLOWED_ROLES)
+    if not revert_name:
+        return {}
+    row = frappe.db.get_value(
+        "Tally Migration Revert", revert_name,
+        ["status", "deleted_count", "kept_count"], as_dict=True)
+    if not row:
+        return {}
+    cached = frappe.cache().get_value(f"tally_revert_progress:{revert_name}") or {}
+    return {
+        "status": row.status,
+        "deleted_count": row.deleted_count,
+        "kept_count": row.kept_count,
+        "percent": cached.get("percent"),
+        "description": cached.get("description"),
+        "deleted": cached.get("deleted"),
+        "total": cached.get("total"),
+        "profile": cached.get("profile"),
     }
 
 
@@ -569,9 +608,12 @@ def _source_from_file(file_url):
     cache_key = (frappe.session.user, file_doc.name, str(file_doc.modified))
     with _SOURCE_CACHE_LOCK:
         source = _SOURCE_CACHE.get(cache_key)
-        if source is not None:
+        if source is not None and not getattr(source, "released", False):
             _SOURCE_CACHE.move_to_end(cache_key)     # mark most-recently used
             return file_doc, source
+        # A released source (its parsed buffers freed after a run to reclaim memory)
+        # can no longer serve get_collection, so fall through and re-parse, overwriting
+        # the stale entry below.
         # A zipped XML is accepted transparently: unzip (with the uncompressed
         # size held to the same cap) before decoding, so the parser only ever
         # sees plain XML bytes regardless of how the file was uploaded. The raw
