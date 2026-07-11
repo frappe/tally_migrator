@@ -10,6 +10,8 @@ frappe.ui.form.on("Tally Migration Log", {
 		render_mapping(frm);
 		add_buttons(frm);
 		check_liveness(frm);
+		/* ===== DIAGNOSTICS (profiler) FEATURE - remove this line + the fenced block below to delete ===== */
+		tally_diagnostics_attach(frm);
 		/* ===== ROLLBACK FEATURE - remove this line + the fenced block below to delete ===== */
 		tally_rollback_attach(frm);
 	},
@@ -1287,3 +1289,169 @@ function tally_rollback_run(frm, company_confirmation) {
 	});
 }
 /* ===== END ROLLBACK FEATURE ===== */
+
+/* ============================================================================
+ * DIAGNOSTICS (PROFILER) FEATURE - "View / Download Diagnostics"
+ * ---------------------------------------------------------------------------
+ * Self-contained: this whole block plus the single tally_diagnostics_attach(frm)
+ * call in refresh() is the entire client footprint. Delete both to remove it.
+ *
+ * Lets whoever owns the site read the run's profiler output - phase timings, SQL
+ * shapes, the memory curve, enqueue/commit counts - straight from the desk, with no
+ * API key. It calls the session-authenticated, role-guarded
+ * revert_monitor.diagnostics_report, so a customer can run a failing migration on
+ * their own site and send back the (business-data-free) JSON for us to read, without
+ * sharing their data or credentials.
+ * ========================================================================== */
+function tally_diagnostics_attach(frm) {
+	if (frm.is_new()) return;
+	// Offered on any run that actually started (has a background job or a recorded
+	// status). Profiler data lives in the crash-proof cache and/or the log's
+	// _profile, so it's available for a stalled/OOM'd run too - exactly when it helps.
+	if (!frm.doc.job_id && !frm.doc.status) return;
+	frm.add_custom_button(
+		__("Diagnostics"),
+		() => tally_diagnostics_open(frm),
+		__("Actions")
+	);
+}
+
+function tally_diagnostics_open(frm) {
+	frappe.dom.freeze(__("Loading diagnostics…"));
+	frappe.call({
+		method: "tally_migrator.migration.revert_monitor.diagnostics_report",
+		args: { log_name: frm.doc.name, include_content: 0 },
+		callback: (r) => {
+			frappe.dom.unfreeze();
+			tally_diagnostics_dialog(frm, r.message || {});
+		},
+		error: () => frappe.dom.unfreeze(),
+	});
+}
+
+function tally_diagnostics_dialog(frm, data) {
+	const esc = frappe.utils.escape_html;
+	const num = (n, d = 0) =>
+		n == null ? "" : Number(n).toLocaleString("en-IN", { maximumFractionDigits: d });
+
+	// Prefer the persisted per-phase report (richer: percentiles, top-20 SQL); fall
+	// back to the live compact profile streamed to the cache (present for a run that
+	// never finalised). Normalise both into rows the table below can render.
+	const report = data.report && Object.keys(data.report).length ? data.report : null;
+	const live = data.live_profile && Object.keys(data.live_profile).length ? data.live_profile : null;
+	const phases = report || live || {};
+
+	const phaseRows = Object.entries(phases)
+		.map(([label, p]) => {
+			const wall = p.wall_s;
+			const records = p.records != null ? p.records : p.planned;
+			const avg = p.per_record_ms ? p.per_record_ms.avg : p.avg_ms;
+			const sqlCount = p.sql ? (p.sql.count != null ? p.sql.count : p.sql) : null;
+			const sqlS = p.sql && p.sql.time_s != null ? p.sql.time_s : p.sql_s;
+			const enq = p.enqueues != null ? p.enqueues : null;
+			const rss = p.rss_mb;
+			return `<tr>
+				<td style="font-weight:500;">${esc(label)}</td>
+				<td class="text-right">${num(wall, 1)}</td>
+				<td class="text-right text-muted">${num(records)}</td>
+				<td class="text-right text-muted">${num(avg, 1)}</td>
+				<td class="text-right text-muted">${num(sqlCount)}</td>
+				<td class="text-right text-muted">${num(sqlS, 1)}</td>
+				<td class="text-right ${enq ? "text-danger" : "text-muted"}">${enq == null ? "" : num(enq)}</td>
+				<td class="text-right text-muted">${num(rss)}</td>
+			</tr>`;
+		})
+		.join("");
+
+	const phaseTable = phaseRows
+		? `<table class="table table-condensed" style="margin:0; font-size:12px;">
+				<thead><tr>
+					<th style="border-top:0;">Phase</th>
+					<th style="border-top:0;" class="text-right">Wall s</th>
+					<th style="border-top:0;" class="text-right">Records</th>
+					<th style="border-top:0;" class="text-right">Avg ms</th>
+					<th style="border-top:0;" class="text-right">SQL #</th>
+					<th style="border-top:0;" class="text-right">SQL s</th>
+					<th style="border-top:0;" class="text-right">Enq</th>
+					<th style="border-top:0;" class="text-right">RSS MB</th>
+				</tr></thead>
+				<tbody>${phaseRows}</tbody>
+			</table>`
+		: `<div class="text-muted small">No profiler data captured for this run yet.</div>`;
+
+	// Memory curve: the streamed trail (survives an OOM kill) as a compact list of the
+	// last samples, so a run that died reveals where its memory went.
+	const trail = Array.isArray(data.mem_trail) ? data.mem_trail : [];
+	const trailRows = trail
+		.slice(-14)
+		.map(
+			(m) => `<tr>
+				<td class="text-muted text-right" style="width:52px;">${m.percent != null ? m.percent + "%" : ""}</td>
+				<td>${esc(String(m.phase || ""))}</td>
+				<td class="text-right">${num(m.rss_mb)}</td>
+				<td class="text-right text-muted">${num(m.peak_mb)}</td>
+			</tr>`
+		)
+		.join("");
+	const trailTable = trail.length
+		? `<table class="table table-condensed" style="margin:0; font-size:12px;">
+				<thead><tr>
+					<th style="border-top:0;"></th>
+					<th style="border-top:0;">Phase / checkpoint</th>
+					<th style="border-top:0;" class="text-right">RSS MB</th>
+					<th style="border-top:0;" class="text-right">Peak MB</th>
+				</tr></thead>
+				<tbody>${trailRows}</tbody>
+			</table>`
+		: "";
+
+	const peak = data.peak_mb || Math.max(0, ...trail.map((m) => m.peak_mb || 0));
+	const header = `<div class="text-muted small" style="margin-bottom:8px;">
+		Status <strong>${esc(String(data.status || "-"))}</strong>
+		${data.percent != null ? ` · reached <strong>${data.percent}%</strong>` : ""}
+		${peak ? ` · peak memory <strong>${num(peak)} MB</strong>` : ""}
+	</div>`;
+
+	const note = `<div class="text-muted small" style="margin-top:10px;">
+		This report contains timings, SQL shapes and the memory curve only - no record
+		content. Use <strong>Download JSON</strong> to save it and send it to us; nothing
+		here identifies your data.
+	</div>`;
+
+	const d = new frappe.ui.Dialog({
+		title: __("Run diagnostics"),
+		size: "large",
+		fields: [
+			{
+				fieldtype: "HTML",
+				options: `<div style="font-size:13px;">
+					${header}
+					<div style="font-weight:500; margin:4px 0;">Per-phase profile</div>
+					${phaseTable}
+					${trailTable ? `<div style="font-weight:500; margin:14px 0 4px;">Memory curve</div>${trailTable}` : ""}
+					${note}
+				</div>`,
+			},
+		],
+		primary_action_label: __("Download JSON"),
+		primary_action: () => tally_diagnostics_download(frm, data),
+	});
+	d.show();
+}
+
+function tally_diagnostics_download(frm, data) {
+	// Client-side download of the safe payload as a .json file the user can attach and
+	// send us. No server round-trip, no upload - the file never leaves the browser
+	// except by the user's own action.
+	const blob = new Blob([JSON.stringify(data, null, 2)], { type: "application/json" });
+	const url = URL.createObjectURL(blob);
+	const a = document.createElement("a");
+	a.href = url;
+	a.download = `tally-diagnostics-${frm.doc.name}.json`;
+	document.body.appendChild(a);
+	a.click();
+	document.body.removeChild(a);
+	URL.revokeObjectURL(url);
+	frappe.show_alert({ message: __("Diagnostics report downloaded."), indicator: "green" });
+}
+/* ===== END DIAGNOSTICS (PROFILER) FEATURE ===== */

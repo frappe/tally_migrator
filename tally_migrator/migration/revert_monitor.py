@@ -280,3 +280,92 @@ def profile_revert(revert_name: str = "") -> dict:
                               ["status", "deleted_count", "kept_count"], as_dict=True)
     return {"revert": revert_name, "doc": doc,
             "live": frappe.cache().get_value(f"tally_revert_progress:{revert_name}") or {}}
+
+
+# ── In-app diagnostics report (session-authenticated, no API key) ────────────────
+# The endpoint the log form's "Diagnostics" panel and "Download report" button call.
+# It runs under the logged-in session (frappe.call from the desk), so a customer who
+# owns the data can view and export the profile themselves without ever handing over
+# an API key or the data itself - the default payload is customer-safe.
+
+def _strip_report(report: dict, include_content: bool) -> dict:
+    """Return the full per-phase report with each phase's ``slowest`` list reduced to
+    timing + record count only. The slowest-record ``content``/``id`` are the *actual
+    migrated record* (party name, GSTIN, address...), so they are dropped unless the
+    caller explicitly opts in. Everything else (phase timings, SQL *shapes*, memory,
+    commit/enqueue/http counts) carries no business data and is always kept."""
+    if not isinstance(report, dict):
+        return {}
+    if include_content:
+        return report
+    safe = {}
+    for label, phase in report.items():
+        if not isinstance(phase, dict):
+            safe[label] = phase
+            continue
+        p = dict(phase)
+        slow = p.get("slowest")
+        if isinstance(slow, list):
+            # Keep the timing distribution, drop the record identity/content.
+            p["slowest"] = [{"ms": s.get("ms")} for s in slow if isinstance(s, dict)]
+        safe[label] = p
+    return safe
+
+
+@frappe.whitelist()
+def diagnostics_report(log_name: str = "", include_content: int = 0) -> dict:
+    """Session-authenticated diagnostics for a migration run, safe to share.
+
+    Assembles one payload from two sources so it works for both a *finished* run and a
+    *crashed / OOM-killed* one:
+      - the crash-proof progress cache (live compact profile + memory curve, streamed
+        during the run so it survives a worker that never wrote a terminal status), and
+      - the log's persisted ``_profile`` / ``_phase_seconds`` (written at finalize).
+
+    ``include_content`` defaults to 0: the returned profile contains phase timings, SQL
+    *shapes* (fingerprinted, never literal values), the memory trail, and
+    commit/enqueue/http counts - none of which is business data - so a customer can hand
+    it over to diagnose where a run stalls without disclosing their records. Pass 1 only
+    with the data owner's consent; it adds the slowest records' own field content.
+
+    Read-only, role-guarded, never merged to main. Defaults to the latest run."""
+    import json
+    from tally_migrator.api import ALLOWED_ROLES
+    frappe.only_for(ALLOWED_ROLES)
+    include = bool(int(include_content or 0))
+    if not log_name:
+        rows = frappe.get_all("Tally Migration Log", fields=["name"],
+                              order_by="creation desc", limit=1)
+        log_name = rows[0].name if rows else ""
+    if not log_name:
+        return {}
+    row = frappe.db.get_value(
+        "Tally Migration Log", log_name,
+        ["status", "company", "extracted_counts"], as_dict=True) or {}
+    cached = frappe.cache().get_value(f"tally_migration_progress:{log_name}") or {}
+    # The persisted profile lives inside extracted_counts JSON under two private keys.
+    phase_seconds, full_report = {}, {}
+    try:
+        ec = json.loads(row.get("extracted_counts") or "{}")
+        phase_seconds = ec.get("_phase_seconds") or {}
+        full_report = ec.get("_profile") or {}
+    except Exception:
+        pass
+    return {
+        "log": log_name,
+        "status": row.get("status"),
+        "company": row.get("company"),
+        "generated_at": str(frappe.utils.now()),
+        "branch": "fc/e2e-profiler",
+        "includes_record_content": include,
+        # Live, crash-proof stream (present even if the run never finalised).
+        "percent": cached.get("percent"),
+        "description": cached.get("description"),
+        "rss_mb": cached.get("rss_mb"),
+        "peak_mb": cached.get("peak_mb"),
+        "mem_trail": cached.get("mem_trail") or [],
+        "live_profile": cached.get("profile") or {},
+        # Persisted at finalize (richer, per-phase percentiles + top-20 SQL).
+        "phase_seconds": phase_seconds,
+        "report": _strip_report(full_report, include),
+    }
