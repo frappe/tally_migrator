@@ -14,3 +14,9 @@ build-backend = "setuptools.build_meta"
 
 [tool.setuptools.packages.find]
 include = ["tally_migrator*"]
+
+# Frappe Cloud reads this to validate version compatibility during installs,
+# updates, and branch changes. Use version ranges, not hard pins.
+[tool.bench.frappe-dependencies]
+frappe = ">=15.0.0,<17.0.0"
+erpnext = ">=15.0.0,<17.0.0"
