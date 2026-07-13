@@ -621,14 +621,27 @@ def top_allocations(limit: int = 12) -> list[dict]:
         return []
 
 
+def _config_interval() -> float:
+    """Watchdog sample interval in seconds. Site-configurable via
+    ``tally_migrator_watchdog_interval`` (a site owner can slow it down to reduce Redis
+    writes, or speed it up while chasing a fast hang). Defaults to 2s; clamped to a sane
+    floor by the watchdog itself."""
+    try:
+        import frappe
+        return float(frappe.conf.get("tally_migrator_watchdog_interval") or 2.0)
+    except Exception:
+        return 2.0
+
+
 @contextlib.contextmanager
 def session(prof: "RunProfiler", heartbeat_name: str = "",
-            heartbeat_interval: float = 2.0, trace: bool = False):
+            heartbeat_interval: float | None = None, trace: bool = False):
     """Make ``prof`` the active profiler and install the global hooks for the duration.
     Always restores the hooks and clears the active profiler, even on error.
 
     ``heartbeat_name`` (a log / revert / preview id) starts the watchdog: a daemon thread
     streaming RSS + the in-flight record to Redis so a killed/hung run stays observable.
+    ``heartbeat_interval`` overrides the sample cadence; when None it follows site config.
     ``trace`` starts tracemalloc for allocation-level attribution (opt-in; has overhead).
     Both are best-effort - a failure to start either never blocks the run."""
     restore = _install_hooks(prof)
@@ -636,8 +649,9 @@ def session(prof: "RunProfiler", heartbeat_name: str = "",
     wd = None
     if heartbeat_name:
         try:
+            interval = heartbeat_interval if heartbeat_interval is not None else _config_interval()
             wd = _Watchdog(prof, _raw_redis(), _heartbeat_key(heartbeat_name),
-                           interval=heartbeat_interval)
+                           interval=interval)
             wd.start()
         except Exception:
             wd = None

@@ -1341,24 +1341,61 @@ function tally_diagnostics_dialog(frm, data) {
 	const live = data.live_profile && Object.keys(data.live_profile).length ? data.live_profile : null;
 	const phases = report || live || {};
 
-	const phaseRows = Object.entries(phases)
-		.map(([label, p]) => {
-			const wall = p.wall_s;
-			const records = p.records != null ? p.records : p.planned;
-			const avg = p.per_record_ms ? p.per_record_ms.avg : p.avg_ms;
-			const sqlCount = p.sql ? (p.sql.count != null ? p.sql.count : p.sql) : null;
-			const sqlS = p.sql && p.sql.time_s != null ? p.sql.time_s : p.sql_s;
-			const enq = p.enqueues != null ? p.enqueues : null;
-			const rss = p.rss_mb;
+	// Normalise + sort phases by wall time (biggest first - that is where to look), and
+	// tag each with its dominant cost so the table reads as a diagnosis, not just numbers.
+	const phaseList = Object.entries(phases).map(([label, p]) => {
+		const sqlS = p.sql && p.sql.time_s != null ? p.sql.time_s : p.sql_s;
+		const httpS = p.http && p.http.time_s != null ? p.http.time_s : 0;
+		const commitS = p.commits && p.commits.time_s != null ? p.commits.time_s : 0;
+		return {
+			label,
+			wall: p.wall_s || 0,
+			records: p.records != null ? p.records : p.planned,
+			avg: p.per_record_ms ? p.per_record_ms.avg : p.avg_ms,
+			sqlCount: p.sql ? (p.sql.count != null ? p.sql.count : p.sql) : null,
+			sqlS: sqlS || 0,
+			httpS: httpS || 0,
+			commitS: commitS || 0,
+			enq: p.enqueues != null ? p.enqueues : null,
+			rss: p.rss_mb,
+		};
+	});
+	phaseList.sort((a, b) => b.wall - a.wall);
+	const totalWall = phaseList.reduce((s, p) => s + (p.wall || 0), 0) || 1;
+	const maxWall = phaseList.length ? phaseList[0].wall || 1 : 1;
+
+	// Which cost dominates a phase - the one-word "why it's slow".
+	const dominantCost = (p) => {
+		const share = (x) => (p.wall ? x / p.wall : 0);
+		if (share(p.sqlS) >= 0.5) return { t: "SQL", c: "var(--blue-600, #318ad8)" };
+		if (share(p.httpS) >= 0.4) return { t: "HTTP", c: "var(--red-500, #e24c4c)" };
+		if (share(p.commitS) >= 0.3) return { t: "commits", c: "var(--orange-600, #cb7c1f)" };
+		return { t: "build", c: MUTED };
+	};
+
+	const phaseRows = phaseList
+		.map((p) => {
+			const dc = dominantCost(p);
+			const barPct = Math.max(1, Math.round((p.wall / maxWall) * 100));
+			const sharePct = Math.round((p.wall / totalWall) * 100);
 			return `<tr>
-				<td style="font-weight:500;">${esc(label)}</td>
-				<td class="text-right">${num(wall, 1)}</td>
-				<td class="text-right text-muted">${num(records)}</td>
-				<td class="text-right text-muted">${num(avg, 1)}</td>
-				<td class="text-right text-muted">${num(sqlCount)}</td>
-				<td class="text-right text-muted">${num(sqlS, 1)}</td>
-				<td class="text-right ${enq ? "text-danger" : "text-muted"}">${enq == null ? "" : num(enq)}</td>
-				<td class="text-right text-muted">${num(rss)}</td>
+				<td style="font-weight:500;">${esc(p.label)}</td>
+				<td style="width:120px;">
+					<div style="display:flex; align-items:center; gap:6px;">
+						<div style="flex:1; height:6px; border-radius:3px; background:var(--gray-200,#f0f4f7);">
+							<div style="width:${barPct}%; height:6px; border-radius:3px; background:${dc.c};"></div>
+						</div>
+						<span class="text-muted" style="font-size:11px; width:30px; text-align:right;">${sharePct}%</span>
+					</div>
+				</td>
+				<td class="text-right">${num(p.wall, 1)}</td>
+				<td><span style="font-size:11px; color:${dc.c};">${dc.t}</span></td>
+				<td class="text-right text-muted">${num(p.records)}</td>
+				<td class="text-right text-muted">${num(p.avg, 1)}</td>
+				<td class="text-right text-muted">${num(p.sqlCount)}</td>
+				<td class="text-right text-muted">${num(p.sqlS, 1)}</td>
+				<td class="text-right ${p.enq ? "text-danger" : "text-muted"}">${p.enq == null ? "" : num(p.enq)}</td>
+				<td class="text-right text-muted">${num(p.rss)}</td>
 			</tr>`;
 		})
 		.join("");
@@ -1367,7 +1404,9 @@ function tally_diagnostics_dialog(frm, data) {
 		? `<table class="table table-condensed" style="margin:0; font-size:12px;">
 				<thead><tr>
 					<th style="border-top:0;">Phase</th>
+					<th style="border-top:0;">Share of run</th>
 					<th style="border-top:0;" class="text-right">Wall s</th>
+					<th style="border-top:0;">Cost</th>
 					<th style="border-top:0;" class="text-right">Records</th>
 					<th style="border-top:0;" class="text-right">Avg ms</th>
 					<th style="border-top:0;" class="text-right">SQL #</th>
@@ -1378,6 +1417,32 @@ function tally_diagnostics_dialog(frm, data) {
 				<tbody>${phaseRows}</tbody>
 			</table>`
 		: `<div class="text-muted small">No profiler data captured for this run yet.</div>`;
+
+	// ── Findings: the ranked "here is the problem" list, shown first. ──
+	const findings = Array.isArray(data.findings) ? data.findings : [];
+	const SEV = {
+		high: { bg: "var(--red-100, #fff0f0)", bd: "var(--red-500, #e24c4c)", ic: "error" },
+		medium: { bg: "var(--orange-100, #fff5e6)", bd: "var(--orange-600, #cb7c1f)", ic: "info" },
+		low: { bg: "var(--gray-100, #f4f5f6)", bd: "var(--gray-400, #c0c8d0)", ic: "info" },
+		info: { bg: "var(--blue-100, #edf6fd)", bd: "var(--blue-500, #4ba0e8)", ic: "info" },
+	};
+	const findingsBlock = findings.length
+		? findings
+				.map((f) => {
+					const s = SEV[f.severity] || SEV.info;
+					return `<div style="border-left:3px solid ${s.bd}; background:${s.bg};
+						border-radius:4px; padding:8px 10px; margin-bottom:6px;">
+						<div style="display:flex; align-items:center; gap:6px;">
+							${statusIcon(s.ic)}
+							<strong style="font-size:12.5px;">${esc(f.title)}</strong>
+							${f.phase ? `<span class="text-muted" style="font-size:11px;">· ${esc(f.phase)}</span>` : ""}
+							<span class="text-muted" style="font-size:10px; text-transform:uppercase; margin-left:auto;">${esc(f.severity)}</span>
+						</div>
+						<div class="text-muted small" style="margin-top:3px;">${esc(f.detail)}</div>
+					</div>`;
+				})
+				.join("")
+		: `<div class="text-muted small">No performance issues flagged.</div>`;
 
 	// Memory curve: the streamed trail (survives an OOM kill) as a compact list of the
 	// last samples, so a run that died reveals where its memory went.
@@ -1404,6 +1469,31 @@ function tally_diagnostics_dialog(frm, data) {
 				<tbody>${trailRows}</tbody>
 			</table>`
 		: "";
+
+	// Memory sparkline: the RSS curve across the whole run as a small inline SVG, with the
+	// worker cap drawn as a dashed line so "how close to OOM" is visible at a glance.
+	const sparkline = (() => {
+		const pts = trail.map((m) => Number(m.rss_mb || 0)).filter((v) => v > 0);
+		if (pts.length < 2) return "";
+		const capV = Number((data.env || {}).worker_memory_limit_mb || 0);
+		const W = 460, H = 60, pad = 4;
+		const hi = Math.max(...pts, capV || 0) * 1.05 || 1;
+		const x = (i) => pad + (i / (pts.length - 1)) * (W - 2 * pad);
+		const y = (v) => H - pad - (v / hi) * (H - 2 * pad);
+		const d = pts.map((v, i) => `${i ? "L" : "M"}${x(i).toFixed(1)},${y(v).toFixed(1)}`).join(" ");
+		const capLine =
+			capV > 0
+				? `<line x1="${pad}" y1="${y(capV).toFixed(1)}" x2="${W - pad}" y2="${y(capV).toFixed(1)}"
+						stroke="var(--red-500,#e24c4c)" stroke-width="1" stroke-dasharray="4 3"/>
+					<text x="${W - pad}" y="${(y(capV) - 3).toFixed(1)}" text-anchor="end"
+						font-size="9" fill="var(--red-500,#e24c4c)">cap ${num(capV)} MB</text>`
+				: "";
+		return `<svg viewBox="0 0 ${W} ${H}" width="100%" height="${H}" preserveAspectRatio="none"
+			style="margin:2px 0 4px;">
+			${capLine}
+			<path d="${d}" fill="none" stroke="var(--blue-500,#4ba0e8)" stroke-width="1.5"/>
+		</svg>`;
+	})();
 
 	const env = data.env || {};
 	const hb = data.heartbeat || {};
@@ -1502,9 +1592,13 @@ function tally_diagnostics_dialog(frm, data) {
 				options: `<div style="font-size:13px;">
 					${header}
 					${verdict}
-					<div style="font-weight:500; margin:4px 0;">Per-phase profile</div>
+					<div style="font-weight:500; margin:4px 0;">What we found</div>
+					${findingsBlock}
+					<div style="font-weight:500; margin:14px 0 4px;">Per-phase profile</div>
 					${phaseTable}
-					${trailTable ? `<div style="font-weight:500; margin:14px 0 4px;">Memory curve</div>${trailTable}` : ""}
+					${trailTable
+						? `<div style="font-weight:500; margin:14px 0 4px;">Memory curve</div>${sparkline}${trailTable}`
+						: ""}
 					${hbBlock}
 					${pvBlock}
 					${errBlock}
@@ -1517,7 +1611,36 @@ function tally_diagnostics_dialog(frm, data) {
 		primary_action_label: __("Download JSON"),
 		primary_action: () => tally_diagnostics_download(frm, data),
 	});
+	// A quieter secondary action: copy a plain-text summary (findings + top phases) for
+	// pasting into an email or chat, without downloading a file.
+	d.set_secondary_action_label(__("Copy summary"));
+	d.set_secondary_action(() => tally_diagnostics_copy(frm, data, phaseList));
 	d.show();
+}
+
+function tally_diagnostics_copy(frm, data, phaseList) {
+	const lines = [];
+	lines.push(`Tally Migrator diagnostics - ${frm.doc.name} (${data.status || "-"})`);
+	if (data.headline) lines.push(`Headline: ${data.headline}`);
+	const env = data.env || {};
+	if (env.worker_memory_limit_mb)
+		lines.push(`Peak memory ${data.peak_mb || "?"} MB / ${env.worker_memory_limit_mb} MB cap`);
+	lines.push("");
+	lines.push("Findings:");
+	(data.findings || []).forEach((f) =>
+		lines.push(`- [${f.severity}] ${f.title}${f.phase ? " (" + f.phase + ")" : ""}: ${f.detail}`));
+	if (!(data.findings || []).length) lines.push("- none flagged");
+	lines.push("");
+	lines.push("Top phases by time:");
+	(phaseList || []).slice(0, 5).forEach((p) =>
+		lines.push(`- ${p.label}: ${Number(p.wall || 0).toFixed(1)}s, ${p.sqlCount || 0} queries`));
+	const text = lines.join("\n");
+	const done = () => frappe.show_alert({ message: __("Summary copied."), indicator: "green" });
+	if (navigator.clipboard && navigator.clipboard.writeText) {
+		navigator.clipboard.writeText(text).then(done, () => frappe.msgprint(`<pre>${frappe.utils.escape_html(text)}</pre>`));
+	} else {
+		frappe.msgprint(`<pre>${frappe.utils.escape_html(text)}</pre>`);
+	}
 }
 
 function tally_diagnostics_download(frm, data) {

@@ -21,6 +21,7 @@ import traceback
 import frappe
 
 from tally_migrator.migration import profiler
+from tally_migrator.migration import profiler_analysis
 
 
 def _latest_revert() -> str | None:
@@ -479,6 +480,16 @@ def diagnostics_report(log_name: str = "", include_content: int = 0) -> dict:
                 break
     except Exception:
         pass
+    env = _env_block(row)
+    mem_trail = cached.get("mem_trail") or persisted_mem
+    # Ranked, plain-language findings: analyse the richest profile available (the persisted
+    # full report, else the live compact snapshot) plus the memory trail and the worker
+    # cap. Business-data-free, so it ships in the default (content-stripped) payload.
+    try:
+        profile_for_analysis = full_report or cached.get("profile") or {}
+        findings = profiler_analysis.analyze(profile_for_analysis, mem_trail, env)
+    except Exception:
+        findings = []
     return {
         "log": log_name,
         "status": row.get("status"),
@@ -487,13 +498,16 @@ def diagnostics_report(log_name: str = "", include_content: int = 0) -> dict:
         "branch": "fc/e2e-profiler",
         "includes_record_content": include,
         "failed": failed_flag,
+        # The headline: ranked findings ('here is the problem'), safe to show and share.
+        "findings": findings,
+        "headline": profiler_analysis.headline(findings),
         # Live, crash-proof stream (present even if the run never finalised); falls back
         # to the durable fail-log snapshot once the cache has expired.
         "percent": cached.get("percent"),
         "description": cached.get("description"),
         "rss_mb": cached.get("rss_mb"),
         "peak_mb": cached.get("peak_mb"),
-        "mem_trail": cached.get("mem_trail") or persisted_mem,
+        "mem_trail": mem_trail,
         "alloc_top": cached.get("alloc_top") or persisted_alloc,
         "live_profile": cached.get("profile") or {},
         # Persisted at finalize / fail (richer, per-phase percentiles + top-20 SQL).
@@ -502,6 +516,6 @@ def diagnostics_report(log_name: str = "", include_content: int = 0) -> dict:
         # Watchdog + web-parse + environment + errors.
         "heartbeat": heartbeat,
         "preview_parse": preview,
-        "env": _env_block(row),
+        "env": env,
         "errors": _related_error_logs(log_name, row.get("creation"), include),
     }

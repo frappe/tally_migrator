@@ -358,6 +358,45 @@ class TestDiagnosticsReportIntegration(unittest.TestCase):
         full = revert_monitor.diagnostics_report(log.name, include_content=1)
         self.assertIn("gstin", frappe.as_json(full))
 
+    def test_findings_surface_in_report(self):
+        # An N+1 profile must produce a ranked finding + headline in the endpoint payload.
+        company = frappe.get_all("Company", pluck="name", limit=1)
+        log = frappe.get_doc({
+            "doctype": "Tally Migration Log",
+            "company": company[0] if company else None,
+            "tally_company": "UTest Co",
+            "status": "Completed",
+            "extracted_counts": frappe.as_json({
+                "_phase_seconds": {"Suppliers": 300.0},
+                "_profile": {"Suppliers": {
+                    "wall_s": 300.0, "records": 5000,
+                    "sql": {"count": 310000, "time_s": 245.0},
+                    "top_sql": [{"count": 300000, "time_s": 240.0,
+                                 "q": "select name from `tabSupplier` where name=%s"}],
+                }},
+            }),
+        }).insert(ignore_permissions=True)
+        frappe.db.commit()
+        out = revert_monitor.diagnostics_report(log.name)
+        self.assertTrue(out["findings"])
+        self.assertEqual(out["findings"][0]["code"], "n_plus_one")
+        self.assertIn("Suppliers", out["headline"])
+
+
+class TestWatchdogIntervalConfig(unittest.TestCase):
+    def test_interval_follows_site_config(self):
+        with mock.patch.object(frappe, "conf", {"tally_migrator_watchdog_interval": 7}):
+            self.assertEqual(profiler._config_interval(), 7.0)
+        with mock.patch.object(frappe, "conf", {}):
+            self.assertEqual(profiler._config_interval(), 2.0)
+
+    def test_session_uses_config_interval_when_unset(self):
+        with mock.patch.object(frappe, "conf", {"tally_migrator_watchdog_interval": 5}):
+            prof = profiler.RunProfiler(mem_fn=profiler.rss_mb)
+            name = f"utest-{frappe.generate_hash(length=8)}"
+            with profiler.session(prof, heartbeat_name=name):
+                self.assertEqual(prof.watchdog._interval, 5.0)
+
 
 if __name__ == "__main__":
     unittest.main()
