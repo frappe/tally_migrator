@@ -1,3 +1,4 @@
+import gc
 import time as _time_mod
 from dataclasses import dataclass
 from typing import Callable
@@ -29,6 +30,48 @@ def _trace_enabled() -> bool:
         return bool(frappe.conf.get("tally_migrator_tracemalloc"))
     except Exception:
         return False
+
+
+def _malloc_trim() -> bool:
+    """Best-effort: ask the C allocator to return free heap pages to the OS.
+
+    Dropping the parsed source frees the Python objects, but on glibc the freed pages
+    stay in the allocator's arenas, so RSS does not fall and the long import runs at the
+    extraction high-water mark (measured on Frappe Cloud: ``release()`` reclaimed ~3 MB;
+    the rest only returned at completion). ``malloc_trim(0)`` asks glibc to hand empty
+    pages back.
+
+    Returns True only if the call was actually made. Pure best-effort: a no-op where the
+    symbol is absent (musl, macOS dev) or libc cannot be resolved, and any failure is
+    swallowed - this only ever changes the memory footprint, never a run's outcome.
+
+    ``CDLL(None)`` (the process's already-loaded global symbols) is tried first: on glibc
+    that resolves ``malloc_trim`` and needs no ``ldconfig``/compiler, so it works inside a
+    minimal container where ``ctypes.util.find_library('c')`` returns None (e.g. a slim
+    Frappe Cloud image - the exact target). The named/soname fallbacks cover the rare case
+    where the global handle can't see libc."""
+    try:
+        import ctypes
+    except Exception:
+        return False
+    candidates = [None, "libc.so.6", "libc.so"]
+    try:
+        import ctypes.util
+        found = ctypes.util.find_library("c")
+        if found and found not in candidates:
+            candidates.append(found)
+    except Exception:
+        pass
+    for name in candidates:
+        try:
+            libc = ctypes.CDLL(name)
+            if not hasattr(libc, "malloc_trim"):
+                continue
+            libc.malloc_trim(0)
+            return True
+        except Exception:
+            continue
+    return False
 
 
 def _collapse_identical(rows: list[dict], sample: int = 5) -> list[dict]:
@@ -311,6 +354,20 @@ class MasterMigrator:
             except Exception:
                 pass
             self._mem_checkpoint("parsed file freed")
+            # release() drops the Python objects but the allocator keeps the freed pages,
+            # so RSS stays at the extraction high-water mark through the long import (the
+            # measured cause of the Frappe Cloud OOM pressure). Break any cycles, then ask
+            # the C allocator to return the pages to the OS. Both steps are best-effort and
+            # separately checkpointed, so a run's memory trail shows exactly how much each
+            # reclaims on this environment (glibc vs pymalloc vs macOS differ). Guarded so a
+            # failure in this footprint optimisation can never abort an otherwise-good run.
+            try:
+                gc.collect()
+            except Exception:
+                pass
+            self._mem_checkpoint("after gc.collect")
+            trimmed = _malloc_trim()
+            self._mem_checkpoint("after malloc_trim" if trimmed else "malloc_trim unavailable")
 
             results: dict[str, ImportResult] = {}
             steps = self._pipeline(masters, coa, bills)
