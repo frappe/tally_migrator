@@ -338,16 +338,25 @@ class TestERPNextImporter(unittest.TestCase):
 
     # ── Step 1: recover address/contact drops (no-state, bad email) ────────────
 
-    def test_resolve_state_prefers_ledger_then_gstin_then_pin(self):
-        """State resolves most-reliable first: Tally ledger state, else GSTIN state
-        code, else derived from the PIN. Tally rarely sets a ledger state, so the
-        PIN fallback is what keeps most addresses out of the missing-state drop."""
+    def test_resolve_state_prefers_gstin_then_ledger_then_pin(self):
+        """State resolves most-reliable first: a valid GSTIN's state code (authoritative -
+        it IS the GST state, and India Compliance rejects the address unless the state
+        matches it), else Tally's ledger state, else derived from the PIN. Preferring the
+        GSTIN is what stops a GSTIN that contradicts Tally's ledger state from losing the
+        whole address."""
         from tally_migrator.erpnext.importers import CustomerImporter
         imp = CustomerImporter("_TMTest Co", "TC")
-        # ledger state wins over everything
+        # a valid GSTIN wins over a conflicting ledger state (27 -> Maharashtra), so the
+        # state agrees with the GSTIN we attach and IC accepts the address
         self.assertEqual(imp._resolve_state(
             {"LedgerState": "Karnataka", "GSTRegistrationNumber": "27AAACT2727Q1ZW",
-             "PinCode": "600001"}), "Karnataka")
+             "PinCode": "600001"}), "Maharashtra")
+        # a structurally invalid GSTIN is ignored -> ledger state is used
+        self.assertEqual(imp._resolve_state(
+            {"LedgerState": "Karnataka", "GSTRegistrationNumber": "GARBAGE"}), "Karnataka")
+        # no GSTIN -> ledger state
+        self.assertEqual(imp._resolve_state(
+            {"LedgerState": "Karnataka", "PinCode": "600001"}), "Karnataka")
         # no ledger state -> GSTIN's state code (27 -> Maharashtra) beats the PIN
         self.assertEqual(imp._resolve_state(
             {"GSTRegistrationNumber": "27AAACT2727Q1ZW", "PinCode": "600001"}),

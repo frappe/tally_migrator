@@ -3,12 +3,13 @@
 import contextlib
 import importlib
 import re
+import unicodedata
 from collections import Counter
 from dataclasses import dataclass, field
 from functools import lru_cache
 
 import frappe
-from frappe.utils import validate_email_address
+from frappe.utils import validate_email_address, validate_phone_number
 
 from tally_migrator.tally.mappings import (
     UOM_MAP,
@@ -36,6 +37,57 @@ from .banks import _ensure_bank, _insert_bank_account
 # Mirrored here so an invalid Tally INCOMETAXNumber can be dropped before it reaches
 # IC's validation and blocks the party - see PartyImporter._valid_pan.
 _PAN_NUMBER = re.compile(r"^[A-Z]{5}[0-9]{4}[A-Z]$")
+
+# The characters ERPNext's phone validator accepts (frappe.utils.validate_phone_number
+# / PHONE_NUMBER_PATTERN). Used only to peel wrapper cruft off the ENDS of a value
+# ERPNext already rejected - internal characters are never touched, so a real number is
+# never fabricated from alphanumeric junk.
+_PHONE_ALLOWED = frozenset("0123456789 +_-,.*#()")
+
+
+def _clean_phone(raw) -> str:
+    """A phone string ERPNext will store, or "" when it cannot be salvaged without
+    guessing.
+
+    Verbatim-if-valid: a value ERPNext already accepts is returned byte-for-byte, so
+    good data (including any international number ERPNext accepts) is never altered.
+    Only a value ERPNext would reject enters the salvage path, which:
+
+      * removes invisible control/format characters (Unicode Cc/Cf - e.g. Tally's
+        trailing bidi mark on "6005-593802\\u202c"), and
+      * peels leading/trailing characters outside the accepted set (e.g. an Excel/Tally
+        text-guard apostrophe on "'628065239").
+
+    Internal characters are never removed or reordered, so alphanumeric junk
+    ("NOBLE INFOMATIQUE", "98abc76") can never be turned into a number - it is dropped.
+    The validation is ERPNext's own ``validate_phone_number``, so this is never stricter
+    or looser than what ERPNext would have accepted."""
+    if raw in (None, ""):
+        return ""
+    s = str(raw)
+    if validate_phone_number(s):
+        return s  # ERPNext accepts it - store exactly as given, never touch valid data
+    # Salvage path - reached only for values ERPNext rejects.
+    s = "".join(ch for ch in s if unicodedata.category(ch) not in ("Cc", "Cf"))
+    while s and s[0] not in _PHONE_ALLOWED:
+        s = s[1:]
+    while s and s[-1] not in _PHONE_ALLOWED:
+        s = s[:-1]
+    return s if (s and validate_phone_number(s)) else ""
+
+
+@lru_cache(maxsize=1)
+def _state_by_gst_number() -> dict:
+    """Inverse of India Compliance's ``STATE_NUMBERS`` (GST state code -> canonical
+    state name), so a state derived from a GSTIN is guaranteed to be a name IC accepts
+    and whose number IC maps back to the same code. Empty when IC is absent (no GST
+    validation runs then), so callers fall back to prior behaviour. Cached: the map is
+    a static constant."""
+    try:
+        from india_compliance.gst_india.constants import STATE_NUMBERS
+    except Exception:
+        return {}
+    return {num: state for state, num in STATE_NUMBERS.items()}
 
 
 @lru_cache(maxsize=1)
@@ -543,8 +595,12 @@ class PartyImporter(BaseImporter):
         ERPNext Contact linked to the party, with the WhatsApp-default number marked
         the primary mobile. Non-fatal per contact."""
         for c in data.get("_extra_contacts") or []:
-            phone = (c.get("phone") or "").strip()
+            raw_phone = (c.get("phone") or "").strip()
+            phone = _clean_phone(raw_phone)
             if not phone:
+                if raw_phone:
+                    result.add_warning(
+                        link_name, "additional contact skipped - not a valid phone number")
                 continue
             try:
                 with atomic():
@@ -654,18 +710,27 @@ class PartyImporter(BaseImporter):
             addr.state = state
             addr.country = country
             addr.pincode = data.get("PinCode") or ""
-            addr.phone = data.get("LedgerPhone") or data.get("LedgerMobile") or ""
+            # Tally holds plenty of junk in the phone field (a company name, a
+            # placeholder like "XXXXXXXXXX", a stray text-guard apostrophe). A phone
+            # ERPNext rejects would fail the WHOLE address, so validate/salvage it and
+            # drop just the field when it cannot be salvaged - the address still imports.
+            raw_phone = (data.get("LedgerPhone") or data.get("LedgerMobile") or "").strip()
+            addr.phone = _clean_phone(raw_phone)
+            if raw_phone and not addr.phone:
+                result.add_warning(
+                    link_name, "phone number not set on the address - not a valid "
+                    "phone number")
             # A malformed email (Tally holds plenty: "NA", "n/a", "x@") makes ERPNext
             # reject the whole address. Run it through the same validator ERPNext uses
             # and drop just the bad email, so the address still imports.
             addr.email_id = validate_email_address(
                 (data.get("LedgerEmail") or "").strip(), throw=False)
-            # Only set a structurally valid GSTIN: India Compliance validates the
-            # address GSTIN and rejects the whole address on a malformed one, which
-            # would lose the address entirely. A bad GSTIN is already flagged by the
-            # pre-flight; here we drop just the field and keep the address.
+            # Only set a structurally valid GSTIN, and on an IC site only when its state
+            # code matches the address state (else IC rejects the whole address) - see
+            # _address_gstin. A bad or state-mismatched GSTIN is dropped, keeping the
+            # address; the pre-flight already flags GSTIN problems.
             gstin = (data.get("GSTRegistrationNumber") or "").strip().upper()
-            addr.gstin = gstin if (gstin and validate_gstin(gstin)[0]) else ""
+            addr.gstin = self._address_gstin(gstin, state, country, link_name, result)
             addr.append("links", {"link_doctype": link_type, "link_name": link_name})
             # Remember the message-queue length so that, if the insert fails on a
             # pincode/state mismatch, we can drop India Compliance's own "Invalid
@@ -728,18 +793,61 @@ class PartyImporter(BaseImporter):
             result.add_warning(link_name, f"address not created: {exc}")
             return ""
 
+    def _address_gstin(self, gstin: str, state: str, country: str,
+                       link_name: str, result: "ImportResult") -> str:
+        """The GSTIN to store on the address, or "" to drop it (keeping the address).
+
+        Keeps the existing rule (a structurally valid GSTIN only) and, on an India
+        Compliance site for an Indian address, additionally keeps it only when its state
+        code matches the address state IC will validate against - otherwise IC rejects
+        the whole address ("First 2 digits of GSTIN should match ..."). Because
+        _resolve_state derives the state from the GSTIN whenever IC can represent its
+        code, that check passes for every ordinary GSTIN; it drops only a valid GSTIN
+        whose code IC cannot represent (e.g. a pre-2020 union-territory code), with a
+        warning, so the address itself still imports. Non-IC or non-India addresses are
+        returned unchanged - IC does not cross-check them."""
+        if not (gstin and validate_gstin(gstin)[0]):
+            return ""
+        ic_states = _state_by_gst_number()
+        if not ic_states or country != "India":
+            return gstin  # IC absent or foreign address: no state<->GSTIN cross-check
+        if ic_states.get(gstin[:2]) == state:
+            return gstin
+        result.add_warning(
+            link_name, "GSTIN not set on the address - its state code has no matching "
+            "GST state in India Compliance (verify the GSTIN in ERPNext)")
+        return ""
+
     def _resolve_state(self, data: dict) -> str:
-        """The party's ERPNext state, most-reliable signal first: Tally's ledger
-        state, else a structurally valid GSTIN's state code, else derived from the
-        party's PIN code (India Compliance's pincode<->state map). Tally does not
-        mandate a ledger state so most exports omit it, but a PIN is common and
-        yields an IC-valid state - so the address is kept rather than dropped on
-        India Compliance's missing-state rule."""
+        """The party's ERPNext state, most-reliable signal first: a structurally valid
+        GSTIN's state code (authoritative, and mapped through India Compliance's own
+        state<->number table so it round-trips through IC's validation), else Tally's
+        ledger state, else derived from the party's PIN code (IC's pincode<->state map).
+        Tally does not mandate a ledger state so most exports omit it, but a GSTIN or a
+        PIN is common and yields an IC-valid state - so the address is kept rather than
+        dropped on India Compliance's missing-state rule."""
+        # A structurally valid GSTIN is the authoritative source of the party's GST
+        # state: its first two digits ARE the state's GST number, and India Compliance
+        # rejects the address unless the state and the GSTIN agree. So when a valid
+        # GSTIN is present, derive the state from it - using IC's own state<->number map
+        # so the name is guaranteed to round-trip through IC's validation - in preference
+        # to Tally's free-text ledger state, which is frequently blank or contradicts the
+        # GSTIN (the contradiction is exactly what used to lose the whole address).
+        gstin = (data.get("GSTRegistrationNumber") or "").strip().upper()
+        gstin_valid = bool(gstin and validate_gstin(gstin)[0])
+        ic_states = _state_by_gst_number()  # {} when India Compliance is not installed
+        if gstin_valid and ic_states:
+            ic_state = ic_states.get(gstin[:2], "")
+            if ic_state:
+                return ic_state
         state = TALLY_STATE_MAP.get((data.get("LedgerState") or "").strip(), "")
         if state:
             return state
-        gstin = (data.get("GSTRegistrationNumber") or "").strip().upper()
-        if gstin and validate_gstin(gstin)[0]:
+        # Without IC there is no canonical map, so fall back to the migrator's own
+        # GSTIN->state table. Only used when IC is absent (and therefore not validating):
+        # a few of its union-territory names differ from IC's, so on an IC site the code
+        # above already handled the GSTIN and this is deliberately skipped.
+        if gstin_valid and not ic_states:
             derived = GSTIN_STATE_CODES.get(gstin[:2], "")
             if derived:
                 return derived
@@ -756,8 +864,17 @@ class PartyImporter(BaseImporter):
         Address fields and be lost entirely when the party has no street address.
         Non-fatal: a failure is recorded as a warning so the dropped contact is
         visible in the migration log rather than lost silently."""
-        phone = (data.get("LedgerPhone") or "").strip()
-        mobile = (data.get("LedgerMobile") or "").strip()
+        # Validate/salvage phone and mobile the same way (a junk phone would otherwise
+        # reject the whole Contact and lose its email and name too). Drop just the bad
+        # field, keeping the rest of the contact. Warn so the drop shows.
+        raw_phone = (data.get("LedgerPhone") or "").strip()
+        raw_mobile = (data.get("LedgerMobile") or "").strip()
+        phone = _clean_phone(raw_phone)
+        mobile = _clean_phone(raw_mobile)
+        if raw_mobile and not mobile:
+            result.add_warning(link_name, "contact mobile number skipped - not a valid phone number")
+        if raw_phone and not phone:
+            result.add_warning(link_name, "contact phone number skipped - not a valid phone number")
         # Validate emails up front (the same validator ERPNext's Contact uses) and
         # drop a malformed one - Tally holds plenty ("NA", "n/a", "x@") and a single
         # bad email would otherwise reject the whole contact. Warn so the drop shows.
