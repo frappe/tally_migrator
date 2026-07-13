@@ -721,12 +721,24 @@ Migrator handles a real-world wrinkle in Tally data.
   matches a standard type (Billing, Shipping, Office, and so on), otherwise it is
   typed "Other" with the label preserved in the title.
 - **Each address needs a state.** ERPNext (with India Compliance) requires a state on
-  an Indian address. For each address, the app uses the most precise signal it has:
-  the address's own state, then the state derived from its own PIN code, then the
-  party's state. So a party with a valid address rarely loses it for a missing state.
+  an Indian address. For each address, the app uses the most reliable signal it has:
+  a valid GSTIN's own state code, then the address's ledger state, then the state
+  derived from its PIN code, then the party's state. So a party with a valid address
+  rarely loses it for a missing state.
+- **GSTIN wins when it disagrees with the state.** India Compliance rejects an address
+  whose state does not match its GSTIN. When Tally's ledger state contradicts a valid
+  GSTIN, the app trusts the GSTIN (its first two digits are the GST state) and sets the
+  address state to match, keeping both the address and the GSTIN, and warns you to
+  verify. Previously such a mismatch lost the whole address.
 - **Multiple phone numbers and contacts.** Tally's extra named contacts are each
   imported as their own ERPNext Contact, linked to the party. The number Tally marks
   as the WhatsApp default is set as the primary mobile.
+- **Bad phone numbers.** Tally often holds a company name, a placeholder, or a stray
+  text-guard character in a phone field, which ERPNext would reject - failing the whole
+  Contact or Address (and losing its email and name too). The app keeps a valid number
+  as-is (including international numbers ERPNext accepts), salvages one that only carries
+  invisible or wrapper characters, and otherwise drops just the phone with a warning -
+  never guessing a number from text. The contact's email and name are kept either way.
 - **The primary address and contact are linked.** ERPNext does not automatically mark
   a party's primary address or contact when they are created separately, so the app
   sets them explicitly. Without this, migrated parties would show no primary address
@@ -916,7 +928,7 @@ These appear on the Check step and in the log's data-quality section.
 | **Invalid GSTIN** | Error | The GST number fails its format or checksum | Correct the GSTIN in Tally (or in the inline editor), or clear it to migrate the party as Unregistered |
 | **Item code collision** | Error | Two Tally items reduce to the same ERPNext item code after truncation and "/" replacement | Rename one item in Tally; ERPNext item codes must be unique |
 | **Imports without a GST state** | Warning | An Indian party has no state, and none could be derived from a GSTIN | Add a state so its GST invoices compute CGST/SGST vs IGST correctly, or leave it; the party still imports |
-| **GSTIN and state to verify** | Warning | The GSTIN's state code maps to a different state than the ledger state | Check it; the wrong state flips CGST/SGST vs IGST |
+| **GSTIN and state to verify** | Warning | The GSTIN's state code maps to a different state than the ledger state | On import the app trusts the GSTIN and sets the address state to match it (keeping the address); verify which is correct, as the wrong state flips CGST/SGST vs IGST |
 | **PIN and state to verify** | Warning | The PIN code's region does not match the state | Check it; the PIN or the state may be a typo |
 | **Imports without the email** | Warning | The email is not a valid address; the party's contact would lose it | Fix or clear the email; the party imports with its other contact details either way |
 | **Imports without HSN** | Warning | An item has no HSN/SAC code | Add an HSN when ready; needed only for GST-compliant invoices |
