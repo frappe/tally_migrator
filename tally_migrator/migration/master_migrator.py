@@ -1,3 +1,4 @@
+import gc
 from dataclasses import dataclass
 from typing import Callable
 
@@ -7,6 +8,48 @@ from tally_migrator.tally.config import TallyConfig
 from tally_migrator.tally.extractors import TallyExtractor, ExtractedMasters
 from tally_migrator.erpnext.importers import ERPNextImporter, ImportResult
 from tally_migrator.migration.overrides import apply_record_overrides, uom_edits
+
+
+def _malloc_trim() -> bool:
+    """Best-effort: ask the C allocator to return free heap pages to the OS.
+
+    Dropping the parsed source frees the Python objects, but on glibc the freed pages
+    stay in the allocator's arenas, so RSS does not fall and the long import runs at the
+    extraction high-water mark (measured on Frappe Cloud: ``release()`` reclaimed ~3 MB;
+    the rest only returned at completion). ``malloc_trim(0)`` asks glibc to hand empty
+    pages back.
+
+    Returns True only if the call was actually made. Pure best-effort: a no-op where the
+    symbol is absent (musl, macOS dev) or libc cannot be resolved, and any failure is
+    swallowed - this only ever changes the memory footprint, never a run's outcome.
+
+    ``CDLL(None)`` (the process's already-loaded global symbols) is tried first: on glibc
+    that resolves ``malloc_trim`` and needs no ``ldconfig``/compiler, so it works inside a
+    minimal container where ``ctypes.util.find_library('c')`` returns None (e.g. a slim
+    Frappe Cloud image - the exact target). The named/soname fallbacks cover the rare case
+    where the global handle can't see libc."""
+    try:
+        import ctypes
+    except Exception:
+        return False
+    candidates = [None, "libc.so.6", "libc.so"]
+    try:
+        import ctypes.util
+        found = ctypes.util.find_library("c")
+        if found and found not in candidates:
+            candidates.append(found)
+    except Exception:
+        pass
+    for name in candidates:
+        try:
+            libc = ctypes.CDLL(name)
+            if not hasattr(libc, "malloc_trim"):
+                continue
+            libc.malloc_trim(0)
+            return True
+        except Exception:
+            continue
+    return False
 
 
 def _collapse_identical(rows: list[dict], sample: int = 5) -> list[dict]:
@@ -253,6 +296,26 @@ class MasterMigrator:
             frappe.logger().info(
                 f"[Tally Migrator] Extracted: {masters.summary} | COA: {coa.summary} "
                 f"| bills: {len(bills)} | extract {self._timings['Extract']}s")
+            # Free the parsed file now. Everything below works only off the extracted
+            # dicts (masters / coa / bills); the source records are never read again
+            # (reconciliation at finalize also uses the dicts, not the source). On a
+            # large export the retained elements are the bulk of peak memory, so this
+            # keeps them from sitting resident through the long import. Best-effort: a
+            # failure here must never abort an otherwise-good run.
+            try:
+                self.client.release()
+            except Exception:
+                pass
+            # release() drops the Python objects but glibc keeps the freed pages, so RSS
+            # stays at the extraction high-water mark through the long import (measured
+            # cause of Frappe Cloud memory pressure). Break any cycles, then ask the C
+            # allocator to hand the pages back to the OS. Both steps are best-effort and
+            # only change the footprint, never the run's outcome.
+            try:
+                gc.collect()
+            except Exception:
+                pass
+            _malloc_trim()
 
             results: dict[str, ImportResult] = {}
             steps = self._pipeline(masters, coa, bills)
