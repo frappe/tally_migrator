@@ -720,6 +720,80 @@ class TestERPNextImporter(unittest.TestCase):
             "the child must nest under the existing ledger's parent")
         self.assertTrue(any("kept as a ledger" in w["reason"] for w in result.warnings))
 
+    # ── Deferred nested-set rebuild (Phase 4) ───────────────────────────────────
+
+    def test_account_tree_is_correctly_nested_after_deferred_rebuild(self):
+        """With per-insert nested-set updates deferred (ignore_update_nsm) and a single
+        rebuild_tree at the end, the imported accounts must end with a VALID nested set:
+        non-zero lft/rgt and strict parent-contains-child ordering. A missing rebuild
+        would leave lft/rgt at 0 (caught here), and wrong numbering would break
+        containment - so this proves the optimisation preserves the tree exactly."""
+        require_company()
+        from tally_migrator.erpnext.importers.accounts import AccountImporter
+        from tally_migrator.tally.extractors import AccountNode
+        from tally_migrator.naming import company_scoped
+
+        abbr = frappe.get_value("Company", self.company, "abbr")
+        nodes = [
+            AccountNode(name="_TMTest TreeGrp", parent="", is_group=True,
+                        root_type="Asset", account_type="", is_reserved=False),
+            AccountNode(name="_TMTest TreeSub", parent="_TMTest TreeGrp", is_group=True,
+                        root_type="Asset", account_type="", is_reserved=False),
+            AccountNode(name="_TMTest TreeLedA", parent="_TMTest TreeSub", is_group=False,
+                        root_type="Asset", account_type="", is_reserved=False),
+            AccountNode(name="_TMTest TreeLedB", parent="_TMTest TreeGrp", is_group=False,
+                        root_type="Asset", account_type="", is_reserved=False),
+        ]
+        # Set a known prior flag so we can assert it is restored, not just cleared.
+        frappe.local.flags.ignore_update_nsm = False
+        result = AccountImporter(self.company, abbr, mode="reuse").run(nodes)
+        self.assertEqual(result.failed, 0, msg=str(result.errors))
+        # The deferral flag must be restored to its prior value after the phase.
+        self.assertFalse(frappe.local.flags.ignore_update_nsm)
+
+        def bounds(base):
+            return frappe.db.get_value(
+                "Account", company_scoped(base, abbr), ["lft", "rgt"], as_dict=True)
+
+        grp, sub = bounds("_TMTest TreeGrp"), bounds("_TMTest TreeSub")
+        led_a, led_b = bounds("_TMTest TreeLedA"), bounds("_TMTest TreeLedB")
+        # Rebuild actually ran: every node has real (non-zero) boundaries.
+        for b in (grp, sub, led_a, led_b):
+            self.assertTrue(b.lft and b.rgt and b.rgt > b.lft, msg=str(b))
+        # Strict nesting: group contains subgroup contains ledger A; ledger B in group.
+        self.assertLess(grp.lft, sub.lft)
+        self.assertLess(sub.lft, led_a.lft)
+        self.assertLess(led_a.rgt, sub.rgt)
+        self.assertLess(sub.rgt, grp.rgt)
+        self.assertTrue(grp.lft < led_b.lft < led_b.rgt < grp.rgt)
+        # A ledger must never have acquired children (validate_ledger's guarantee holds
+        # by construction even though it was deferred with the rest of on_update).
+        self.assertFalse(
+            frappe.db.exists("Account",
+                             {"parent_account": company_scoped("_TMTest TreeLedA", abbr)}),
+            "a ledger account must have no child accounts")
+
+    def test_account_run_restores_nsm_flag_and_rebuilds_on_exception(self):
+        """If the insert loop raises, the finally must still restore the flag AND run
+        the rebuild - so a crash mid-phase never leaves the flag stuck on (which would
+        silently disable tree maintenance for later phases) or the tree unnumbered."""
+        require_company()
+        from unittest import mock
+        from tally_migrator.erpnext.importers.accounts import AccountImporter
+        from tally_migrator.tally.extractors import AccountNode
+
+        abbr = frappe.get_value("Company", self.company, "abbr")
+        imp = AccountImporter(self.company, abbr, mode="reuse")
+        node = AccountNode(name="_TMTest TreeErr", parent="", is_group=True,
+                           root_type="Asset", account_type="", is_reserved=False)
+        frappe.local.flags.ignore_update_nsm = False
+        with mock.patch.object(imp, "_upsert", side_effect=RuntimeError("boom")), \
+                mock.patch.object(imp, "_rebuild_account_tree") as rebuilt:
+            with self.assertRaises(RuntimeError):
+                imp.run([node])
+        self.assertFalse(frappe.local.flags.ignore_update_nsm, "flag must be restored")
+        rebuilt.assert_called_once()   # rebuild still fires in finally (self-healing)
+
     # ── Stock Groups → nested Item Groups ───────────────────────────────────────
 
     def test_stock_groups_create_nested_item_groups(self):

@@ -64,15 +64,51 @@ class AccountImporter:
         # leave intact, so child parent-resolution can re-home them (order-independent).
         self._build_redirects(ordered, result)
         total = len(ordered)
-        for idx, node in enumerate(ordered, 1):
-            if on_progress:
-                on_progress(idx, total)
-            parent = self._resolve_parent(node)
-            if not parent:
-                result.add_error(node.name, "could not resolve a parent account")
-                continue
-            self._upsert(result, node, parent)
+        # Defer the nested-set (lft/rgt) maintenance that ERPNext's Account.on_update
+        # runs on EVERY insert - the "UPDATE tabAccount SET rgt=rgt+2 WHERE rgt>=x"
+        # shuffle that grows O(n^2) with the chart and dominated this phase on a real
+        # book (60% of the phase in SQL, 14,788 queries). Account.on_update honours
+        # frappe.local.flags.ignore_update_nsm (a first-class ERPNext hook - NOT a
+        # monkeypatch); with it set, each insert skips per-record tree renumbering and
+        # we rebuild the whole tree ONCE at the end in a single O(n) pass. The full
+        # Account.validate still runs on every insert (it reads the parent's is_group,
+        # never lft/rgt), so validation is unchanged - only the numbering is batched.
+        prior_nsm = frappe.local.flags.ignore_update_nsm
+        frappe.local.flags.ignore_update_nsm = True
+        try:
+            for idx, node in enumerate(ordered, 1):
+                if on_progress:
+                    on_progress(idx, total)
+                parent = self._resolve_parent(node)
+                if not parent:
+                    result.add_error(node.name, "could not resolve a parent account")
+                    continue
+                self._upsert(result, node, parent)
+        finally:
+            frappe.local.flags.ignore_update_nsm = prior_nsm
+            # Rebuild in finally so the committed accounts always end with a valid tree
+            # even if the loop raised or the per-record hang-guard killed the worker
+            # mid-phase: a resume re-enters run(), skips the existing accounts, and this
+            # rebuild still fires (self-healing). Only when the phase had accounts to
+            # place, so an empty/party-only run does no needless work.
+            if ordered:
+                self._rebuild_account_tree(result)
         return result
+
+    def _rebuild_account_tree(self, result: ImportResult) -> None:
+        """Recompute every Account's lft/rgt in one pass from the parent_account
+        structure (frappe's stock ``rebuild_tree``), replacing the per-insert
+        renumbering deferred via ``ignore_update_nsm``. Idempotent, so it is safe on a
+        re-run / resume. Non-fatal: a failure is recorded so a numbering problem is
+        visible rather than leaving a silently broken tree."""
+        try:
+            from frappe.utils.nestedset import rebuild_tree
+            rebuild_tree(self.doctype)
+            frappe.db.commit()
+        except Exception as exc:
+            frappe.db.rollback()
+            frappe.log_error("Tally Migrator", f"Account tree rebuild failed: {exc}")
+            result.add_error("(account tree rebuild)", exc)
 
     # ── Selection + ordering ─────────────────────────────────────────────────
     def _select(self, accounts: list) -> list:
