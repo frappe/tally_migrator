@@ -100,7 +100,13 @@ class AccountImporter:
         structure (frappe's stock ``rebuild_tree``), replacing the per-insert
         renumbering deferred via ``ignore_update_nsm``. Idempotent, so it is safe on a
         re-run / resume. Non-fatal: a failure is recorded so a numbering problem is
-        visible rather than leaving a silently broken tree."""
+        visible rather than leaving a silently broken tree.
+
+        Note: ``rebuild_tree`` is site-wide - it renumbers Accounts for *every* company,
+        not only this run's. That is by design (we use the stock routine rather than fork
+        a company-scoped one): it only rewrites the opaque lft/rgt ordering numbers, the
+        tree *structure* is preserved, and it writes with ``update_modified=False`` so
+        other companies' rows are not otherwise touched."""
         try:
             from frappe.utils.nestedset import rebuild_tree
             rebuild_tree(self.doctype)

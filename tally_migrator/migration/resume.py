@@ -11,9 +11,18 @@ visible in the log.
 A hard ``max_resumes`` cap makes a runaway impossible: past the cap the run is failed
 for manual attention instead of resuming forever.
 """
+import time
+
 import frappe
 
 from tally_migrator.migration import record_guard
+
+# Grace beyond the per-record timeout before a stuck in-flight marker is treated as a
+# dead worker. A live worker rewrites the marker every record and the guard kills any
+# record that exceeds the timeout, so a marker older than timeout + grace cannot belong
+# to a healthy run - it means the worker is gone (covers no-fork workers, where a
+# hard-killed worker leaves its RQ job stuck 'started' so job-liveness can't see death).
+_RESUME_GRACE_S = 120
 
 
 def resume_stalled_runs() -> None:
@@ -42,14 +51,32 @@ def _job_alive(job_id: str) -> bool:
     return bool(job_id) and _is_job_alive(job_id)
 
 
+def _marker_stale(marker) -> bool:
+    """True when the in-flight record has been marked longer than one record could
+    legitimately take (timeout + grace). A live worker rewrites the marker every record
+    and the guard kills any record that overruns the timeout, so a marker this old means
+    the worker is gone even if RQ still reports its job 'started' (no-fork case). A
+    legacy marker without a timestamp returns False, so we fall back to job-liveness."""
+    ts = marker.get("ts")
+    if not ts:
+        return False
+    return (time.time() - ts) > (record_guard.record_timeout_s() + _RESUME_GRACE_S)
+
+
 def _maybe_resume(row) -> None:
-    # Only act on a run whose worker is genuinely gone.
-    if _job_alive(row.get("job_id")):
-        return
     marker = record_guard.read_inflight(row["name"])
     if not marker:
-        # Died, but not inside a guarded record (e.g. OOM/redeploy between records).
-        # Not this mechanism's job - leave it to the existing manual re-run.
+        # Died, but not inside a guarded record (e.g. OOM/redeploy between records, or
+        # during the pre-record parse). Not this mechanism's job - leave it to the
+        # existing manual re-run.
+        return
+    # Resume when the worker is genuinely gone (fork workers: RQ marks the job failed
+    # promptly, so it is not alive) OR when the in-flight record has been stuck past the
+    # guard's own deadline (covers no-fork workers, where a hard-killed worker leaves its
+    # RQ job stuck 'started'). A live, healthy worker can never hold a marker older than
+    # the per-record timeout - the guard would have killed that record - so this can
+    # never re-enqueue a run that is still working.
+    if _job_alive(row.get("job_id")) and not _marker_stale(marker):
         return
     phase = marker.get("phase") or ""
     ident = marker.get("ident") or ""
@@ -82,7 +109,17 @@ def _maybe_resume(row) -> None:
     # writes its own marker as it processes.
     record_guard.clear_inflight(log.name)
     frappe.db.commit()
-    _reenqueue(log)
+    try:
+        _reenqueue(log)
+    except Exception:
+        # Re-enqueue failed (e.g. the queue is full) after we cleared the marker and
+        # recorded the stall. Restore both so a later sweep retries instead of leaving
+        # the run orphaned in 'Running' with no marker, and so this one real hang is not
+        # double-counted toward the confirmed-skip threshold on the retry.
+        record_guard.unnote_stall(log, phase, ident)
+        record_guard.set_inflight(log.name, phase, ident)
+        frappe.db.commit()
+        raise
     frappe.logger().info(
         f"[Tally Migrator] resumed {log.name}: {phase}/{ident} attempts={attempts} "
         f"resume={resume_count}")

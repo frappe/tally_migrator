@@ -120,10 +120,15 @@ def validate_masters_data(file_url: str, record_overrides: str = "", erpnext_com
     cached = frappe.cache().get_value(key)
     if cached:
         return cached
-    # Mark running first so concurrent polls don't each enqueue, then enqueue.
+    # Mark running first so concurrent polls don't each enqueue, then enqueue. On the
+    # 'default' queue, not 'short': this parse can run for minutes on a large book (that
+    # is why it is async at all), and the short queue is meant for sub-second tasks -
+    # parking a long parse there would starve it. deduplicate + a key-derived job_id
+    # closes the small window where two near-simultaneous first polls could both enqueue.
     frappe.cache().set_value(key, {"status": "running"}, expires_in_sec=_PREFLIGHT_TTL)
     frappe.enqueue(
-        "tally_migrator.api._run_preflight_job", queue="short", timeout=30 * 60,
+        "tally_migrator.api._run_preflight_job", queue="default", timeout=30 * 60,
+        job_id=f"preflight::{key}", deduplicate=True,
         key=key, file_url=file_url, record_overrides=record_overrides,
         erpnext_company=erpnext_company, posting_date=posting_date)
     return {"status": "running"}

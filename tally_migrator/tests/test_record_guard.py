@@ -60,7 +60,12 @@ class TestGuardConfig(unittest.TestCase):
 class TestMarker(unittest.TestCase):
     def test_marker_round_trip_and_clear(self):
         rg.set_inflight("MK1", "Customer", "Acme")
-        self.assertEqual(rg.read_inflight("MK1"), {"phase": "Customer", "ident": "Acme"})
+        m = rg.read_inflight("MK1")
+        self.assertEqual(m["phase"], "Customer")
+        self.assertEqual(m["ident"], "Acme")
+        # A wall-clock timestamp is stamped so the resume sweep can detect a dead worker
+        # even when RQ still reports the job 'started' (no-fork case).
+        self.assertIsInstance(m["ts"], float)
         rg.clear_inflight("MK1")
         self.assertIsNone(rg.read_inflight("MK1"))
 
@@ -248,12 +253,60 @@ class TestResumeSweep(unittest.TestCase):
         # first stall -> suspect, not yet confirmed (retry-once)
         self.assertEqual(rg.confirmed_from_log(log), set())
 
-    def test_live_run_is_left_alone(self):
+    def test_live_run_with_fresh_marker_is_left_alone(self):
+        # Alive worker, and the in-flight record was marked just now -> still working,
+        # never re-enqueue.
+        import time as _t
         from tally_migrator.migration import resume
         with mock.patch.object(resume, "_job_alive", return_value=True), \
+             mock.patch.object(resume.record_guard, "read_inflight",
+                               return_value={"phase": "Customer", "ident": "Acme",
+                                             "ts": _t.time()}), \
              mock.patch.object(resume, "_reenqueue") as reenq:
             resume._maybe_resume(self._row())
         reenq.assert_not_called()
+
+    def test_stuck_marker_resumes_even_when_job_reports_alive(self):
+        # No-fork case: a hard-killed worker leaves its RQ job stuck 'started' (job_alive
+        # True), but the in-flight record has been marked far longer than the per-record
+        # timeout, so the sweep still resumes it.
+        import time as _t
+        from tally_migrator.migration import resume
+        log = self._log()
+        stale_ts = _t.time() - (rg.record_timeout_s() + resume._RESUME_GRACE_S + 5)
+        with mock.patch.object(resume, "_job_alive", return_value=True), \
+             mock.patch.object(resume.record_guard, "read_inflight",
+                               return_value={"phase": "Customer", "ident": "Acme",
+                                             "ts": stale_ts}), \
+             mock.patch.object(resume.frappe, "get_doc", return_value=log), \
+             mock.patch.object(resume.frappe.db, "commit"), \
+             mock.patch.object(resume, "_reenqueue") as reenq:
+            resume._maybe_resume(self._row())
+        reenq.assert_called_once()
+
+    def test_reenqueue_failure_restores_marker_and_uncounts_stall(self):
+        # If re-enqueue raises after the marker was cleared and the stall recorded, both
+        # must be undone so a later sweep retries without double-counting the one hang.
+        from tally_migrator.migration import resume
+        log = self._log()
+        restored = {}
+        with mock.patch.object(resume, "_job_alive", return_value=False), \
+             mock.patch.object(resume.record_guard, "read_inflight",
+                               return_value={"phase": "Customer", "ident": "Acme"}), \
+             mock.patch.object(resume.frappe, "get_doc", return_value=log), \
+             mock.patch.object(resume.frappe.db, "commit"), \
+             mock.patch.object(resume.record_guard, "set_inflight",
+                               side_effect=lambda *a: restored.setdefault("set", a)), \
+             mock.patch.object(resume, "_reenqueue", side_effect=RuntimeError("queue full")):
+            with self.assertRaises(RuntimeError):
+                resume._maybe_resume(self._row())
+        # marker was restored, and the stall was un-counted (attempts back to 0 -> record
+        # dropped from the hung set, so it is not one step closer to confirmed-skip).
+        self.assertIn("set", restored)
+        self.assertEqual(rg.confirmed_from_log(log), set())
+        st = rg._read_state(log)
+        self.assertEqual(st["resume_count"], 0)
+        self.assertNotIn(rg._state_key("Customer", "Acme"), st["hung"])
 
     def test_no_marker_is_left_alone(self):
         from tally_migrator.migration import resume

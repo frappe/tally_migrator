@@ -29,6 +29,7 @@ Design constraints this module respects
 import contextlib
 import faulthandler
 import os
+import time
 
 import frappe
 
@@ -67,11 +68,18 @@ def _marker_key(log_name: str) -> str:
 
 
 def set_inflight(log_name: str, phase: str, ident: str) -> None:
-    """Record 'this run is now processing (phase, ident)'. Best-effort: a marker
-    failure must never disturb the import."""
+    """Record 'this run is now processing (phase, ident)' with a wall-clock timestamp.
+    Best-effort: a marker failure must never disturb the import.
+
+    The ``ts`` lets the resume sweep tell a genuinely-dead worker apart from a live one
+    even when RQ can't (a no-fork worker hard-killed by the guard leaves its job stuck
+    'started'): a live worker rewrites this marker every record, so a marker older than
+    the per-record timeout means the record has been stuck past the point the guard
+    would have killed it - i.e. the worker is gone. See ``resume._marker_stale``."""
     try:
         frappe.cache().set_value(
-            _marker_key(log_name), {"phase": phase, "ident": ident}, expires_in_sec=86400)
+            _marker_key(log_name), {"phase": phase, "ident": ident, "ts": time.time()},
+            expires_in_sec=86400)
     except Exception:
         pass
 
@@ -127,10 +135,19 @@ class RecordGuard:
 
     def close(self):
         if self._dump_file is not None:
+            path = getattr(self._dump_file, "name", None)
             try:
                 self._dump_file.close()
             finally:
                 self._dump_file = None
+            # A clean run never wrote to the dump file (a hang would have hard-killed the
+            # worker before reaching here). Remove the empty file so successful runs don't
+            # litter the hangs directory; keep it if anything was actually dumped.
+            try:
+                if path and os.path.exists(path) and os.path.getsize(path) == 0:
+                    os.remove(path)
+            except Exception:
+                pass
 
     def should_skip(self, phase: str, ident: str) -> bool:
         return (phase, ident) in self.confirmed
@@ -201,6 +218,24 @@ def note_stall(log, phase: str, ident: str) -> tuple[int, int]:
     st["resume_count"] = int(st.get("resume_count") or 0) + 1
     log.db_set(_STATE_FIELD, frappe.as_json(st), update_modified=False)
     return entry["attempts"], st["resume_count"]
+
+
+def unnote_stall(log, phase: str, ident: str) -> None:
+    """Undo the last ``note_stall`` for this record: decrement its hang count and the
+    overall resume count (dropping the record entirely when its count hits zero). Used
+    when a re-enqueue fails AFTER the stall was recorded, so a later retry does not
+    double-count one real hang toward the confirmed-skip threshold."""
+    st = _read_state(log)
+    k = _state_key(phase, ident)
+    entry = st["hung"].get(k)
+    if entry:
+        entry["attempts"] = max(0, int(entry.get("attempts") or 0) - 1)
+        if entry["attempts"] == 0:
+            st["hung"].pop(k, None)
+        else:
+            st["hung"][k] = entry
+    st["resume_count"] = max(0, int(st.get("resume_count") or 0) - 1)
+    log.db_set(_STATE_FIELD, frappe.as_json(st), update_modified=False)
 
 
 def current() -> RecordGuard | None:

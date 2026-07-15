@@ -794,6 +794,60 @@ class TestERPNextImporter(unittest.TestCase):
         self.assertFalse(frappe.local.flags.ignore_update_nsm, "flag must be restored")
         rebuilt.assert_called_once()   # rebuild still fires in finally (self-healing)
 
+    def test_account_import_defers_per_insert_nsm_updates(self):
+        """Proves the optimisation is actually engaged (not just that the tree ends up
+        valid - which per-insert numbering would also achieve): with ignore_update_nsm
+        set around the loop, frappe's per-insert update_nsm must NOT run; a single
+        rebuild_tree replaces it. Without the deferral this fires once per account."""
+        require_company()
+        from unittest import mock
+        from frappe.utils import nestedset
+        from tally_migrator.erpnext.importers.accounts import AccountImporter
+        from tally_migrator.tally.extractors import AccountNode
+
+        abbr = frappe.get_value("Company", self.company, "abbr")
+        nodes = [
+            AccountNode(name="_TMTest NsmGrp", parent="", is_group=True,
+                        root_type="Asset", account_type="", is_reserved=False),
+            AccountNode(name="_TMTest NsmLed", parent="_TMTest NsmGrp", is_group=False,
+                        root_type="Asset", account_type="", is_reserved=False),
+        ]
+        with mock.patch.object(nestedset, "update_nsm", wraps=nestedset.update_nsm) as spy:
+            result = AccountImporter(self.company, abbr, mode="reuse").run(nodes)
+        self.assertEqual(result.failed, 0, msg=str(result.errors))
+        self.assertEqual(
+            spy.call_count, 0,
+            "per-insert update_nsm must be skipped (deferred to a single rebuild_tree)")
+
+    # ── Party primary links with ERPNext's redundant sync suspended (Phase 3) ────
+
+    def test_party_import_sets_primary_links_with_erpnext_sync_suspended(self):
+        """With ERPNext's redundant Address->Customer primary sync suspended for the
+        party phase, OUR code must still set the customer's primary address / contact /
+        display correctly - proving the suspension removes only the empty scan, never the
+        outcome."""
+        require_company()
+        customer = {
+            "_name": "_TMTest PrimaryLinks",
+            "Address": "12 MG Road",
+            "LedgerState": "Karnataka",
+            "LedgerMobile": "9845012345",
+        }
+        result = self.importer.import_customers([customer])
+        self.assertEqual(result.failed, 0, msg=str(result.errors))
+        name = frappe.db.get_value(
+            "Customer", {"customer_name": "_TMTest PrimaryLinks"}, "name")
+        self.assertTrue(name)
+        addr, disp, contact = frappe.db.get_value(
+            "Customer", name,
+            ["customer_primary_address", "primary_address", "customer_primary_contact"])
+        self.assertTrue(addr, "customer_primary_address must be set by our code")
+        self.assertTrue(disp, "primary_address display must be populated by our code")
+        self.assertTrue(contact, "customer_primary_contact must be set by our code")
+        self.assertEqual(
+            frappe.db.get_value("Address", addr, "is_primary_address"), 1,
+            "the linked address must be flagged primary")
+
     # ── Stock Groups → nested Item Groups ───────────────────────────────────────
 
     def test_stock_groups_create_nested_item_groups(self):
