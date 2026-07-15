@@ -91,6 +91,10 @@ options in step 1:
   the link", then in the upload dialog choose **Link** and paste the link; the app
   downloads it server-side. A zipped XML on Drive works too.
 
+The uncompressed file is held to a **1 GB** limit by default (the same ceiling for a
+zip's contents and a Drive download). An administrator can raise it with the
+`tally_migrator_max_upload_mb` site-config setting, in megabytes.
+
 ---
 
 ## Installation

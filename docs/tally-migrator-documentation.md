@@ -225,9 +225,7 @@ but a Masters XML compresses by roughly 90%, so a big export has two easy routes
 
 - **Upload a zip.** Zip the `Master.xml` and choose the `.zip` - the app unpacks it
   automatically and reads the XML inside. The zip must contain exactly one `.xml`
-  file and must not be password-protected. (The uncompressed XML is still held to
-  the same size limit, so a zip cannot be used to slip an over-limit file past the
-  cap.)
+  file and must not be password-protected.
 - **Import from a Google Drive link.** In the upload dialog, choose the **Link**
   option and paste the share link to your file. In Drive, the file must be shared as
   **Anyone with the link** - otherwise Google returns a sign-in page instead of the
@@ -235,6 +233,12 @@ but a Masters XML compresses by roughly 90%, so a big export has two easy routes
   the server, so nothing has to pass through your browser. A zipped XML on Drive
   works the same way. Only Google Drive links are accepted; any other link is
   rejected.
+
+The uncompressed file is held to a size limit - **1 GB by default** - and the same
+ceiling applies to a plain upload, a zip's contents, and a Drive download, so a zip
+can never be used to slip an over-limit file past the cap. If your export is larger,
+an administrator can raise it with the `tally_migrator_max_upload_mb` site-config
+setting (the value is in megabytes, for example `2048` for 2 GB).
 
 This preview is your first and best check that you exported the right thing. Read
 the counts carefully.
@@ -301,7 +305,11 @@ right here, in place, without touching Tally.
 > _Screenshot placeholder: step 3 with the data-quality cards and an expanded issue group._
 
 The check has several parts. Any of them can appear; a clean file shows a simple
-**"Nothing to resolve"** message and you continue straight away.
+**"Nothing to resolve"** message and you continue straight away. For a large file the
+check runs in the background, showing **"Checking your file..."** while it works. If
+the check itself cannot finish (for example the file is too large to scan in time),
+it tells you so plainly and asks you to try again - it never shows a false
+all-clear, so an empty result is never mistaken for a clean file.
 
 #### Data-quality report
 

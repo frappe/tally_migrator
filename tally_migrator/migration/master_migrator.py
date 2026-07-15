@@ -8,6 +8,7 @@ from tally_migrator.tally.config import TallyConfig
 from tally_migrator.tally.extractors import TallyExtractor, ExtractedMasters
 from tally_migrator.erpnext.importers import ERPNextImporter, ImportResult
 from tally_migrator.migration.overrides import apply_record_overrides, uom_edits
+from tally_migrator.migration import record_guard
 
 
 def _malloc_trim() -> bool:
@@ -276,6 +277,11 @@ class MasterMigrator:
         # Reuse a log handed in by the dispatcher (background runs); otherwise
         # create one now so an interrupted run is still recorded.
         self.log = self.log or self._create_log()
+        # Install the per-record hang guard for this run: it time-boxes every record
+        # across all phases, and skips any record that already hung twice (loaded from
+        # the log) so a resumed run steps past the culprit instead of dying on it again.
+        record_guard.activate(record_guard.RecordGuard(
+            self.log.name, confirmed=record_guard.confirmed_from_log(self.log)))
         try:
             import time as _time
             self._progress(0)
@@ -348,6 +354,14 @@ class MasterMigrator:
         except Exception as exc:
             self._fail_log(exc)
             raise
+        finally:
+            # Torn down on normal completion / normal error (clears the in-flight
+            # marker). NOT reached on a hang - the worker is hard-killed, so the marker
+            # survives for the resume sweep. Best-effort: never mask the real outcome.
+            try:
+                record_guard.deactivate()
+            except Exception:
+                pass
 
     def _pipeline(self, masters: ExtractedMasters, coa, bills) -> list[PipelineStep]:
         """Entity import order. Adding an entity = add one step here.

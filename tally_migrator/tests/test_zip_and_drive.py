@@ -80,6 +80,60 @@ class TestUnzipIfZip(unittest.TestCase):
         self.assertEqual(unzip_if_zip(raw, CAP), payload)
 
 
+_UNSET = object()
+
+
+class TestConfiguredMaxUpload(unittest.TestCase):
+    """The size-ceiling config must be coerced to an int.
+
+    ``bench set-config tally_migrator_max_upload_mb 1024`` stores the STRING
+    "1024"; without coercion ``max_mb * 1024 * 1024`` builds a giant string and the
+    later ``file_size > ceiling`` comparison raises TypeError, turning a *raised*
+    limit into a 500 on every upload. These lock that down.
+    """
+
+    def _with_conf(self, value):
+        conf = {} if value is _UNSET else {"tally_migrator_max_upload_mb": value}
+        return mock.patch.object(api.frappe, "conf", conf)
+
+    def test_string_config_is_coerced_to_int(self):
+        with self._with_conf("1024"):
+            self.assertEqual(api._configured_max_upload_mb(), 1024)
+            # The real crash was here: this must be an int, not a str, and not raise.
+            self.assertEqual(api._max_upload_bytes(), 1024 * 1024 * 1024)
+
+    def test_string_config_size_guard_still_works(self):
+        # 5 MB "file" under a string-configured 1024 MB cap: must NOT raise.
+        with self._with_conf("1024"):
+            api._assert_within_size_limit(5 * 1024 * 1024)
+        # 2000 MB over a string-configured 1024 MB cap: must raise a clean throw.
+        with self._with_conf("1024"), self.assertRaises(Exception):
+            api._assert_within_size_limit(2000 * 1024 * 1024)
+
+    def test_int_config_respected(self):
+        with self._with_conf(2048):
+            self.assertEqual(api._configured_max_upload_mb(), 2048)
+
+    def test_missing_config_uses_default(self):
+        with self._with_conf(_UNSET):
+            self.assertEqual(api._configured_max_upload_mb(), api._DEFAULT_MAX_UPLOAD_MB)
+
+    def test_default_is_1024(self):
+        self.assertEqual(api._DEFAULT_MAX_UPLOAD_MB, 1024)
+
+    def test_garbage_string_falls_back_to_default(self):
+        for bad in ("", "lots", "10MB", None):
+            with self._with_conf(bad):
+                self.assertEqual(
+                    api._configured_max_upload_mb(), api._DEFAULT_MAX_UPLOAD_MB)
+
+    def test_zero_or_negative_falls_back_to_default(self):
+        for bad in (0, "0", -5, "-5"):
+            with self._with_conf(bad):
+                self.assertEqual(
+                    api._configured_max_upload_mb(), api._DEFAULT_MAX_UPLOAD_MB)
+
+
 class TestParseDriveId(unittest.TestCase):
     def test_file_d_link(self):
         url = "https://drive.google.com/file/d/1A2b3C4d5E6f7G8h9I0j/view?usp=sharing"
