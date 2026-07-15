@@ -121,6 +121,44 @@ DEFAULT_TERRITORY      = "All Territories"
 DEFAULT_WAREHOUSE      = "All Warehouses"
 
 
+# ── Country name aliases: Tally free-text → canonical ERPNext Country ─────────
+# ERPNext's Address.country is a Link to the Country doctype, so a value whose
+# name is not a Country row (e.g. Tally's "UAE") fails link validation and loses
+# the WHOLE address. Tally writes the country as free text, and books commonly
+# use a handful of unambiguous abbreviations. Map ONLY those - each maps to a
+# name that ships on every ERPNext install (the standard Country fixtures) - and
+# pass everything else through unchanged, so a value that is already a real
+# country name (the overwhelming majority) is never altered. Deliberately
+# conservative: only aliases with a single unambiguous target, to avoid ever
+# mapping to the wrong country. Keyed by a normalised (lower, no dots) form.
+# Keyed by the value with dots and whitespace removed and lower-cased, so all of
+# "UAE", "U.A.E.", "u.a.e" collapse to the same "uae". Safe because no real
+# multi-word country name collapses to one of these short keys (e.g. "United
+# States" -> "unitedstates", which is not a key, so it passes through unchanged).
+COUNTRY_ALIASES: dict[str, str] = {
+    "uae": "United Arab Emirates",
+    "usa": "United States",
+    "us":  "United States",
+    "uk":  "United Kingdom",
+}
+
+_COUNTRY_KEY = re.compile(r"[.\s]+")
+
+
+def normalize_country(name: str) -> str:
+    """Canonical ERPNext Country name for a Tally country value.
+
+    Returns the mapped name for a known unambiguous alias (case/dot/space
+    insensitive), else the original value trimmed - so a real country name passes
+    through byte-for-byte and only a recognised abbreviation is rewritten. Blank
+    stays blank (callers fall back to the company country)."""
+    raw = (name or "").strip()
+    if not raw:
+        return ""
+    key = _COUNTRY_KEY.sub("", raw.lower())
+    return COUNTRY_ALIASES.get(key, raw)
+
+
 # ── Chart of Accounts: Tally group → ERPNext account classification ───────────
 #
 # Tally ships ~28 reserved "primary" groups whose meaning is fixed. Every other
