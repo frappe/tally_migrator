@@ -22,6 +22,7 @@ from tally_migrator.tally.mappings import (
     gst_category_from_type,
 )
 from tally_migrator.naming import safe_item_code, company_scoped
+from tally_migrator.migration import record_guard
 from tally_migrator.tally.extractors import TallyExtractor
 from tally_migrator.validation.engine import (
     infer_gst_category, validate_gstin, GSTIN_STATE_CODES,
@@ -179,16 +180,31 @@ class BaseImporter:
         total = len(records)
         pending = 0   # newly-written records not yet committed
         for done, record in enumerate(self.iter_records(records), 1):
-            name, created = self._upsert(result, self.build_doc(record))
-            # after_insert (e.g. address creation) must run ONLY for newly
-            # created records - otherwise a re-run duplicates side effects for
-            # records that were skipped because they already exist.
-            if name and created:
-                self.after_insert(name, record, result)
-                pending += 1
-                if pending >= self._COMMIT_BATCH_SIZE:
-                    frappe.db.commit()
-                    pending = 0
+            ident = self._record_ident(record)
+            # A record that hung twice before is left out so the migration can finish,
+            # rather than dying on it again. Recorded as a failure (not a silent drop)
+            # so the loss is visible and auditable (see record_guard / resume).
+            if record_guard.should_skip(self.doctype, ident):
+                result.add_error(
+                    ident, "left out because it repeatedly stalled the migration "
+                    "(timed out twice) - see the hang log; re-import this record on its own")
+                if on_progress:
+                    on_progress(done, total)
+                continue
+            # Time-box the whole record body (build + insert + side effects). On a hang
+            # the worker is dumped and killed; the batch commit below runs only after the
+            # guard is disarmed, so a commit is never interrupted.
+            with record_guard.guard(self.doctype, ident):
+                name, created = self._upsert(result, self.build_doc(record))
+                # after_insert (e.g. address creation) must run ONLY for newly
+                # created records - otherwise a re-run duplicates side effects for
+                # records that were skipped because they already exist.
+                if name and created:
+                    self.after_insert(name, record, result)
+                    pending += 1
+            if pending >= self._COMMIT_BATCH_SIZE:
+                frappe.db.commit()
+                pending = 0
             if on_progress:
                 on_progress(done, total)
         # Flush the final partial batch (and make every phase end on a clean commit,
@@ -367,6 +383,15 @@ class BaseImporter:
         failure, or ``None`` to record the failure as-is. The warning is logged only
         when the retry succeeds. Default: no recovery."""
         return None
+
+    # ── Hang-guard identity ────────────────────────────────────────────────────
+    def _record_ident(self, record: dict) -> str:
+        """A stable, human-readable identity for one source record - used by the hang
+        guard to mark the in-flight record and to recognise a confirmed-hung one on
+        resume. Stable across runs because it derives from the source data (re-parsed
+        identically), never from DB state. Overridable; defaults to the Tally ledger
+        name, which every masters record carries."""
+        return str(record.get("name") or record.get(self.key_field) or "")
 
     # ── Utilities ─────────────────────────────────────────────────────────────
     @staticmethod

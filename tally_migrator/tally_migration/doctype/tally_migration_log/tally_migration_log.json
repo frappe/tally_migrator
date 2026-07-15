@@ -282,6 +282,14 @@
    "fieldtype": "Long Text",
    "label": "Error Log (plain text)",
    "read_only": 1
+  },
+  {
+   "fieldname": "guard_state",
+   "fieldtype": "Code",
+   "label": "Hang Guard State (JSON)",
+   "hidden": 1,
+   "read_only": 1,
+   "description": "Internal: records that stalled the run (retry-once then skip) and the auto-resume count."
   }
  ],
  "permissions": [
