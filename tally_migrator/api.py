@@ -421,7 +421,7 @@ _SOURCE_CACHE_MAX = 4
 # raise it, and a memory-constrained one can lower it, via site config
 # (``tally_migrator_max_upload_mb``). Note this also bounds the uncompressed size
 # of a zipped upload (the zip-bomb guard), so both paths share one ceiling.
-_DEFAULT_MAX_UPLOAD_MB = 512
+_DEFAULT_MAX_UPLOAD_MB = 1024
 
 # A run above this *upload size* is handed to a background job instead of blocking
 # the web request. We decide on the file's size (cheap metadata), not a record count,
@@ -822,19 +822,38 @@ def _download_drive_file(file_id: str) -> bytes:
     return raw
 
 
+def _configured_max_upload_mb() -> int:
+    """The configured single-import size ceiling in MB, coerced to a positive int.
+
+    ``tally_migrator_max_upload_mb`` can arrive as a *string* - ``bench set-config``
+    stores a bare value as JSON text unless ``-p`` is passed - so we coerce here.
+    Without this, ``max_mb * 1024 * 1024`` would build a giant string (``str * int``)
+    and the later ``size > ceiling`` comparison raises ``TypeError: '>' not supported
+    between instances of 'int' and 'str'``, turning a raised limit into a 500 on every
+    upload. A missing or non-numeric value falls back to the default rather than
+    failing the upload."""
+    raw = frappe.conf.get("tally_migrator_max_upload_mb")
+    if raw in (None, ""):
+        return _DEFAULT_MAX_UPLOAD_MB
+    try:
+        mb = int(raw)
+    except (TypeError, ValueError):
+        return _DEFAULT_MAX_UPLOAD_MB
+    return mb if mb > 0 else _DEFAULT_MAX_UPLOAD_MB
+
+
 def _max_upload_bytes() -> int:
     """The single-import size ceiling in bytes (site-config overridable).
 
     Applied to a raw upload, to a Drive download, and - as the zip-bomb guard -
     to the *uncompressed* size of a zipped XML, so every ingestion path is held
     to the same limit."""
-    max_mb = frappe.conf.get("tally_migrator_max_upload_mb") or _DEFAULT_MAX_UPLOAD_MB
-    return max_mb * 1024 * 1024
+    return _configured_max_upload_mb() * 1024 * 1024
 
 
 def _assert_within_size_limit(num_bytes: int) -> None:
     """Reject an oversized upload before parsing, with an actionable message."""
-    max_mb = frappe.conf.get("tally_migrator_max_upload_mb") or _DEFAULT_MAX_UPLOAD_MB
+    max_mb = _configured_max_upload_mb()
     if num_bytes > _max_upload_bytes():
         frappe.throw(
             frappe._(
