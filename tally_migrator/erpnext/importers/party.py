@@ -23,6 +23,7 @@ from tally_migrator.tally.mappings import (
     ERPNEXT_ROOT_GROUPS,
     classify_group,
     gst_category_from_type,
+    normalize_country,
 )
 from tally_migrator.naming import safe_item_code, company_scoped
 from tally_migrator.migration import profiler as _profiler
@@ -337,6 +338,64 @@ def _internal_supplier_scan_skipped():
         Supplier.validate_internal_supplier = original
 
 
+# ── Skip ERPNext's redundant Address→Customer primary-address sync ──────────────
+# ERPNext's ``ERPNextAddress.on_update`` (erpnext/accounts/custom/address.py) runs on
+# EVERY Address save and, to keep a customer's cached ``primary_address`` display in
+# step, does: render ``get_address_display`` (a per-call Jinja recompile), then
+# ``SELECT name FROM tabCustomer WHERE customer_primary_address = <this address>`` and
+# rewrite each match. On a real book that scan was the single costliest query of the
+# party phase (measured 2,511 calls / 3.4s), plus 2,511 wasted template recompiles.
+#
+# It is 100% redundant for the migrator: we create the Address first and only link it
+# as the party's primary AFTER insert, via ``frappe.db.set_value(..., update_modified
+# =False)`` (a direct write that fires no doc events) - so at every Address ``on_update``
+# NO customer yet references the address and the scan returns zero rows every time. And
+# we already compute and write the party's ``primary_address`` display ourselves in
+# ``_set_primary_links`` (byte-identical ``_address_display``). So suspending this sync
+# for the party phase changes no stored data - it only removes the empty scan and its
+# Jinja renders. Frappe's base ``Address`` defines no ``on_update`` (verified), so this
+# method's only behaviour is that sync; we still forward to any future base ``on_update``
+# via the MRO so we can never silently drop a stock behaviour ERPNext adds later.
+def _make_address_on_update_skip_primary(erpnext_address_cls):
+    """Drop-in for ``ERPNextAddress.on_update`` that runs any base ``on_update`` defined
+    ABOVE ERPNextAddress in the instance MRO (none in frappe core today - forward-safe)
+    and skips ERPNextAddress's own redundant customer-primary sync."""
+    def _on_update(self):
+        mro = type(self).__mro__
+        try:
+            start = mro.index(erpnext_address_cls) + 1
+        except ValueError:
+            start = len(mro)
+        for klass in mro[start:]:
+            base_fn = klass.__dict__.get("on_update")
+            if base_fn:
+                base_fn(self)
+                break
+    return _on_update
+
+
+@contextlib.contextmanager
+def _address_primary_sync_suspended():
+    """Skip ERPNext's redundant Address→Customer primary-address sync for the party
+    phase, then restore it. No-op-safe: if ERPNext (or the method) is absent, leave it
+    untouched and yield unchanged. Restored in ``finally``; process-local, serialised by
+    the single-active-run guard (same contract as the suspensions above)."""
+    try:
+        from erpnext.accounts.custom.address import ERPNextAddress
+    except Exception:
+        yield
+        return
+    original = getattr(ERPNextAddress, "on_update", None)
+    if original is None:
+        yield
+        return
+    ERPNextAddress.on_update = _make_address_on_update_skip_primary(ERPNextAddress)
+    try:
+        yield
+    finally:
+        ERPNextAddress.on_update = original
+
+
 # ── Party importers (Customer / Supplier) ──────────────────────────────────────
 
 class PartyImporter(BaseImporter):
@@ -362,10 +421,12 @@ class PartyImporter(BaseImporter):
         of the phase; see ``_gravatar_lookup_suspended`` /
         ``_party_side_effect_hooks_suspended`` / ``_link_title_lightweight``) - and with
         ERPNext's per-supplier internal-uniqueness scan skipped for external suppliers
-        (see ``_internal_supplier_scan_skipped``). Everything else is the standard
-        template."""
+        (see ``_internal_supplier_scan_skipped``), and ERPNext's redundant Address->Customer
+        primary-address sync suspended (see ``_address_primary_sync_suspended``). Everything
+        else is the standard template."""
         with _gravatar_lookup_suspended(), _party_side_effect_hooks_suspended(), \
-                _link_title_lightweight(), _internal_supplier_scan_skipped():
+                _link_title_lightweight(), _internal_supplier_scan_skipped(), \
+                _address_primary_sync_suspended():
             return super().run(records, on_progress=on_progress)
 
     def before_run(self, records: list[dict], result: "ImportResult") -> None:
@@ -545,7 +606,7 @@ class PartyImporter(BaseImporter):
                     if row_pin:
                         addr.pincode = row_pin
                     addr.state = self._extra_address_state(a, data)
-                    addr.country = (data.get("CountryName") or "").strip() or self.company_country
+                    addr.country = normalize_country(data.get("CountryName")) or self.company_country
                     addr.append("links", {"link_doctype": link_type, "link_name": link_name})
                     addr.insert(ignore_permissions=True)
             except Exception as exc:
@@ -691,7 +752,7 @@ class PartyImporter(BaseImporter):
         if not raw_address:
             return ""
         state = self._resolve_state(data)
-        country = (data.get("CountryName") or "").strip() or self.company_country
+        country = normalize_country(data.get("CountryName")) or self.company_country
         # India Compliance hard-requires a state on an Indian address. When Tally
         # gave us nothing to derive one from (no ledger state, valid GSTIN or PIN),
         # the insert is certain to fail - so skip it with a single warning rather

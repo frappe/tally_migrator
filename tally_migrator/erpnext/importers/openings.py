@@ -26,6 +26,7 @@ from tally_migrator.validation.engine import (
     infer_gst_category, validate_gstin, GSTIN_STATE_CODES,
 )
 from .base import BaseImporter, ImportResult
+from tally_migrator.migration import record_guard
 from .items import ItemImporter
 
 # ── Concurrency guard for opening entries ─────────────────────────────────────
@@ -477,7 +478,17 @@ class PartyOpeningImporter:
         if not parties:
             return
         key_field = self._PARTY_KEY_FIELD[party_type]
-        for record in parties:
+        # Time-box each party's opening so one party can't freeze the whole phase; a
+        # party that hung twice is left out (logged), the resume steps past it.
+        # Unlike BaseImporter.run, this loop's per-party commit happens inside the guarded
+        # span, so a hang could in principle be killed mid-commit. That is safe: a
+        # MariaDB COMMIT is atomic (a killed client leaves it all-or-nothing) and the
+        # resume re-runs idempotently, so no partial opening is ever left behind.
+        for record in record_guard.guarded_records(
+                f"Opening:{party_type}", parties, lambda r: r["_name"],
+                on_skip=lambda r, i: result.add_warning(
+                    i, "opening balance left out - this party repeatedly stalled the "
+                    "migration (timed out twice); see the hang log")):
             if tick:
                 tick()
             tally_name = record["_name"]

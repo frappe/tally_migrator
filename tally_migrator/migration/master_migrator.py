@@ -9,6 +9,7 @@ from tally_migrator.tally.config import TallyConfig
 from tally_migrator.tally.extractors import TallyExtractor, ExtractedMasters
 from tally_migrator.erpnext.importers import ERPNextImporter, ImportResult
 from tally_migrator.migration.overrides import apply_record_overrides, uom_edits
+from tally_migrator.migration import record_guard
 from tally_migrator.migration import profiler
 
 # Monotonic clock for throttling the tracemalloc snapshot (never wall-clock, which can
@@ -314,6 +315,11 @@ class MasterMigrator:
         # Reuse a log handed in by the dispatcher (background runs); otherwise
         # create one now so an interrupted run is still recorded.
         self.log = self.log or self._create_log()
+        # Install the per-record hang guard for this run: it time-boxes every record
+        # across all phases, and skips any record that already hung twice (loaded from
+        # the log) so a resumed run steps past the culprit instead of dying on it again.
+        record_guard.activate(record_guard.RecordGuard(
+            self.log.name, confirmed=record_guard.confirmed_from_log(self.log)))
         # Profile the whole run (installs SQL/enqueue/HTTP hooks); removed in the finally.
         # heartbeat_name starts the watchdog (RSS + in-flight record streamed to Redis every
         # few seconds), so a run that hangs or is OOM-killed between checkpoints still shows
@@ -402,6 +408,14 @@ class MasterMigrator:
             self._fail_log(exc)
             raise
         finally:
+            # Torn down on normal completion / normal error (clears the in-flight
+            # marker). NOT reached on a hang - the worker is hard-killed, so the marker
+            # survives for the resume sweep. Best-effort: never mask the real outcome.
+            try:
+                record_guard.deactivate()
+            except Exception:
+                pass
+            # Tear down the profiler session (removes hooks, stops the watchdog).
             try:
                 _sess.__exit__(None, None, None)
             except Exception:
