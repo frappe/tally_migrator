@@ -1,3 +1,4 @@
+import hashlib
 import json
 import re
 import threading
@@ -99,6 +100,55 @@ def validate_masters_data(file_url: str, record_overrides: str = "", erpnext_com
     the same rules. The uploaded file itself is never modified.
     """
     frappe.only_for(ALLOWED_ROLES)
+    file_doc = _resolve_file_doc(file_url)
+    _assert_file_access(file_doc)
+    # Small file: compute inline (fast, no timeout risk). Any failure is reported
+    # honestly as 'failed' - the wizard blocks - never as a silent empty 'clean'.
+    if not _should_run_async(file_doc):
+        try:
+            return {"status": "ready", **_compute_preflight(
+                file_url, record_overrides, erpnext_company, posting_date)}
+        except Exception as exc:
+            frappe.log_error(f"preflight (inline) failed: {exc}", "Tally Migrator")
+            return {"status": "failed", "error": _preflight_error_message(exc)}
+
+    # Large file: the scan (parse + extract + validate + coverage + mapping) can exceed
+    # the web request timeout, so compute it once in a background job and cache the
+    # result in Redis (shared across workers, so a cold worker never re-parses). The
+    # wizard polls this endpoint until 'ready' or 'failed'.
+    key = _preflight_key(file_doc, record_overrides, erpnext_company, posting_date)
+    cached = frappe.cache().get_value(key)
+    if cached:
+        return cached
+    # Mark running first so concurrent polls don't each enqueue, then enqueue.
+    frappe.cache().set_value(key, {"status": "running"}, expires_in_sec=_PREFLIGHT_TTL)
+    frappe.enqueue(
+        "tally_migrator.api._run_preflight_job", queue="short", timeout=30 * 60,
+        key=key, file_url=file_url, record_overrides=record_overrides,
+        erpnext_company=erpnext_company, posting_date=posting_date)
+    return {"status": "running"}
+
+
+# Seconds a computed preflight result stays cached (keyed by file version + edits +
+# company + date + user), long enough to cover a wizard session's polling and review.
+_PREFLIGHT_TTL = 3600
+
+
+def _preflight_key(file_doc, record_overrides, erpnext_company, posting_date) -> str:
+    """Redis key for a preflight result, unique to the file version, the user's inline
+    edits, the target company/date, and the user - so an edit ('Re-check') or a new
+    upload never serves a stale result, and one user's scan can't leak to another."""
+    h = hashlib.sha1(
+        f"{file_doc.name}|{file_doc.modified}|{record_overrides}|{erpnext_company}"
+        f"|{posting_date}|{frappe.session.user}".encode()).hexdigest()
+    return f"tally_preflight:{h}"
+
+
+def _compute_preflight(file_url, record_overrides, erpnext_company, posting_date) -> dict:
+    """The full read-only pre-flight scan - data-quality + UOM + coverage + account
+    mapping + readiness - from a single parse. Writes nothing. Folding the UOM scan in
+    here means the wizard gets everything from one parse and one call (previously two
+    parallel calls, each re-parsing on a cold worker)."""
     overrides = json.loads(record_overrides) if record_overrides else {}
     _, source = _source_from_file(file_url)
     extractor = TallyExtractor(source)
@@ -113,7 +163,36 @@ def validate_masters_data(file_url: str, record_overrides: str = "", erpnext_com
     payload["account_mapping"] = account_mapping(source)
     if erpnext_company:
         payload["readiness"] = check_readiness(erpnext_company, posting_date)
+    items = source.get_collection("Stock Item", ITEM_FIELDS, ITEM_TAGS)
+    resolver = UomResolver(
+        u["name"] for u in frappe.get_all("UOM", fields=["name"], limit_page_length=0))
+    payload["uom_issues"] = resolver.issues_for(r.get("BaseUnits") for r in items)
+    payload["all_uoms"] = resolver.existing_sorted
     return payload
+
+
+def _run_preflight_job(key, file_url, record_overrides, erpnext_company, posting_date):
+    """Background worker: compute the pre-flight scan once and cache the result (or a
+    failure), so the polling wizard picks it up. Off the web request, so a large file's
+    scan can't time the request out."""
+    try:
+        payload = _compute_preflight(file_url, record_overrides, erpnext_company, posting_date)
+        frappe.cache().set_value(
+            key, {"status": "ready", **payload}, expires_in_sec=_PREFLIGHT_TTL)
+    except Exception as exc:
+        frappe.log_error(f"preflight job failed: {exc}", "Tally Migrator")
+        # Cache the failure (short TTL) so the wizard shows 'couldn't validate' instead
+        # of polling forever, and a retry can recompute soon.
+        frappe.cache().set_value(
+            key, {"status": "failed", "error": _preflight_error_message(exc)},
+            expires_in_sec=120)
+        raise
+
+
+def _preflight_error_message(exc) -> str:
+    """A short, user-facing reason the scan failed - no stack or internals."""
+    msg = str(exc).strip()
+    return msg[:200] if msg else "the file could not be read or validated"
 
 
 @frappe.whitelist(methods=["POST"])

@@ -165,6 +165,10 @@ class TallyMigratorPage {
 						${TallyMigratorPage.callout("success", TallyMigratorPage.iconRow("success", `<strong>Nothing to resolve.</strong> We found no data-quality issues (GST numbers, states, units, HSN codes) that need your input before importing.`))}
 					</div>
 
+					<!-- Honest failure state: the check could not complete. NEVER shown as
+					     clean; Continue stays blocked until a successful re-check. -->
+					<div id="check-failed" class="tm-section" style="display:none;"></div>
+
 					<!-- Data-quality report (read-only; informational + consent) -->
 					<div id="dq-section" class="tm-section" style="display:none;">
 						<div id="dq-cards" class="tm-stats" style="margin-bottom:var(--margin-sm);"></div>
@@ -811,6 +815,7 @@ class TallyMigratorPage {
 		this.uomIssues = [];
 		this.allUoms = [];
 		this.qualityReport = null;
+		this.qualityError = null;
 		this.coverageReport = null;
 		this.accountMapping = null;
 		this.readiness = null;
@@ -818,6 +823,7 @@ class TallyMigratorPage {
 
 		$("#check-loading").show();
 		$("#check-clean").hide();
+		$("#check-failed").hide();
 		$("#check-issues").hide();
 		$("#dq-section").hide();
 		$("#readiness-section").hide();
@@ -830,78 +836,110 @@ class TallyMigratorPage {
 		this._checkLoading = true;
 		this._updateCheckContinue();
 
-		// Two independent read-only scans run in parallel: data-quality (GST / HSN /
-		// duplicates / collisions) and UOM resolution. Render once both return.
-		let pending = 2;
-		const done = () => {
-			if (--pending > 0) return;
-			$("#check-loading").hide();
-			this._checkLoading = false;
-			this._updateCheckContinue();
-			const noUom = !this.uomIssues.length;
-			const noDq = !this.qualityReport || this.qualityReport.clean;
-			if (noUom && noDq) {
-				$("#check-clean").show();
-			}
-			// When resuming a draft that was past the Check step, advance to the saved
-			// step now that the scans (and account mapping) have loaded. Readiness
-			// blockers still gate Migrate, exactly as a forward walk would.
-			if (this._resumeStep) {
-				const step = this._resumeStep;
-				this._resumeStep = null;
-				if (step === "section-review" && this.hasAccounts()) {
-					// Render the preview from the now-loaded account mapping before
-					// showing it - mirrors gotoReviewOrRun(); without this the Review
-					// section shows blank on resume.
-					this.renderAccountMapping();
-					this.show("section-review");
-				} else if (step === "section-run") {
-					this.gotoRun();
-				}
-			}
-		};
+		// One background-safe pre-flight scan (data-quality + UOM + coverage + mapping +
+		// readiness) from a single parse. It returns a status: 'running' (still computing
+		// in the background - we poll), 'ready' (render the real result), or 'failed' (we
+		// show "couldn't validate" and BLOCK Continue - never a false "all clear").
+		this._preflightPoll = 0;
+		this._pollPreflight();
+	}
 
+	_preflightArgs() {
+		return {
+			file_url: this.fileUrl,
+			erpnext_company: this.getCompany(),
+			// Apply the user's saved inline fixes (e.g. a resumed draft) so the scan
+			// reflects them on first load - mirrors recheck()'s args.
+			record_overrides: JSON.stringify(this.recordOverrides || {}),
+			posting_date: this.getDate(),
+		};
+	}
+
+	_pollPreflight() {
 		frappe.call({
 			method: "tally_migrator.api.validate_masters_data",
-			args: {
-				file_url: this.fileUrl,
-				erpnext_company: this.getCompany(),
-				// Apply the user's saved inline fixes (e.g. a resumed draft) so the
-				// scan reflects them on first load - otherwise edits stay invisible
-				// until the user manually clicks Re-check. Mirrors recheck()'s args.
-				record_overrides: JSON.stringify(this.recordOverrides || {}),
-				posting_date: this.getDate(),
-			},
-			callback: (r) => {
-				this.qualityReport = r.message || null;
-				this.states = (r.message && r.message.states) || [];
-				this.coverageReport = (r.message && r.message.coverage) || null;
-				this.accountMapping = (r.message && r.message.account_mapping) || null;
-				this.readiness = (r.message && r.message.readiness) || null;
-				this.renderDataQuality();
-				this.renderReadiness();
-				this.renderCoverage();
-				done();
-			},
-			error: () => done(),  // non-fatal - importer still reports failures later
+			args: this._preflightArgs(),
+			callback: (r) => this._onPreflight(r.message || {}),
+			// A transport/500 error IS a failed validation - surface it honestly,
+			// never fall through to "no issues".
+			error: () => this._onPreflightFailed(
+				__("We couldn't reach the server to validate your file.")),
 		});
+	}
 
-		frappe.call({
-			method: "tally_migrator.api.validate_masters_file",
-			args: { file_url: this.fileUrl },
-			callback: (r) => {
-				const data = r.message || {};
-				const issues = (data.issues || []).filter((i) => !i.exists);
-				this.uomIssues = issues;
-				this.allUoms = data.all_uoms || [];
-				if (issues.length) {
-					$("#check-issues").show();
-					this.renderUomIssues();
-				}
-				done();
-			},
-			error: () => done(),
+	_onPreflight(m) {
+		if (m.status === "running") {
+			// Still computing - poll again, with a ceiling so a stuck scan surfaces as
+			// "couldn't validate" rather than spinning forever.
+			if (++this._preflightPoll > 150) {   // ~5 min at 2s
+				return this._onPreflightFailed(
+					__("Validating your file is taking longer than expected."));
+			}
+			return setTimeout(() => this._pollPreflight(), 2000);
+		}
+		if (m.status === "failed") {
+			return this._onPreflightFailed(m.error || __("The file could not be validated."));
+		}
+		// status === "ready": a genuine, complete result.
+		this._checkLoading = false;
+		this.qualityError = null;
+		this.qualityReport = m;
+		this.states = m.states || [];
+		this.coverageReport = m.coverage || null;
+		this.accountMapping = m.account_mapping || null;
+		this.readiness = m.readiness || null;
+		this.uomIssues = (m.uom_issues || []).filter((i) => !i.exists);
+		this.allUoms = m.all_uoms || [];
+
+		$("#check-loading").hide();
+		$("#check-failed").hide();
+		this.renderDataQuality();
+		this.renderReadiness();
+		this.renderCoverage();
+		if (this.uomIssues.length) {
+			$("#check-issues").show();
+			this.renderUomIssues();
+		}
+		// Clean ONLY when we have a real report that says clean (never because a report
+		// is missing/failed) AND there are no UOM issues.
+		const noUom = !this.uomIssues.length;
+		const noDq = !!(this.qualityReport && this.qualityReport.clean);
+		if (noUom && noDq) {
+			$("#check-clean").show();
+		}
+		this._updateCheckContinue();
+
+		// Resumed-draft: advance to the saved step now the scan (+ mapping) has loaded.
+		if (this._resumeStep) {
+			const step = this._resumeStep;
+			this._resumeStep = null;
+			if (step === "section-review" && this.hasAccounts()) {
+				this.renderAccountMapping();
+				this.show("section-review");
+			} else if (step === "section-run") {
+				this.gotoRun();
+			}
+		}
+	}
+
+	_onPreflightFailed(msg) {
+		this._checkLoading = false;
+		this.qualityError = msg || __("The file could not be validated.");
+		this.qualityReport = null;
+		$("#check-loading").hide();
+		$("#check-clean").hide();
+		$("#check-issues").hide();
+		const esc = frappe.utils.escape_html;
+		$("#check-failed").html(TallyMigratorPage.callout("error", TallyMigratorPage.iconRow(
+			"error",
+			`<strong>${__("We couldn't validate your file.")}</strong> ${esc(this.qualityError)}<br>` +
+			`${__("Importing without a successful check is not allowed.")} ` +
+			`<a href="#" id="btn-retry-preflight">${__("Try again")}</a>`))).show();
+		$("#btn-retry-preflight").off("click").on("click", (e) => {
+			e.preventDefault();
+			this.proceedToCheck();
 		});
+		this._updateCheckContinue();
 	}
 
 	// Single owner of the Step-3 Continue button's enabled state. The two async
@@ -918,7 +956,9 @@ class TallyMigratorPage {
 		const report = this.qualityReport;
 		const hasErrors = !!(report && !report.clean && (report.error_count || 0) > 0);
 		const consented = $("#dq-consent-check").is(":checked");
-		const blocked = loading || blockers || (hasErrors && !consented);
+		// A failed/incomplete validation blocks Continue outright - importing without a
+		// successful check is not allowed (the whole point of Phase 2's honest states).
+		const blocked = loading || !!this.qualityError || blockers || (hasErrors && !consented);
 		$("#btn-next-check").prop("disabled", blocked);
 		return blocked;
 	}
@@ -1585,33 +1625,51 @@ class TallyMigratorPage {
 	// engine, so resolved issues drop off and any remaining ones stay visible.
 	recheck() {
 		frappe.dom.freeze(__("Re-checking..."));
+		this._recheckPoll = 0;
+		this._doRecheck();
+	}
+
+	_doRecheck() {
 		frappe.call({
 			method: "tally_migrator.api.validate_masters_data",
-			args: {
-				file_url: this.fileUrl,
-				record_overrides: JSON.stringify(this.recordOverrides),
-				// Pass the company + date so the readiness panel (incl. frozen-period
-				// checks) is recomputed alongside the data fixes, not left stale.
-				erpnext_company: this.getCompany(),
-				posting_date: this.getDate(),
-			},
+			// Pass company + date so the readiness panel (incl. frozen-period checks) is
+			// recomputed alongside the data fixes, not left stale.
+			args: this._preflightArgs(),
 			callback: (r) => {
+				const m = r.message || {};
+				if (m.status === "running") {
+					if (++this._recheckPoll > 150) {   // ~5 min at 2s
+						frappe.dom.unfreeze();
+						return this._onPreflightFailed(__("Re-check is taking longer than expected."));
+					}
+					return setTimeout(() => this._doRecheck(), 2000);
+				}
 				frappe.dom.unfreeze();
-				this.qualityReport = r.message || null;
-				this.states = (r.message && r.message.states) || this.states;
+				if (m.status === "failed") {
+					return this._onPreflightFailed(m.error || __("Re-check could not be completed."));
+				}
+				// ready: a genuine recomputed result.
+				this.qualityError = null;
+				this.qualityReport = m;
+				this.states = m.states || this.states;
 				// The server recomputes coverage + account mapping against the fixed
 				// data on every call; refresh them too, or the Review step (and the
 				// coverage notice) would keep showing the pre-fix snapshot.
-				this.coverageReport = (r.message && r.message.coverage) || null;
-				this.accountMapping = (r.message && r.message.account_mapping) || null;
-				if (r.message && r.message.readiness) {
-					this.readiness = r.message.readiness;
+				this.coverageReport = m.coverage || null;
+				this.accountMapping = m.account_mapping || null;
+				if (m.readiness) {
+					this.readiness = m.readiness;
 					this.renderReadiness();
 				}
+				$("#check-failed").hide();
 				this.renderDataQuality();
 				this.renderCoverage();
+				this._updateCheckContinue();
 			},
-			error: () => frappe.dom.unfreeze(),
+			error: () => {
+				frappe.dom.unfreeze();
+				this._onPreflightFailed(__("We couldn't reach the server to re-check."));
+			},
 		});
 	}
 
@@ -2589,7 +2647,9 @@ class TallyMigratorPage {
 		$("#btn-next-upload").prop("disabled", true);
 		$("#check-loading").show();
 		$("#check-clean").hide();
+		$("#check-failed").hide();
 		$("#check-issues").hide();
+		this.qualityError = null;
 		$("#uom-issue-list").html("");
 		this.setCoa("reuse");
 		this.updateCoaHint();
