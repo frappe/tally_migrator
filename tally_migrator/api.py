@@ -653,9 +653,14 @@ def _source_from_file(file_url):
     cache_key = (frappe.session.user, file_doc.name, str(file_doc.modified))
     with _SOURCE_CACHE_LOCK:
         source = _SOURCE_CACHE.get(cache_key)
-        if source is not None:
+        if source is not None and not getattr(source, "released", False):
             _SOURCE_CACHE.move_to_end(cache_key)     # mark most-recently used
             return file_doc, source
+        # A released source (its parsed buffers freed after a run to reclaim memory)
+        # can no longer serve get_collection, so fall through and re-parse, overwriting
+        # the stale entry below - otherwise a second use of the same file in this worker
+        # (a re-run, a re-preview, or an import into another company) would extract
+        # nothing from the emptied source and silently import zero records.
         # A zipped XML is accepted transparently: unzip (with the uncompressed
         # size held to the same cap) before decoding, so the parser only ever
         # sees plain XML bytes regardless of how the file was uploaded. The raw

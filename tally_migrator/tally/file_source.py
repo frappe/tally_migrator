@@ -319,6 +319,9 @@ class FileTallySource:
         # collections, so memoise each (obj_type, fields) result to avoid
         # re-walking the retained records on every call.
         self._collection_cache: dict = {}
+        # Set by release() once extraction is done. A released source has dropped its
+        # parsed records and can no longer serve get_collection; api._source_from_file
+        # treats a released cached source as a miss and re-parses, so reuse stays correct.
         self.released = False
 
     def release(self) -> None:
@@ -332,8 +335,8 @@ class FileTallySource:
         run keeps the parsed file resident through the long import phases for no benefit
         - the lever that matters on a RAM-capped worker (e.g. Frappe Cloud).
 
-        Idempotent and safe: after release the source is marked released so a caller can
-        tell it must re-parse rather than reuse. Best-effort by the caller.
+        Idempotent and safe: after release the source is marked so the request-level
+        cache won't hand it back (it re-parses instead). Best-effort by the caller.
         """
         self._by_tag = {}
         self._collection_cache = {}
