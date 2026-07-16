@@ -757,7 +757,9 @@ def _source_from_file(file_url):
             return file_doc, source
         # A released source (its parsed buffers freed after a run to reclaim memory)
         # can no longer serve get_collection, so fall through and re-parse, overwriting
-        # the stale entry below.
+        # the stale entry below - otherwise a second use of the same file in this worker
+        # (a re-run, a re-preview, or an import into another company) would extract
+        # nothing from the emptied source and silently import zero records.
         # A zipped XML is accepted transparently: unzip (with the uncompressed
         # size held to the same cap) before decoding, so the parser only ever
         # sees plain XML bytes regardless of how the file was uploaded. The raw

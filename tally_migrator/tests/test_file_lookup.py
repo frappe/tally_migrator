@@ -75,5 +75,58 @@ class TestSharedFileUrlResolution(unittest.TestCase):
             self._run(rows)
 
 
+class TestReleasedSourceReparsed(unittest.TestCase):
+    """A released cached source (its parsed buffers freed after a run to reclaim
+    memory) must NOT be handed back - ``_source_from_file`` must re-parse and
+    overwrite the stale entry. Otherwise a second use of the same file in one worker
+    (a re-run, a re-preview, or importing the same file into another company) would
+    extract nothing from the emptied source and silently import zero records.
+    """
+
+    def _call(self, preset):
+        file_doc = types.SimpleNamespace(name="F1", modified="t", file_name="x.xml")
+        parses = []
+
+        def fake_source(raw):
+            s = types.SimpleNamespace(released=False, raw=raw)
+            parses.append(s)
+            return s
+
+        key = ("u@example.com", "F1", "t")
+        prev_user = api.frappe.session.user
+        api.frappe.session.user = "u@example.com"
+        try:
+            with mock.patch.object(api, "_resolve_file_doc", return_value=file_doc), \
+                 mock.patch.object(api, "_raw_file_bytes", return_value=b"<x/>"), \
+                 mock.patch.object(api, "unzip_if_zip", side_effect=lambda raw, cap: raw), \
+                 mock.patch.object(api, "FileTallySource", side_effect=fake_source), \
+                 mock.patch.dict(api._SOURCE_CACHE, clear=True):
+                if preset is not None:
+                    api._SOURCE_CACHE[key] = preset
+                _, source = api._source_from_file("/private/files/x.xml")
+                return source, parses, dict(api._SOURCE_CACHE), key
+        finally:
+            api.frappe.session.user = prev_user
+
+    def test_released_cached_source_is_reparsed(self):
+        released = types.SimpleNamespace(released=True, raw=b"STALE")
+        source, parses, cache, key = self._call(released)
+        self.assertEqual(len(parses), 1, "a released source must trigger a re-parse")
+        self.assertIsNot(source, released, "must not hand back the released source")
+        self.assertFalse(getattr(source, "released", False))
+        self.assertIs(cache[key], source, "the stale entry must be overwritten")
+
+    def test_live_cached_source_is_reused_without_reparse(self):
+        live = types.SimpleNamespace(released=False, raw=b"LIVE")
+        source, parses, _, _ = self._call(live)
+        self.assertEqual(len(parses), 0, "a live cached source must be reused, not re-parsed")
+        self.assertIs(source, live)
+
+    def test_absent_source_parses_and_caches(self):
+        source, parses, cache, key = self._call(None)
+        self.assertEqual(len(parses), 1)
+        self.assertIs(cache[key], source)
+
+
 if __name__ == "__main__":
     unittest.main()
