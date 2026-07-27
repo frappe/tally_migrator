@@ -880,6 +880,12 @@ Migrator handles a real-world wrinkle in Tally data.
 - **Income and expense openings** cannot carry an opening balance in ERPNext, so they
   are not posted as account lines; their amount stays inside the Temporary Opening
   difference (and the reconciliation accounts for this), with a warning.
+- **Stock-account (Stock-in-Hand) openings**, on a company that uses perpetual inventory
+  (the ERPNext default), are not posted as account lines either: ERPNext only lets a
+  stock account be updated by stock transactions, not a journal entry. The amount stays
+  inside the Temporary Opening difference, with a warning, and your actual opening stock
+  is posted from your items as Stock Reconciliations (below). On a company without
+  perpetual inventory the stock ledger opening posts as a normal account line.
 - **Party openings** post bill by bill as opening invoices and payment entries, as
   described on the Preview step.
 - **Opening invoices are named after the Tally bill** so the ERPNext document id is

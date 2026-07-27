@@ -39,8 +39,13 @@ _PLUG_EPSILON = 0.01
 _PARTY_PLUG_THRESHOLD = 1.0
 
 
-def account_mapping(source) -> dict:
-    """Build the accounts-mapping preview for an uploaded Tally masters file."""
+def account_mapping(source, company: str = "") -> dict:
+    """Build the accounts-mapping preview for an uploaded Tally masters file.
+
+    ``company`` (the chosen ERPNext target, when known) lets the opening plug reflect the
+    company's inventory mode, so the Review-screen plug matches the post-import
+    reconciliation. Blank when no company is chosen yet - the plug then counts stock, as
+    before."""
     extractor = TallyExtractor(source)
     coa = extractor.extract_coa()
     masters = extractor.extract_all()
@@ -94,7 +99,7 @@ def account_mapping(source) -> dict:
         "inferred_count": len(inferred),
         "inferred": inferred,
         "groups": groups_out,
-        "opening": _opening_plug(coa, masters),
+        "opening": _opening_plug(coa, masters, company),
         "party_openings": _party_openings(masters, bills),
     }
 
@@ -261,7 +266,7 @@ def _party_openings(masters, bills) -> dict:
     }
 
 
-def _opening_plug(coa, masters) -> dict:
+def _opening_plug(coa, masters, company: str = "") -> dict:
     """Net residual across the whole opening trial balance → Temporary Opening.
 
     Delegates to ``reconciliation.source_totals`` so the plug shown on the Review
@@ -273,10 +278,14 @@ def _opening_plug(coa, masters) -> dict:
     ``OpeningBalanceImporter`` and ``StockOpeningImporter``). An earlier version
     here omitted opening stock and so understated the plug on any file with opening
     inventory; ``source_totals`` includes it, which is what actually posts.
-    """
-    from tally_migrator.migration.reconciliation import source_totals
 
-    totals = source_totals(coa, masters)
+    ``company`` selects the same inventory mode the import will use, so under perpetual
+    inventory a stock-account *ledger* opening folds into the plug (it is not posted to
+    the JE) exactly as the reconciliation and the importer treat it.
+    """
+    from tally_migrator.migration.reconciliation import source_totals, is_perpetual
+
+    totals = source_totals(coa, masters, perpetual=is_perpetual(company))
     temp = totals["temporary_opening"]
     plug = round(temp["amount"], 2)
     # Total opening value = the magnitude of every row in the trial balance, so the
