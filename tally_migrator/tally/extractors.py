@@ -1,7 +1,7 @@
 import unicodedata
 import re
 from dataclasses import dataclass, field
-from .mappings import TALLY_ROOT_PARENT, TALLY_SYSTEM_LEDGERS, classify_group
+from .mappings import TALLY_ROOT_PARENT, classify_group, is_system_ledger
 from .resolver import ACCOUNT, CUSTOMER, SUPPLIER, LedgerResolver
 
 
@@ -443,7 +443,7 @@ class TallyExtractor:
         # Ledger nodes (skip parties - handled as Customers/Suppliers - and Tally
         # system ledgers like "Profit & Loss A/c" that ERPNext derives itself).
         for l in ledgers:
-            if l["_name"] in TALLY_SYSTEM_LEDGERS:
+            if is_system_ledger(l["_name"]):
                 excluded.append({
                     "name": l["_name"],
                     "reason": "ERPNext maintains this account on its own, so it was not "
