@@ -4,8 +4,8 @@
 import unittest
 
 from tally_migrator.tally.extractors import TallyExtractor
-from tally_migrator.tally.mappings import classify_group
-from tally_migrator.tally.resolver import LedgerResolver, CUSTOMER, ACCOUNT
+from tally_migrator.tally.mappings import classify_group, is_system_ledger
+from tally_migrator.tally.resolver import LedgerResolver, CUSTOMER, SUPPLIER, ACCOUNT
 
 
 class _Src:
@@ -55,6 +55,57 @@ class TestClassify(unittest.TestCase):
 
     def test_custom_group_is_none(self):
         self.assertIsNone(classify_group("Retail Customers"))
+
+    def test_reserved_match_is_case_and_whitespace_insensitive(self):
+        # A chart typed in another case (or with stray spaces) must still classify -
+        # otherwise account_type (Bank/Tax/Payable/...) is silently lost.
+        self.assertEqual(classify_group("BANK ACCOUNTS")["account_type"], "Bank")
+        self.assertEqual(classify_group("bank  accounts")["account_type"], "Bank")
+        self.assertEqual(classify_group("DUTIES & TAXES")["account_type"], "Tax")
+        # Aliases fold too ("Duties and Taxes" -> "Duties & Taxes").
+        self.assertEqual(classify_group("duties and taxes")["account_type"], "Tax")
+        # A genuinely custom group is still unclassified (must not false-match).
+        self.assertIsNone(classify_group("RETAIL CUSTOMERS"))
+
+    def test_system_ledger_case_insensitive(self):
+        self.assertTrue(is_system_ledger("Profit & Loss A/c"))
+        self.assertTrue(is_system_ledger("PROFIT & LOSS A/C"))
+        self.assertFalse(is_system_ledger("Sales A/c"))
+
+
+class TestCaseInsensitivePartyRoots(unittest.TestCase):
+    """Regression: parties under a differently-cased/spaced Sundry Debtors / Creditors
+    root must still classify as Customer / Supplier, not fall through to a ledger.
+    (Reported symptom: an all-caps 'SUNDRY DEBTORS' chart imported every party as an
+    Account.)"""
+
+    def test_caps_debtor_root_nested(self):
+        r = LedgerResolver(
+            [_g("SUNDRY DEBTORS", ""), _g("DEBTORS FOR BROKERAGE", "SUNDRY DEBTORS")],
+            [_l("GirishKumar", "DEBTORS FOR BROKERAGE")])
+        self.assertEqual(r.kind_of("GirishKumar"), CUSTOMER)
+
+    def test_caps_creditor_root(self):
+        r = LedgerResolver([_g("SUNDRY CREDITORS", "")], [_l("Acme Freight", "SUNDRY CREDITORS")])
+        self.assertEqual(r.kind_of("Acme Freight"), SUPPLIER)
+
+    def test_whitespace_variant_root(self):
+        r = LedgerResolver([_g("  Sundry   Debtors ", "")], [_l("WsCust", "  Sundry   Debtors ")])
+        self.assertEqual(r.kind_of("WsCust"), CUSTOMER)
+
+    def test_ledger_directly_under_root_not_emitted_as_group(self):
+        # No group node for the root at all - a ledger directly under it must still be a
+        # customer (the descendant set is seeded with the roots themselves).
+        r = LedgerResolver([], [_l("DirectCust", "Sundry Debtors")])
+        self.assertEqual(r.kind_of("DirectCust"), CUSTOMER)
+
+    def test_created_name_keeps_original_casing(self):
+        # Normalisation is for MATCHING only - the extracted account keeps Tally casing.
+        src = _Src([_g("SUNDRY DEBTORS", ""), _g("DEBTORS FOR BROKERAGE", "SUNDRY DEBTORS")],
+                   [_l("GirishKumar", "DEBTORS FOR BROKERAGE")])
+        coa = TallyExtractor(src).extract_coa()
+        names = {a.name for a in coa.accounts}
+        self.assertIn("DEBTORS FOR BROKERAGE", names)   # original casing, not folded
 
 
 class TestResolver(unittest.TestCase):

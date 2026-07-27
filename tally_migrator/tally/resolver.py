@@ -18,12 +18,13 @@ from dataclasses import dataclass
 
 from .mappings import (
     ASSET,
-    CREDITOR_ROOTS,
-    DEBTOR_ROOTS,
+    CREDITOR_ROOTS_NORM,
+    DEBTOR_ROOTS_NORM,
     EXPENSE,
     INCOME,
     LIABILITY,
     classify_group,
+    norm_group,
 )
 
 CUSTOMER = "customer"
@@ -77,8 +78,10 @@ class LedgerResolver:
             )
             for g in groups
         }
-        self._debtor_groups = self._descendants(DEBTOR_ROOTS)
-        self._creditor_groups = self._descendants(CREDITOR_ROOTS)
+        # Sets of NORMALISED group names under each party root (see norm_group), so a
+        # differently-cased Sundry Debtors/Creditors root still classifies its parties.
+        self._debtor_groups = self._descendants(DEBTOR_ROOTS_NORM)
+        self._creditor_groups = self._descendants(CREDITOR_ROOTS_NORM)
         self._by_name: dict[str, LedgerTarget] = {}
         for ledger in ledgers or []:
             name = ledger["_name"]
@@ -123,20 +126,30 @@ class LedgerResolver:
     # ── Internals ────────────────────────────────────────────────────────────
 
     def _classify(self, name: str, parent: str) -> LedgerTarget:
-        if parent in self._debtor_groups:
+        parent_norm = norm_group(parent)
+        if parent_norm in self._debtor_groups:
             return LedgerTarget(name, CUSTOMER)
-        if parent in self._creditor_groups:
+        if parent_norm in self._creditor_groups:
             return LedgerTarget(name, SUPPLIER)
         nature = self.group_nature(parent)
         return LedgerTarget(name, ACCOUNT, nature["root"], nature["account_type"])
 
-    def _descendants(self, roots: set[str]) -> set[str]:
-        """All groups nested under the given roots (arbitrary depth)."""
-        result, changed = set(roots), True
+    def _descendants(self, roots_norm: set[str]) -> set[str]:
+        """All groups nested under the given (normalised) root names, at any depth.
+
+        Returns a set of NORMALISED names (see norm_group). Seeded with the roots
+        themselves - so a ledger sitting directly under a root still matches even when
+        the root group is not emitted as its own node - then grown by any group whose
+        parent is already in the set. Matching on the normalised form makes the whole
+        chain case/whitespace-insensitive; because Tally is internally consistent within
+        one export (a ledger's PARENT equals its group's NAME byte-for-byte), the deeper
+        hops still line up."""
+        result, changed = set(roots_norm), True
         while changed:
             changed = False
             for name, parent in self._parent_of.items():
-                if name not in result and parent in result:
-                    result.add(name)
+                n = norm_group(name)
+                if n not in result and norm_group(parent) in result:
+                    result.add(n)
                     changed = True
         return result
