@@ -2,10 +2,29 @@ from __future__ import annotations
 
 import re
 
+
+def norm_group(name: str) -> str:
+    """Canonical key for MATCHING a Tally group / ledger name: case- and
+    whitespace-insensitive.
+
+    Tally group names are matched against the reserved-group tables and the Sundry
+    Debtors / Creditors roots by this key, so a chart that types its groups in a
+    different case ("SUNDRY DEBTORS") or with stray / doubled spaces still classifies
+    correctly - otherwise every party under a differently-cased root imports as a plain
+    ledger instead of a Customer / Supplier. Used ONLY for lookups: the original name is
+    always what gets created in ERPNext, so the imported record keeps its Tally casing.
+    ``casefold`` (not ``lower``) so non-ASCII names fold correctly; ``" ".join(split())``
+    trims the ends and collapses internal runs of whitespace."""
+    return " ".join(str(name or "").split()).casefold()
+
+
 # ── Tally root groups that classify ledgers as customers / suppliers ──────────
 
 DEBTOR_ROOTS   = {"Sundry Debtors"}
 CREDITOR_ROOTS = {"Sundry Creditors"}
+# Normalised forms used for the actual matching (see norm_group / LedgerResolver).
+DEBTOR_ROOTS_NORM   = {norm_group(n) for n in DEBTOR_ROOTS}
+CREDITOR_ROOTS_NORM = {norm_group(n) for n in CREDITOR_ROOTS}
 
 # ── Stock vs non-stock item classification ────────────────────────────────────
 
@@ -237,6 +256,14 @@ TALLY_ROOT_PARENT = "Primary"
 # Tally system ledgers ERPNext derives itself (it computes its own P&L) - never
 # migrated as ledger Accounts.
 TALLY_SYSTEM_LEDGERS = {"Profit & Loss A/c"}
+_SYSTEM_LEDGERS_NORM = {norm_group(n) for n in TALLY_SYSTEM_LEDGERS}
+
+
+def is_system_ledger(name: str) -> bool:
+    """True for a Tally system ledger ERPNext maintains itself (e.g. "Profit & Loss
+    A/c"), matched case/whitespace-insensitively so a differently-cased export still
+    skips it rather than importing it as an ordinary account."""
+    return norm_group(name) in _SYSTEM_LEDGERS_NORM
 
 # Tally's explicit GST registration type → ERPNext GST Category. Tally states this
 # on the party ledger, so when present it is authoritative - unlike inferring the
@@ -277,11 +304,21 @@ ERPNEXT_ROOT_GROUPS: dict[str, str] = {
 }
 
 
+# Normalised-key views of the classification + alias tables, built once, so the
+# lookup is case/whitespace-insensitive (see norm_group). The aliases map a normalised
+# display variant to the normalised canonical key.
+_CLASSIFICATION_BY_NORM = {norm_group(k): v for k, v in TALLY_GROUP_CLASSIFICATION.items()}
+_ALIASES_BY_NORM = {norm_group(k): norm_group(v) for k, v in TALLY_GROUP_ALIASES.items()}
+
+
 def classify_group(name: str) -> dict | None:
     """Return the classification for a reserved Tally group, else None.
 
-    Accepts display-name aliases. ``None`` means the group is user-defined and its
-    nature must be inherited from its nearest reserved ancestor.
+    Matching is case- and whitespace-insensitive (see norm_group) and accepts display-
+    name aliases, so "Bank Accounts", "BANK ACCOUNTS" and "bank  accounts" all resolve.
+    ``None`` means the group is user-defined and its nature must be inherited from its
+    nearest reserved ancestor.
     """
-    key = TALLY_GROUP_ALIASES.get(name, name)
-    return TALLY_GROUP_CLASSIFICATION.get(key)
+    key = norm_group(name)
+    key = _ALIASES_BY_NORM.get(key, key)
+    return _CLASSIFICATION_BY_NORM.get(key)
