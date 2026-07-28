@@ -30,11 +30,76 @@ def preview_masters_file(file_url: str):
     Read-only: imports nothing. Lets the user confirm the file is valid and see
     record counts (customers / suppliers / items / warehouses) *before* running
     the migration, so there are no surprises.
+
+    Status-wrapped exactly like ``validate_masters_data`` so a large export can never
+    time the web request out: a small plain file is counted inline ('ready'); a large
+    file (or a zip / remote link) is counted once in a background job and cached in
+    Redis - 'running' while it computes, then 'ready' with the counts or 'failed' with a
+    reason. The wizard polls this endpoint until it leaves 'running'. A failure is
+    reported honestly, never as an empty (zero-count) 'ready'.
     """
     frappe.only_for(ALLOWED_ROLES)
+    file_doc = _resolve_file_doc(file_url)
+    _assert_file_access(file_doc)
+    # Small file: count inline (fast, no timeout risk).
+    if not _should_run_async(file_doc):
+        try:
+            return {"status": "ready", **_compute_preview(file_url)}
+        except Exception as exc:
+            frappe.log_error(f"preview (inline) failed: {exc}", "Tally Migrator")
+            return {"status": "failed", "error": _preflight_error_message(exc)}
+
+    # Large file: the parse can exceed the web request timeout, so count it once in a
+    # background job and cache the result (shared across workers). The wizard polls.
+    key = _preview_key(file_doc)
+    cached = frappe.cache().get_value(key)
+    if cached:
+        return cached
+    # Mark running before enqueuing so concurrent polls don't each enqueue; the
+    # key-derived job_id + deduplicate close the double-enqueue window. On 'default'
+    # (not 'short'): a large-book parse can run for minutes, which the short queue
+    # is not for.
+    frappe.cache().set_value(key, {"status": "running"}, expires_in_sec=_PREFLIGHT_TTL)
+    frappe.enqueue(
+        "tally_migrator.api._run_preview_job", queue="default", timeout=30 * 60,
+        job_id=f"preview::{key}", deduplicate=True,
+        key=key, file_url=file_url)
+    return {"status": "running"}
+
+
+def _preview_key(file_doc) -> str:
+    """Redis key for a preview result, unique to the file version and the user. Unlike
+    the pre-flight key it depends on neither company nor inline edits (the preview shows
+    only raw record counts), so re-entering the upload step reuses the same result and a
+    new upload (new File / modified) never serves a stale one."""
+    h = hashlib.sha1(
+        f"{file_doc.name}|{file_doc.modified}|{frappe.session.user}".encode()).hexdigest()
+    return f"tally_preview:{h}"
+
+
+def _compute_preview(file_url) -> dict:
+    """The upload-step record counts (customers / suppliers / items / warehouses /
+    accounts), from a single parse. Writes nothing."""
     _, source = _source_from_file(file_url)
     extractor = TallyExtractor(source)
     return {**extractor.extract_all().summary, **extractor.extract_coa().summary}
+
+
+def _run_preview_job(key, file_url):
+    """Background worker: count the file once and cache the result (or a failure), so the
+    polling wizard picks it up. Off the web request, so a large file can't time it out."""
+    try:
+        payload = _compute_preview(file_url)
+        frappe.cache().set_value(
+            key, {"status": "ready", **payload}, expires_in_sec=_PREFLIGHT_TTL)
+    except Exception as exc:
+        frappe.log_error(f"preview job failed: {exc}", "Tally Migrator")
+        # Cache the failure (short TTL) so the wizard shows 'couldn't read' instead of
+        # polling forever, and a retry can recompute soon.
+        frappe.cache().set_value(
+            key, {"status": "failed", "error": _preflight_error_message(exc)},
+            expires_in_sec=120)
+        raise
 
 
 @frappe.whitelist(methods=["GET", "POST"])

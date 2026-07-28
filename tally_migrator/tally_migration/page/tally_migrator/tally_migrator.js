@@ -464,49 +464,86 @@ class TallyMigratorPage {
 			.show()
 			.html(`<span class="text-muted"><span class="tm-spin"></span> &nbsp;Reading your file...</span>`);
 		$("#btn-next-upload").prop("disabled", true);
+		// Capture the file this preview is for, so a slow poll for an earlier upload can
+		// never overwrite the box after the user has uploaded a different file. Reset the
+		// poll ceiling for this fresh preview.
+		this._previewUrl = this.fileUrl;
+		this._previewPoll = 0;
+		this._pollPreview();
+	}
 
+	_pollPreview() {
+		// preview_masters_file is status-wrapped like the Step-3 scan: a large file counts
+		// in the background and this endpoint returns 'running' until it is done. Poll
+		// until 'ready' or 'failed'. Reading counts never times the request out now.
+		const startedFor = this._previewUrl;
 		frappe.call({
 			method: "tally_migrator.api.preview_masters_file",
-			args: { file_url: this.fileUrl },
+			args: { file_url: startedFor },
 			callback: (r) => {
-				const p = r.message || {};
-				this.preview = p;
-				// Now that we know whether the file carries accounts, refresh the
-				// stepper so its step count is stable from here on (no 4 -> 5 jump).
-				this.renderStepper("section-upload");
-				const masters =
-					(p.customers || 0) + (p.suppliers || 0) + (p.items || 0) + (p.warehouses || 0);
-				const accounts = (p.account_groups || 0) + (p.ledger_accounts || 0);
-				if (masters === 0 && accounts === 0) {
-					// Nothing at all - the export is empty or not a masters export.
-					$("#preview-box").html(
-						TallyMigratorPage.callout("error", TallyMigratorPage.iconRow("error", `We read the file, but found no Accounts, Customers, Suppliers, Items or Warehouses in it. Make sure you exported <strong>Masters</strong> (with <strong>Show All Masters = Yes</strong>) from Tally.`))
-					);
-					$("#btn-next-upload").prop("disabled", true);
-					return;
-				}
-				if (masters === 0) {
-					// Accounts but no business masters - a valid chart-of-accounts-only
-					// export, but a common sign the user exported a narrower scope than
-					// intended. Allow it, but ask them to confirm before spending a run.
-					$("#preview-box").html(
-						TallyMigratorPage.callout("info", TallyMigratorPage.iconRow("info", `<strong>This looks like a chart-of-accounts-only export.</strong> We found accounts and opening balances, but no Customers, Suppliers, Items or Warehouses. If that is what you intended, continue. If you expected those too, re-export from Tally with <strong>Show All Masters = Yes</strong> and upload again.${this.countsHtml(p)}`))
-					);
-					$("#btn-next-upload").prop("disabled", false);
-					return;
-				}
-				$("#preview-box").html(
-					TallyMigratorPage.callout("success", TallyMigratorPage.iconRow("success", `<strong>File read successfully.</strong> Here's what we found:${this.countsHtml(p)}`))
-				);
-				$("#btn-next-upload").prop("disabled", false);
+				if (this._previewUrl !== startedFor) return;   // a newer upload took over
+				this._onPreview(r.message || {});
 			},
+			// A transport/500 error IS a failed read - surface it honestly.
 			error: () => {
-				$("#preview-box").html(
-					TallyMigratorPage.callout("error", TallyMigratorPage.iconRow("error", `We couldn't read this file. Please make sure it's a valid Tally <strong>Masters XML</strong> export and upload it again.`))
-				);
-				$("#btn-next-upload").prop("disabled", true);
+				if (this._previewUrl !== startedFor) return;
+				this._onPreviewFailed();
 			},
 		});
+	}
+
+	_onPreview(p) {
+		if (p.status === "running") {
+			// Still counting in the background - poll again, with a ceiling so a stuck
+			// scan surfaces as "couldn't read" rather than spinning forever.
+			if (++this._previewPoll > 150) {   // ~5 min at 2s
+				return this._onPreviewFailed(
+					__("Reading your file is taking longer than expected. Please try again."));
+			}
+			return setTimeout(() => this._pollPreview(), 2000);
+		}
+		if (p.status === "failed") {
+			return this._onPreviewFailed(p.error);
+		}
+		// status === "ready": a genuine, complete count.
+		this.preview = p;
+		// Now that we know whether the file carries accounts, refresh the stepper so its
+		// step count is stable from here on (no 4 -> 5 jump).
+		this.renderStepper("section-upload");
+		const masters =
+			(p.customers || 0) + (p.suppliers || 0) + (p.items || 0) + (p.warehouses || 0);
+		const accounts = (p.account_groups || 0) + (p.ledger_accounts || 0);
+		if (masters === 0 && accounts === 0) {
+			// Nothing at all - the export is empty or not a masters export.
+			$("#preview-box").html(
+				TallyMigratorPage.callout("error", TallyMigratorPage.iconRow("error", `We read the file, but found no Accounts, Customers, Suppliers, Items or Warehouses in it. Make sure you exported <strong>Masters</strong> (with <strong>Show All Masters = Yes</strong>) from Tally.`))
+			);
+			$("#btn-next-upload").prop("disabled", true);
+			return;
+		}
+		if (masters === 0) {
+			// Accounts but no business masters - a valid chart-of-accounts-only export,
+			// but a common sign the user exported a narrower scope than intended. Allow
+			// it, but ask them to confirm before spending a run.
+			$("#preview-box").html(
+				TallyMigratorPage.callout("info", TallyMigratorPage.iconRow("info", `<strong>This looks like a chart-of-accounts-only export.</strong> We found accounts and opening balances, but no Customers, Suppliers, Items or Warehouses. If that is what you intended, continue. If you expected those too, re-export from Tally with <strong>Show All Masters = Yes</strong> and upload again.${this.countsHtml(p)}`))
+			);
+			$("#btn-next-upload").prop("disabled", false);
+			return;
+		}
+		$("#preview-box").html(
+			TallyMigratorPage.callout("success", TallyMigratorPage.iconRow("success", `<strong>File read successfully.</strong> Here's what we found:${this.countsHtml(p)}`))
+		);
+		$("#btn-next-upload").prop("disabled", false);
+	}
+
+	_onPreviewFailed(reason) {
+		const esc = frappe.utils.escape_html;
+		const detail = reason ? ` ${esc(reason)}` : "";
+		$("#preview-box").html(
+			TallyMigratorPage.callout("error", TallyMigratorPage.iconRow("error", `We couldn't read this file.${detail} Please make sure it's a valid Tally <strong>Masters XML</strong> export and upload it again.`))
+		);
+		$("#btn-next-upload").prop("disabled", true);
 	}
 
 	countsHtml(p) {

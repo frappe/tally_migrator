@@ -114,6 +114,84 @@ class TestPreflightJob(unittest.TestCase):
         self.assertIn("nope", cache.store["K"]["error"])
 
 
+class TestPreviewOrchestrator(unittest.TestCase):
+    """Step-1 preview is status-wrapped like the Step-3 scan so a large file cannot time
+    the web request out: small inline (ready), large async (running -> cached
+    ready/failed), and a failure is reported honestly, never as an empty 'ready'."""
+
+    def setUp(self):
+        self.p_resolve = mock.patch.object(api, "_resolve_file_doc", return_value=_file())
+        self.p_access = mock.patch.object(api, "_assert_file_access")
+        self.p_only = mock.patch.object(api.frappe, "only_for")
+        self.p_resolve.start(); self.p_access.start(); self.p_only.start()
+
+    def tearDown(self):
+        mock.patch.stopall()
+
+    def test_small_file_ready_with_counts(self):
+        with mock.patch.object(api, "_should_run_async", return_value=False), \
+             mock.patch.object(api, "_compute_preview",
+                               return_value={"customers": 3, "ledger_accounts": 5}):
+            out = api.preview_masters_file("/files/x.xml")
+        self.assertEqual(out["status"], "ready")
+        self.assertEqual(out["customers"], 3)
+
+    def test_small_file_failure_is_honest(self):
+        with mock.patch.object(api, "_should_run_async", return_value=False), \
+             mock.patch.object(api, "_compute_preview", side_effect=ValueError("bad xml")), \
+             mock.patch.object(api.frappe, "log_error"):
+            out = api.preview_masters_file("/files/x.xml")
+        self.assertEqual(out["status"], "failed")
+        self.assertIn("bad xml", out["error"])
+        self.assertNotIn("customers", out)       # no partial counts on failure
+
+    def test_large_file_enqueues_and_returns_running(self):
+        cache = _FakeCache()
+        with mock.patch.object(api, "_should_run_async", return_value=True), \
+             mock.patch.object(api.frappe, "cache", return_value=cache), \
+             mock.patch.object(api.frappe, "enqueue") as enq:
+            out = api.preview_masters_file("/files/big.zip")
+        self.assertEqual(out["status"], "running")
+        enq.assert_called_once()
+        self.assertTrue(any(v.get("status") == "running" for _, v, _ in cache.sets))
+
+    def test_large_file_returns_cached_ready_without_reenqueue(self):
+        key = api._preview_key(_file())
+        cache = _FakeCache({key: {"status": "ready", "customers": 9}})
+        with mock.patch.object(api, "_should_run_async", return_value=True), \
+             mock.patch.object(api.frappe, "cache", return_value=cache), \
+             mock.patch.object(api.frappe, "enqueue") as enq:
+            out = api.preview_masters_file("/files/big.zip")
+        self.assertEqual(out["status"], "ready")
+        self.assertEqual(out["customers"], 9)
+        enq.assert_not_called()
+
+    def test_preview_key_independent_of_company_and_edits(self):
+        # The preview counts depend on neither the company nor inline edits, so the key
+        # is stable across them (unlike the pre-flight key) - one parse serves the step.
+        self.assertEqual(api._preview_key(_file()), api._preview_key(_file()))
+
+
+class TestPreviewJob(unittest.TestCase):
+    def test_job_caches_ready_on_success(self):
+        cache = _FakeCache()
+        with mock.patch.object(api.frappe, "cache", return_value=cache), \
+             mock.patch.object(api, "_compute_preview", return_value={"items": 7}):
+            api._run_preview_job("K", "/f.xml")
+        self.assertEqual(cache.store["K"]["status"], "ready")
+        self.assertEqual(cache.store["K"]["items"], 7)
+
+    def test_job_caches_failed_and_reraises(self):
+        cache = _FakeCache()
+        with mock.patch.object(api.frappe, "cache", return_value=cache), \
+             mock.patch.object(api.frappe, "log_error"), \
+             mock.patch.object(api, "_compute_preview", side_effect=RuntimeError("nope")):
+            with self.assertRaises(RuntimeError):
+                api._run_preview_job("K", "/f.xml")
+        self.assertEqual(cache.store["K"]["status"], "failed")
+        self.assertIn("nope", cache.store["K"]["error"])
+
+
 class TestPreflightKey(unittest.TestCase):
     def test_key_changes_with_inputs(self):
         base = api._preflight_key(_file(), "", "Co", "2026-01-01")
