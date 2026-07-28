@@ -179,5 +179,54 @@ class TestBomImporterRun(unittest.TestCase):
         self.assertEqual(res.skipped, 1)
 
 
+class TestSecondaryAllocationGuard(unittest.TestCase):
+    """Tally's per-row Rate (%) are independent and NOT constrained to sum to <=100.
+    ERPNext rejects the whole BOM when the secondaries' total cost allocation exceeds 100%
+    (the finished good's share would go negative - verified live). The importer must then
+    keep the BOM with its components only (never lose it) and warn; exactly 100% is fine."""
+
+    def _run(self, secondaries):
+        with mock.patch("frappe.get_cached_value", return_value="INR"):
+            imp = BomImporter("Frappe Tech", "FT")
+        comps = [{"natureofitem": "Component", "stockitemname": "RM", "actualqty": "2 Nos"}]
+        comps += secondaries
+        items = [{"_name": "FG", "Boms": [{"name": "FG BOM", "basic_qty": "1 Nos",
+                                           "components": comps}]}]
+        captured = {}
+
+        def fake_get_doc(d):
+            captured["doc"] = d
+            return types.SimpleNamespace(name="BOM-FG-001",
+                                         insert=lambda **k: None, submit=lambda: None)
+
+        def fake_exists(dt, filt=None):
+            if dt == "BOM":
+                return False
+            return True                       # Item + UOM exist
+        with mock.patch("frappe.db.exists", side_effect=fake_exists), \
+                mock.patch("frappe.db.get_value", return_value="Nos"), \
+                mock.patch("frappe.get_doc", side_effect=fake_get_doc), \
+                mock.patch("frappe.db.commit"):
+            res = imp.run(items)
+        return captured.get("doc"), res
+
+    def _sec(self, pct):
+        return {"natureofitem": "Co-Product", "stockitemname": f"S{pct}",
+                "actualqty": "1 Nos", "addlcostallocperc": str(pct)}
+
+    def test_over_100_drops_secondaries_keeps_bom_and_warns(self):
+        doc, res = self._run([self._sec(60), self._sec(30), self._sec(20)])  # 110%
+        self.assertEqual(res.created, 1)                       # BOM still created
+        self.assertNotIn("secondary_items", doc)               # secondaries dropped
+        self.assertEqual(doc["items"], [{"item_code": "RM", "qty": 2.0, "uom": "Nos"}])
+        self.assertTrue(any("over 100%" in w["reason"] for w in res.warnings))
+
+    def test_exactly_100_keeps_secondaries(self):
+        doc, res = self._run([self._sec(50), self._sec(50)])   # 100%
+        self.assertEqual(res.created, 1)
+        self.assertEqual(len(doc["secondary_items"]), 2)
+        self.assertFalse(any("over 100%" in w["reason"] for w in res.warnings))
+
+
 if __name__ == "__main__":
     unittest.main()
