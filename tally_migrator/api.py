@@ -116,10 +116,18 @@ def preview_masters_file(file_url: str):
     # (not 'short'): a large-book parse can run for minutes, which the short queue
     # is not for.
     frappe.cache().set_value(key, {"status": "running"}, expires_in_sec=_PREFLIGHT_TTL)
-    frappe.enqueue(
-        "tally_migrator.api._run_preview_job", queue="default", timeout=30 * 60,
-        job_id=f"preview::{key}", deduplicate=True,
-        key=key, file_url=file_url)
+    try:
+        frappe.enqueue(
+            "tally_migrator.api._run_preview_job", queue="default", timeout=30 * 60,
+            job_id=f"preview::{key}", deduplicate=True,
+            key=key, file_url=file_url)
+    except Exception:
+        # The enqueue itself can fail (e.g. the background queue is saturated - a real,
+        # observed condition on big books). Don't strand the 'running' marker for its full
+        # TTL, or every later poll reads 'running' and the wizard shows a valid file as
+        # unreadable with no way to retry. Clear it so the next attempt re-enqueues.
+        frappe.cache().delete_value(key)
+        raise
     return {"status": "running"}
 
 
@@ -250,11 +258,18 @@ def validate_masters_data(file_url: str, record_overrides: str = "", erpnext_com
     # parking a long parse there would starve it. deduplicate + a key-derived job_id
     # closes the small window where two near-simultaneous first polls could both enqueue.
     frappe.cache().set_value(key, {"status": "running"}, expires_in_sec=_PREFLIGHT_TTL)
-    frappe.enqueue(
-        "tally_migrator.api._run_preflight_job", queue="default", timeout=30 * 60,
-        job_id=f"preflight::{key}", deduplicate=True,
-        key=key, file_url=file_url, record_overrides=record_overrides,
-        erpnext_company=erpnext_company, posting_date=posting_date)
+    try:
+        frappe.enqueue(
+            "tally_migrator.api._run_preflight_job", queue="default", timeout=30 * 60,
+            job_id=f"preflight::{key}", deduplicate=True,
+            key=key, file_url=file_url, record_overrides=record_overrides,
+            erpnext_company=erpnext_company, posting_date=posting_date)
+    except Exception:
+        # See preview_masters_file: a failed enqueue must not strand the 'running' marker,
+        # or the wizard polls a good file forever and reports it unreadable. Clear it so a
+        # retry re-enqueues.
+        frappe.cache().delete_value(key)
+        raise
     return {"status": "running"}
 
 

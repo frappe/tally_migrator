@@ -73,9 +73,14 @@ class BomImporter:
             # can exceed it. Rather than lose the entire BOM (components included), drop the
             # secondaries, keep the BOM, and say so - scaling the percentages would silently
             # misrepresent the source figures. Exactly 100% is allowed (finished good = 0),
-            # so only a genuine overage trips this (epsilon guards float noise).
+            # so only a genuine overage trips this. ERPNext computes the finished good's
+            # share with the same float arithmetic we use here (100 - total), so matching
+            # its exact boundary means never keeping a set it will reject: any total above
+            # 100 - however small - fails there (verified: 100.0000001 is rejected), so a
+            # strict > 100 mirrors it. (An earlier epsilon here kept totals in (100, 100+eps]
+            # that ERPNext then rejected, losing the whole BOM.)
             total_alloc = sum(s["cost_allocation_per"] for s in secondary_rows)
-            if total_alloc > 100 + 1e-6:
+            if total_alloc > 100:
                 result.add_warning(
                     item_name,
                     f"BOM {bom.get('name')}: its co-product/by-product/scrap cost "
@@ -147,8 +152,12 @@ class BomImporter:
             else:
                 uom = stock_uom
             if sec_type:
+                # Pass uom like a component row (not stock_uom-only): ERPNext otherwise
+                # interprets the quantity in the item's stock unit and records the wrong
+                # output quantity. conversion_factor is left for ERPNext to default (1),
+                # the same 1:1 assumption components make - the mismatch above is warned.
                 secondary_rows.append({
-                    "type": sec_type, "item_code": ccode, "qty": qty,
+                    "type": sec_type, "item_code": ccode, "qty": qty, "uom": uom,
                     "cost_allocation_per": self._parse_percent(c.get("addlcostallocperc")),
                 })
             else:

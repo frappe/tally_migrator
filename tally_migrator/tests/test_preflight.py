@@ -29,6 +29,9 @@ class _FakeCache:
         self.store[k] = v
         self.sets.append((k, v, expires_in_sec))
 
+    def delete_value(self, k):
+        self.store.pop(k, None)
+
 
 class TestPreflightOrchestrator(unittest.TestCase):
     def setUp(self):
@@ -71,6 +74,15 @@ class TestPreflightOrchestrator(unittest.TestCase):
         enq.assert_called_once()
         # running marker was cached so concurrent polls don't re-enqueue
         self.assertTrue(any(v.get("status") == "running" for _, v, _ in cache.sets))
+
+    def test_enqueue_failure_clears_running_marker(self):
+        cache = _FakeCache()
+        with mock.patch.object(api, "_should_run_async", return_value=True), \
+             mock.patch.object(api.frappe, "cache", return_value=cache), \
+             mock.patch.object(api.frappe, "enqueue", side_effect=RuntimeError("queue full")):
+            with self.assertRaises(RuntimeError):
+                api.validate_masters_data("/files/big.xml")
+        self.assertNotIn(api._preflight_key(_file(), "", "", ""), cache.store)
 
     def test_large_file_returns_cached_ready_without_reenqueue(self):
         key = api._preflight_key(_file(), "", "", "")
@@ -154,6 +166,17 @@ class TestPreviewOrchestrator(unittest.TestCase):
         self.assertEqual(out["status"], "running")
         enq.assert_called_once()
         self.assertTrue(any(v.get("status") == "running" for _, v, _ in cache.sets))
+
+    def test_enqueue_failure_clears_running_marker(self):
+        # A failed enqueue must not strand the 'running' marker, or every later poll reads
+        # 'running' and the wizard reports a good file as unreadable with no retry.
+        cache = _FakeCache()
+        with mock.patch.object(api, "_should_run_async", return_value=True), \
+             mock.patch.object(api.frappe, "cache", return_value=cache), \
+             mock.patch.object(api.frappe, "enqueue", side_effect=RuntimeError("queue full")):
+            with self.assertRaises(RuntimeError):
+                api.preview_masters_file("/files/big.zip")
+        self.assertNotIn(api._preview_key(_file()), cache.store)
 
     def test_large_file_returns_cached_ready_without_reenqueue(self):
         key = api._preview_key(_file())
