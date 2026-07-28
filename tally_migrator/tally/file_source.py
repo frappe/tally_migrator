@@ -567,8 +567,11 @@ class FileTallySource:
         Reads Tally bills of materials from MULTICOMPONENTLIST.LIST (Tally supports
         multiple BOMs per item), each carrying COMPONENTLISTNAME, COMPONENTBASICQTY
         ("1 Nos" = qty the BOM makes) and MULTICOMPONENTITEMLIST.LIST components
-        (NATUREOFITEM / STOCKITEMNAME / GODOWNNAME / ACTUALQTY "1 Ream"). The legacy
-        empty COMPONENTLIST.LIST is ignored. Raw strings; the importer parses qty/uom."""
+        (NATUREOFITEM / STOCKITEMNAME / GODOWNNAME / ACTUALQTY "1 Ream", plus
+        ADDLCOSTALLOCPERC - the cost-allocation percentage Tally records only on a
+        Co-Product / By-Product / Scrap row, verified against a real TallyPrime export).
+        The legacy empty COMPONENTLIST.LIST is ignored. Raw strings; the importer
+        parses qty/uom/percent."""
         out: dict = {}
         for elem in self._by_tag.get("STOCKITEM", ()):
             name = (elem.get("NAME") or elem.findtext("NAME") or "").strip()
@@ -590,7 +593,8 @@ class FileTallySource:
                         row = {}
                         for c in ch:
                             ct = c.tag.split("}")[-1].upper()
-                            if ct in ("NATUREOFITEM", "STOCKITEMNAME", "GODOWNNAME", "ACTUALQTY"):
+                            if ct in ("NATUREOFITEM", "STOCKITEMNAME", "GODOWNNAME",
+                                      "ACTUALQTY", "ADDLCOSTALLOCPERC"):
                                 row[ct.lower()] = (c.text or "").strip()
                         if row.get("stockitemname"):
                             comps.append(row)
