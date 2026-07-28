@@ -5,14 +5,25 @@ import frappe
 from tally_migrator.naming import safe_item_code
 from .base import BaseImporter, ImportResult
 
+# Tally BOM "Type of Item" (NATUREOFITEM, normalised by _norm_nature) -> ERPNext
+# BOM Secondary Item.type. Verified against a real TallyPrime export: the raw values are
+# exactly "Component" / "Co-Product" / "By-Product" / "Scrap", and ERPNext's type options
+# ("Co-Product" / "By-Product" / "Scrap" / "Additional Finished Good") match the first
+# three verbatim. "Component" is not here - those rows are the BOM's raw materials.
+_SECONDARY_TYPE = {"coproduct": "Co-Product", "byproduct": "By-Product", "scrap": "Scrap"}
+
 
 class BomImporter:
     """Create ERPNext BOMs from Tally bills of materials.
 
     Each Tally BOM becomes a submitted, active BOM; the first BOM per item is the
-    default. Runs after Items so the finished item and components exist. Only
-    NATUREOFITEM=Component rows are migrated; by-products/co-products/scrap are
-    skipped with a warning (no fixture coverage to build secondary_items against).
+    default. Runs after Items so the finished item and components exist. Tally's
+    NATUREOFITEM classifies each row: "Component" rows become the BOM's raw materials
+    (``items``), while "Co-Product" / "By-Product" / "Scrap" rows become ``secondary_items``
+    carrying their cost-allocation percentage (Tally's ADDLCOSTALLOCPERC -> ERPNext's
+    cost_allocation_per). ERPNext auto-reduces the finished good's own allocation so the
+    total stays 100%. The type strings map verbatim (verified against a real TallyPrime
+    export); an unrecognised type is skipped with a warning.
 
     Idempotent by skip-if-exists: BOM names auto-increment, so a re-run would
     create duplicates; if any BOM already exists for an item we skip it entirely.
@@ -46,10 +57,12 @@ class BomImporter:
         return result
 
     def _import_bom(self, result, code, item_name, bom, is_default):
-        rows, warns = self._component_rows(code, bom.get("components") or [])
+        rows, secondary_rows, warns = self._classify_rows(code, bom.get("components") or [])
         for w in warns:
             result.add_warning(item_name, w)
         if not rows:
+            # A BOM needs at least one raw material; a Tally BOM with only secondaries
+            # (or no usable component) can't post, so skip it (its warnings are recorded).
             result.add_warning(item_name, "BOM skipped - no usable Component rows.")
             return
         qty, uom = self._parse_qty_uom(bom.get("basic_qty"))
@@ -58,6 +71,12 @@ class BomImporter:
             "quantity": qty or 1, "currency": self.currency, "conversion_rate": 1,
             "is_active": 1, "is_default": 1 if is_default else 0, "items": rows,
         }
+        if secondary_rows:
+            # Co-Product / By-Product / Scrap. Only type/item_code/qty/cost_allocation_per
+            # are supplied; ERPNext fills uom, conversion_factor, and the derived costs, and
+            # reduces the finished good's cost_allocation_per so the total is 100% (verified
+            # live against ERPNext's BOM.set_fg_cost_allocation / validate_total_cost_allocation).
+            doc["secondary_items"] = secondary_rows
         if uom and frappe.db.exists("UOM", uom):
             doc["uom"] = uom
         try:
@@ -70,14 +89,23 @@ class BomImporter:
             frappe.db.rollback()
             result.add_error(f"{item_name} (BOM {bom.get('name')})", exc)
 
-    def _component_rows(self, finished_code, components):
-        rows, warns = [], []
+    def _classify_rows(self, finished_code, components):
+        """Split a Tally BOM's rows into ERPNext raw materials (``items``) and secondary
+        outputs (``secondary_items``) by NATUREOFITEM. Returns (rows, secondary_rows, warns).
+
+        Shares the same per-row guards for both (item must exist, not be the finished item
+        itself, and carry a quantity). Secondary rows additionally carry the cost-allocation
+        percentage; ERPNext derives their uom/conversion/cost, so only type/item_code/qty/
+        cost_allocation_per are supplied (verified live)."""
+        rows, secondary_rows, warns = [], [], []
         for c in components:
             nature = (c.get("natureofitem") or "Component").strip()
             cname = (c.get("stockitemname") or "").strip()
-            if nature.lower() != "component":
-                warns.append(f"component '{cname}' is a {nature}, not migrated "
-                             "(only Components are imported into the BOM).")
+            norm = self._norm_nature(nature)
+            sec_type = _SECONDARY_TYPE.get(norm)
+            if norm != "component" and not sec_type:
+                warns.append(f"BOM row '{cname}' has an unrecognised type '{nature}' "
+                             "- skipped.")
                 continue
             ccode = safe_item_code(cname)
             if not frappe.db.exists("Item", ccode):
@@ -100,8 +128,32 @@ class BomImporter:
                         "defines that conversion - verify the BOM quantity.")
             else:
                 uom = stock_uom
-            rows.append({"item_code": ccode, "qty": qty, "uom": uom})
-        return rows, warns
+            if sec_type:
+                secondary_rows.append({
+                    "type": sec_type, "item_code": ccode, "qty": qty,
+                    "cost_allocation_per": self._parse_percent(c.get("addlcostallocperc")),
+                })
+            else:
+                rows.append({"item_code": ccode, "qty": qty, "uom": uom})
+        return rows, secondary_rows, warns
+
+    @staticmethod
+    def _norm_nature(nature: str) -> str:
+        """Normalise a Tally NATUREOFITEM for lookup: lowercase, drop spaces/hyphens/
+        underscores. 'Co-Product' -> 'coproduct', 'By-Product' -> 'byproduct'."""
+        return "".join((nature or "").lower().split()).replace("-", "").replace("_", "")
+
+    @staticmethod
+    def _parse_percent(raw) -> float:
+        """'20' / ' 20 ' / '20%' -> 20.0; blank/garbage -> 0.0 (a valid allocation that
+        ERPNext accepts - the finished good simply keeps that share)."""
+        raw = (raw or "").strip()
+        if not raw:
+            return 0.0
+        try:
+            return float(raw.replace(",", "").replace("%", "").strip())
+        except ValueError:
+            return 0.0
 
     @staticmethod
     def _parse_qty_uom(raw):
