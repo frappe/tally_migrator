@@ -464,35 +464,36 @@ class TallyMigratorPage {
 			.show()
 			.html(`<span class="text-muted"><span class="tm-spin"></span> &nbsp;Reading your file...</span>`);
 		$("#btn-next-upload").prop("disabled", true);
-		// Capture the file this preview is for, so a slow poll for an earlier upload can
-		// never overwrite the box after the user has uploaded a different file. Reset the
-		// poll ceiling for this fresh preview.
+		// Tag this preview with a fresh generation. A superseded chain (an earlier upload
+		// whose 2s timer is still pending) carries an older generation and bails, so it
+		// can neither overwrite the box nor spawn a second chain that shares - and races
+		// down - the poll ceiling. Reset the ceiling for this fresh preview.
 		this._previewUrl = this.fileUrl;
 		this._previewPoll = 0;
-		this._pollPreview();
+		this._previewGen = (this._previewGen || 0) + 1;
+		this._pollPreview(this._previewGen);
 	}
 
-	_pollPreview() {
+	_pollPreview(gen) {
 		// preview_masters_file is status-wrapped like the Step-3 scan: a large file counts
 		// in the background and this endpoint returns 'running' until it is done. Poll
 		// until 'ready' or 'failed'. Reading counts never times the request out now.
-		const startedFor = this._previewUrl;
 		frappe.call({
 			method: "tally_migrator.api.preview_masters_file",
-			args: { file_url: startedFor },
+			args: { file_url: this._previewUrl },
 			callback: (r) => {
-				if (this._previewUrl !== startedFor) return;   // a newer upload took over
-				this._onPreview(r.message || {});
+				if (gen !== this._previewGen) return;   // a newer upload superseded this chain
+				this._onPreview(r.message || {}, gen);
 			},
 			// A transport/500 error IS a failed read - surface it honestly.
 			error: () => {
-				if (this._previewUrl !== startedFor) return;
+				if (gen !== this._previewGen) return;
 				this._onPreviewFailed();
 			},
 		});
 	}
 
-	_onPreview(p) {
+	_onPreview(p, gen) {
 		if (p.status === "running") {
 			// Still counting in the background - poll again, with a ceiling so a stuck
 			// scan surfaces as "couldn't read" rather than spinning forever.
@@ -500,7 +501,7 @@ class TallyMigratorPage {
 				return this._onPreviewFailed(
 					__("Reading your file is taking longer than expected. Please try again."));
 			}
-			return setTimeout(() => this._pollPreview(), 2000);
+			return setTimeout(() => this._pollPreview(gen), 2000);
 		}
 		if (p.status === "failed") {
 			return this._onPreviewFailed(p.error);

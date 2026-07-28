@@ -112,12 +112,12 @@ class TestClassifyRows(unittest.TestCase):
             {"item_code": "A", "qty": 2.0, "uom": "Box"},
             {"item_code": "C", "qty": 1.0, "uom": "Nos"},     # kept, but warned
         ])
-        # Co-/By-/Scrap -> secondary_items with type + cost_allocation_per (no uom: ERPNext
-        # derives it), verbatim ERPNext type names.
+        # Co-/By-/Scrap -> secondary_items with type + qty + uom (passed like components so
+        # ERPNext does not force the stock unit) + cost_allocation_per; verbatim type names.
         self.assertEqual(secondary_rows, [
-            {"type": "Co-Product", "item_code": "CO", "qty": 1.0, "cost_allocation_per": 20.0},
-            {"type": "By-Product", "item_code": "BP", "qty": 1.0, "cost_allocation_per": 5.0},
-            {"type": "Scrap",      "item_code": "SC", "qty": 1.0, "cost_allocation_per": 2.0},
+            {"type": "Co-Product", "item_code": "CO", "qty": 1.0, "uom": "Nos", "cost_allocation_per": 20.0},
+            {"type": "By-Product", "item_code": "BP", "qty": 1.0, "uom": "Nos", "cost_allocation_per": 5.0},
+            {"type": "Scrap",      "item_code": "SC", "qty": 1.0, "uom": "Nos", "cost_allocation_per": 2.0},
         ])
         joined = " ".join(warns)
         self.assertIn("unrecognised type 'Mystery'", joined)  # unknown nature skipped
@@ -226,6 +226,14 @@ class TestSecondaryAllocationGuard(unittest.TestCase):
         self.assertEqual(res.created, 1)
         self.assertEqual(len(doc["secondary_items"]), 2)
         self.assertFalse(any("over 100%" in w["reason"] for w in res.warnings))
+
+    def test_hair_over_100_drops(self):
+        # A total just above 100 must drop, matching ERPNext's exact boundary: it rejects
+        # any overage (100.0000001 fails live), so a lenient epsilon here would keep a set
+        # ERPNext then rejects, losing the whole BOM. Strict > 100 mirrors ERPNext.
+        doc, res = self._run([self._sec(100.0000005)])
+        self.assertNotIn("secondary_items", doc)
+        self.assertTrue(any("over 100%" in w["reason"] for w in res.warnings))
 
 
 if __name__ == "__main__":
