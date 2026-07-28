@@ -2209,3 +2209,86 @@ class TestStockOpeningExcludedUnderPerpetual(unittest.TestCase):
         accounts, _ = self._lines(perpetual=False)
         self.assertTrue(any("Stock In Hand" in a for a in accounts),
                         "a non-perpetual company allows and needs the JE stock line")
+
+
+class TestCompanyBankAccountCompany(unittest.TestCase):
+    """A company Bank Account must carry the migration's TARGET company, not whatever
+    frappe.new_doc's ambient default happens to be. ERPNext requires ``company`` on a
+    company account and never cross-checks it against the linked GL account, so the old
+    code (which set neither) worked only by luck of a matching default - blank on a
+    no-default site (every company bank account fails), or the wrong company on a
+    multi-company site (silent mis-attribution). This exercises the REAL ERPNext
+    validation with the ambient default neutralised, so only the explicit company arg can
+    make the doc valid - which the fully-mocked unit tests can never do."""
+
+    BANK = "_TMTest Bank Co"
+
+    def setUp(self):
+        frappe.set_user("Administrator")
+        self.company = require_company()
+        self.abbr = frappe.get_cached_value("Company", self.company, "abbr")
+        self.gl_name = f"_TMTest Bank Ledger - {self.abbr}"
+        self._cleanup()
+        if not frappe.db.exists("Bank", self.BANK):
+            frappe.get_doc({"doctype": "Bank", "bank_name": self.BANK}).insert(
+                ignore_permissions=True)
+        parent = frappe.get_all(
+            "Account",
+            filters={"company": self.company, "is_group": 1, "root_type": "Asset"},
+            pluck="name", limit=1)[0]
+        self.gl = frappe.get_doc({
+            "doctype": "Account", "account_name": "_TMTest Bank Ledger",
+            "company": self.company, "parent_account": parent,
+            "account_type": "Bank", "is_group": 0,
+        }).insert(ignore_permissions=True).name
+        frappe.db.commit()
+
+    def tearDown(self):
+        self._cleanup()
+
+    def _cleanup(self):
+        # Bank Accounts first (they reference the GL account and the Bank), then the
+        # account, then the Bank. The importer commits, so rollback alone is insufficient.
+        for ba in frappe.get_all(
+                "Bank Account", filters={"account_name": ["like", "_TMTest%"]}, pluck="name"):
+            try:
+                frappe.delete_doc("Bank Account", ba, force=True, ignore_permissions=True)
+            except Exception:
+                pass
+        for acc in (self.gl_name, f"_TMTest Bank Ledger - {self.abbr}"):
+            if frappe.db.exists("Account", acc):
+                try:
+                    frappe.delete_doc("Account", acc, force=True, ignore_permissions=True)
+                except Exception:
+                    pass
+        if frappe.db.exists("Bank", self.BANK):
+            try:
+                frappe.delete_doc("Bank", self.BANK, force=True, ignore_permissions=True)
+            except Exception:
+                pass
+        frappe.db.commit()
+
+    def test_company_bank_account_uses_target_company_despite_wrong_default(self):
+        from unittest import mock
+        from tally_migrator.erpnext.importers.banks import _insert_bank_account
+        from tally_migrator.erpnext.importers.base import ImportResult
+
+        res = ImportResult("Account")
+        # Point the ambient default company at a non-existent name: create_new.get_new_doc
+        # only auto-fills a Link default when the target exists, so new_doc leaves company
+        # blank - simulating a no-default site. Old code would then fail ERPNext's
+        # "Company is mandatory for company account"; the fix sets it explicitly.
+        defaults = {**frappe.defaults.get_defaults(), "company": "__TM No Such Company__"}
+        with mock.patch("frappe.defaults.get_defaults", return_value=defaults):
+            name = _insert_bank_account(
+                account_name="_TMTest Holder", bank=self.BANK, account_no="000111",
+                ifsc="", result=res, warn_name="_TMTest Holder",
+                gl_account=self.gl, company=self.company,
+                is_company=True, count_created=True)
+
+        self.assertTrue(
+            name, f"company bank account was not created; warnings={res.warnings}")
+        self.assertEqual(
+            frappe.db.get_value("Bank Account", name, "company"), self.company,
+            "Bank Account must carry the migration target company, not the ambient default")
+        self.assertEqual(frappe.db.get_value("Bank Account", name, "account"), self.gl)

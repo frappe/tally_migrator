@@ -279,6 +279,7 @@ class AccountImporter:
             account_no=node.bank_account_no,
             ifsc=node.bank_ifsc,
             gl_account=account_name,        # link to the GL account just created
+            company=self.company,           # same company the GL account was created under
             is_company=True,
             result=result,
             warn_name=node.name,
