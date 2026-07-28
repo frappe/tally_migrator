@@ -838,10 +838,12 @@ Migrator handles a real-world wrinkle in Tally data.
 - **Account ordering.** Groups are created parent-before-child, and any circular
   parent loop is broken rather than crashing (with a pre-flight warning).
 - **Bank ledgers.** A Tally bank ledger carrying the company's own account number and
-  IFSC creates a company Bank Account linked to that GL account. When several bank
-  ledgers share the same account-holder name (Tally often repeats it), each still gets
-  its own Bank Account - the name is made unique with the account number, so no
-  ledger's bank details are lost to a name clash.
+  IFSC creates a company Bank Account linked to that GL account and tied to the company
+  you are migrating into (so on a multi-company site it lands under the right company,
+  not whichever one happens to be your default). When several bank ledgers share the same
+  account-holder name (Tally often repeats it), each still gets its own Bank Account - the
+  name is made unique with the account number, so no ledger's bank details are lost to a
+  name clash.
 - **Cost centres** import flat or nested, under the company's root cost centre.
 - **Warehouses / godowns** import with their full nesting. A godown that is the parent
   of another is created as a group warehouse so the tree renders correctly. Each
