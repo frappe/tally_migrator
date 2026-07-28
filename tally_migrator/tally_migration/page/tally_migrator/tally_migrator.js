@@ -475,6 +475,10 @@ class TallyMigratorPage {
 	}
 
 	_pollPreview(gen) {
+		// A superseded timer (an earlier upload's pending re-poll) bails here, BEFORE the
+		// request goes out, so it doesn't send a redundant preview call that re-parses a
+		// small file server-side only to be discarded.
+		if (gen !== this._previewGen) return;
 		// preview_masters_file is status-wrapped like the Step-3 scan: a large file counts
 		// in the background and this endpoint returns 'running' until it is done. Poll
 		// until 'ready' or 'failed'. Reading counts never times the request out now.
