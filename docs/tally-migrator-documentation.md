@@ -106,8 +106,6 @@ the Migration Log rather than dropping them silently.
   carrying payroll fields (gender, PF number, bank, dates of birth and joining).
   The cost centres themselves import, but these HR fields do not. Bring employees
   across separately through HR / Payroll.
-- **Co-products, by-products, and scrap in a BOM.** Only true Component rows are
-  imported into the ERPNext BOM. The others are skipped with a warning.
 - **Foreign-currency advances.** A foreign-currency receivable or payable invoice
   is migrated; a foreign-currency advance or credit is flagged for you to enter
   manually.
@@ -855,8 +853,10 @@ Migrator handles a real-world wrinkle in Tally data.
 
 - Each Tally BOM becomes a submitted, active ERPNext BOM. The first BOM per item is
   the default; multiple BOMs per item are supported.
-- Only true **Component** rows are imported. Co-products, by-products, and scrap are
-  skipped with a warning.
+- **Component** rows become the BOM's raw materials. **Co-Product**, **By-Product**, and
+  **Scrap** rows become the BOM's secondary items, each carrying the cost-allocation
+  percentage set in Tally; ERPNext reduces the finished good's own share so the total
+  stays 100%. A row with an unrecognised type is skipped with a warning.
 - A component that is not found as an item, or that is the finished item itself
   (a self-reference), or that has no quantity, is skipped with a warning.
 - If a component's quantity is in a unit different from its stock unit, the BOM still

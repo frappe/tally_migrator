@@ -30,7 +30,7 @@ even when your ERPNext is hosted in the cloud and your Tally is on an office PC.
 | Stock items | Items, with their units, HSN codes, and GST tax rates |
 | Units of measure | UOMs, including the GST unit codes (UQC) needed for returns |
 | Price levels (Retail, Wholesale, MRP) | Price Lists, Item Prices, and discount Pricing Rules |
-| Bills of Materials | BOMs (including multiple BOMs per item) |
+| Bills of Materials | BOMs (multiple per item, with co-products, by-products, and scrap) |
 | Batch-tracked stock | Batches, with manufacturing and expiry dates |
 | Chart of accounts and cost centres | Accounts and Cost Centers |
 | Warehouses / godowns | Warehouses (including parent/child groups) |
@@ -47,8 +47,8 @@ trial balance next to what landed in ERPNext, so you can confirm the books match
 Tally Migrator focuses on migrating masters and opening balances, not historical
 transactions such as Sales Invoices, Purchase Invoices, Payments, or Journal Entries.
 GST-specific fields require the India Compliance app. The app is currently built and
-tested for Indian users on ERPNext v16 and Tally Prime. Features such as TDS/TCS,
-HR/Payroll, and BOM co-products, by-products, and scrap are not yet supported.
+tested for Indian users on ERPNext v16 and Tally Prime. Features such as TDS/TCS and
+HR/Payroll are not yet supported.
 Foreign-currency advances and custom fields (UDFs) are also left out. Anything that is
 skipped is recorded in the Migration Log, so nothing disappears silently.
 

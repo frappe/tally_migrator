@@ -2292,3 +2292,82 @@ class TestCompanyBankAccountCompany(unittest.TestCase):
             frappe.db.get_value("Bank Account", name, "company"), self.company,
             "Bank Account must carry the migration target company, not the ambient default")
         self.assertEqual(frappe.db.get_value("Bank Account", name, "account"), self.gl)
+
+
+class TestBomSecondaryItemsIntegration(unittest.TestCase):
+    """Tally's Co-Product / By-Product / Scrap BOM rows must become ERPNext
+    ``secondary_items`` with the right type and cost-allocation percentage. This builds a
+    real, submitted BOM through the importer and asserts the rows landed - the tag shape is
+    from a real TallyPrime export and the ERPNext behaviour (auto-derived uom/cost, and the
+    finished good's allocation auto-reduced so the total is 100%) was verified live."""
+
+    ITEMS = ["_TMBom FG", "_TMBom RM1", "_TMBom RM2",
+             "_TMBom Co", "_TMBom By", "_TMBom Scrap"]
+
+    def setUp(self):
+        frappe.set_user("Administrator")
+        self.company = require_company()
+        self.hsn = (frappe.get_all("GST HSN Code", pluck="name", limit=1) or [None])[0]
+        grp = frappe.get_all("Item Group", filters={"is_group": 0}, pluck="name", limit=1)[0]
+        self._cleanup()
+        for code in self.ITEMS:
+            doc = {"doctype": "Item", "item_code": code, "item_name": code,
+                   "item_group": grp, "stock_uom": "Nos", "is_stock_item": 1,
+                   "valuation_rate": 100}
+            if self.hsn:                     # India Compliance makes HSN mandatory
+                doc["gst_hsn_code"] = self.hsn
+            frappe.get_doc(doc).insert(ignore_permissions=True)
+        frappe.db.commit()
+
+    def tearDown(self):
+        self._cleanup()
+
+    def _cleanup(self):
+        for name in frappe.get_all("BOM", filters={"item": ["like", "_TMBom%"]}, pluck="name"):
+            try:
+                d = frappe.get_doc("BOM", name)
+                if d.docstatus == 1:
+                    d.cancel()
+                frappe.delete_doc("BOM", name, force=True, ignore_permissions=True)
+            except Exception:
+                pass
+        for code in self.ITEMS:
+            if frappe.db.exists("Item", code):
+                try:
+                    frappe.delete_doc("Item", code, force=True, ignore_permissions=True)
+                except Exception:
+                    pass
+        frappe.db.commit()
+
+    def test_secondary_items_created_with_type_and_allocation(self):
+        from tally_migrator.erpnext.importers.bom import BomImporter
+        abbr = frappe.get_cached_value("Company", self.company, "abbr")
+        items = [{"_name": "_TMBom FG", "Boms": [{
+            "name": "_TMBom FG BOM", "basic_qty": "1 Nos", "components": [
+                {"natureofitem": "Component", "stockitemname": "_TMBom RM1", "actualqty": "2 Nos"},
+                {"natureofitem": "Component", "stockitemname": "_TMBom RM2", "actualqty": "1 Nos"},
+                {"natureofitem": "Co-Product", "stockitemname": "_TMBom Co",
+                 "actualqty": "1 Nos", "addlcostallocperc": " 20"},
+                {"natureofitem": "By-Product", "stockitemname": "_TMBom By",
+                 "actualqty": "1 Nos", "addlcostallocperc": " 5"},
+                {"natureofitem": "Scrap", "stockitemname": "_TMBom Scrap",
+                 "actualqty": "1 Nos", "addlcostallocperc": " 2"},
+            ]}]}]
+        res = BomImporter(self.company, abbr).run(items)
+        self.assertEqual(res.created, 1, f"BOM not created; warnings={res.warnings}")
+
+        bom_name = frappe.db.get_value("BOM", {"item": "_TMBom FG"}, "name")
+        self.assertTrue(bom_name)
+        bom = frappe.get_doc("BOM", bom_name)
+        # Raw materials only in `items`, secondaries only in `secondary_items`.
+        self.assertEqual({r.item_code for r in bom.items}, {"_TMBom RM1", "_TMBom RM2"})
+        by_item = {s.item_code: s for s in bom.secondary_items}
+        self.assertEqual(by_item["_TMBom Co"].type, "Co-Product")
+        self.assertEqual(by_item["_TMBom Co"].cost_allocation_per, 20.0)
+        self.assertEqual(by_item["_TMBom By"].type, "By-Product")
+        self.assertEqual(by_item["_TMBom By"].cost_allocation_per, 5.0)
+        self.assertEqual(by_item["_TMBom Scrap"].type, "Scrap")
+        self.assertEqual(by_item["_TMBom Scrap"].cost_allocation_per, 2.0)
+        # ERPNext reduced the finished good's own allocation so the total is 100%.
+        self.assertEqual(bom.cost_allocation_per, 73.0)
+        self.assertEqual(bom.docstatus, 1)          # submitted + active
