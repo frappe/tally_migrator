@@ -65,6 +65,24 @@ class BomImporter:
             # (or no usable component) can't post, so skip it (its warnings are recorded).
             result.add_warning(item_name, "BOM skipped - no usable Component rows.")
             return
+        if secondary_rows:
+            # ERPNext derives the finished good's own cost allocation as 100% minus the
+            # secondaries' total, and rejects the whole BOM if that goes negative ("% Cost
+            # Allocation cannot be negative" - verified live). Tally's per-row Rate (%) are
+            # independent recoveries and are NOT constrained to sum to <=100, so a real book
+            # can exceed it. Rather than lose the entire BOM (components included), drop the
+            # secondaries, keep the BOM, and say so - scaling the percentages would silently
+            # misrepresent the source figures. Exactly 100% is allowed (finished good = 0),
+            # so only a genuine overage trips this (epsilon guards float noise).
+            total_alloc = sum(s["cost_allocation_per"] for s in secondary_rows)
+            if total_alloc > 100 + 1e-6:
+                result.add_warning(
+                    item_name,
+                    f"BOM {bom.get('name')}: its co-product/by-product/scrap cost "
+                    f"allocations add up to {total_alloc:g}%, over 100%, which ERPNext will "
+                    "not accept - the BOM was imported with its components only. Add the "
+                    "secondary items manually in ERPNext if you need them.")
+                secondary_rows = []
         qty, uom = self._parse_qty_uom(bom.get("basic_qty"))
         doc = {
             "doctype": "BOM", "item": code, "company": self.company,
