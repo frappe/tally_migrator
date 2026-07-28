@@ -165,7 +165,7 @@ def _compute_preflight(file_url, record_overrides, erpnext_company, posting_date
         validate_extraction(masters=masters, coa=coa), records_by_key(masters))
     payload["states"] = erpnext_states()
     payload["coverage"] = coverage_report(source)
-    payload["account_mapping"] = account_mapping(source)
+    payload["account_mapping"] = account_mapping(source, erpnext_company)
     if erpnext_company:
         payload["readiness"] = check_readiness(erpnext_company, posting_date)
     items = source.get_collection("Stock Item", ITEM_FIELDS, ITEM_TAGS)
@@ -376,7 +376,7 @@ def rerun_from_log(log_name: str):
         validation_report=log.validation_report or "",
         # Recomputed from the (unchanged) source so the new log's coverage is current.
         coverage_report=frappe.as_json(coverage_report(source)),
-        mapping_report=frappe.as_json(account_mapping(source)),
+        mapping_report=frappe.as_json(account_mapping(source, log.company)),
         # Repeat the original run's options rather than silently reverting to
         # defaults (reuse / fiscal-year start).
         coa_mode=log.coa_mode or "reuse",
@@ -881,7 +881,7 @@ def _build_masters_config(file_url, file_name, erpnext_company, source,
         # Computed server-side from the actual file so the stored audit record of
         # un-migrated fields is authoritative, not client-supplied.
         coverage_report=frappe.as_json(coverage_report(source)),
-        mapping_report=frappe.as_json(account_mapping(source)),
+        mapping_report=frappe.as_json(account_mapping(source, erpnext_company)),
         coa_mode=coa_mode if coa_mode in ("reuse", "mirror") else "reuse",
         posting_date=posting_date or "",
     )

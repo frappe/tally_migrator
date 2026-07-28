@@ -65,6 +65,23 @@ class TestSourceTotals(unittest.TestCase):
         # Only the asset (10200 Dr) drives the contra; the P&L lines are folded in.
         self.assertEqual(s["temporary_opening"], {"amount": 10200.0, "dr_cr": "Cr"})
 
+    def test_stock_ledger_folds_into_temp_only_under_perpetual(self):
+        # A stock-account ledger opening is posted to the JE under PERIODIC inventory but
+        # NOT under perpetual (ERPNext rejects a JE line to a stock account), where it
+        # folds into Temporary Opening like a P&L opening. source_totals must mirror the
+        # importer so the trial balance reconciles either way.
+        stock = AccountNode(name="Stock In Hand", parent="", is_group=False,
+                            root_type="Asset", account_type="Stock", is_reserved=False,
+                            opening_balance=1000.0, opening_dr_cr="Dr")
+        coa = _coa([_acct("HDFC Bank", "Asset", 5000, "Dr"), stock])
+        # Periodic: stock counted in the Asset class (bank + stock = 6000).
+        peri = _classes(source_totals(coa, _masters(), perpetual=False))
+        self.assertEqual(peri["Asset"], {"amount": 6000.0, "dr_cr": "Dr"})
+        # Perpetual: stock excluded from Asset (bank only), folded into Temporary Opening.
+        perp = source_totals(coa, _masters(), perpetual=True)
+        self.assertEqual(_classes(perp)["Asset"], {"amount": 5000.0, "dr_cr": "Dr"})
+        self.assertEqual(perp["temporary_opening"], {"amount": 5000.0, "dr_cr": "Cr"})
+
     def test_liability_and_equity_merge_into_one_class(self):
         # Tally calls capital Equity, ERPNext often roots it under Liability; merging
         # them avoids a false mismatch. A loan (Liability) + capital (Equity) net into

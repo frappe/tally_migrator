@@ -80,8 +80,12 @@ def _signed_of(side) -> float:
 
 # ── Source side (pure) ────────────────────────────────────────────────────────
 
-def source_totals(coa, masters) -> dict:
-    """The opening trial balance as Tally states it (extracted masters + COA)."""
+def source_totals(coa, masters, perpetual: bool = False) -> dict:
+    """The opening trial balance as Tally states it (extracted masters + COA).
+
+    ``perpetual`` mirrors the target company's inventory mode so the source side matches
+    what the migration actually posts: under perpetual inventory a stock-account opening
+    is not posted to the opening JE (it folds into Temporary Opening; see below)."""
     by_class: dict[str, float] = {c: 0.0 for c in _CLASS_ORDER}
     for a in coa.accounts:
         if a.is_group or not a.opening_balance:
@@ -92,6 +96,13 @@ def source_totals(coa, masters) -> dict:
         # class totals entirely: that folds it into the temporary_opening residual below,
         # matching what ERPNext actually holds, so the trial balance reconciles.
         if a.root_type in ("Income", "Expense"):
+            continue
+        # A stock-account opening is likewise not posted to the opening JE under perpetual
+        # inventory (ERPNext rejects a JE line to a stock account - see
+        # OpeningBalanceImporter._account_lines), so it folds into Temporary Opening the
+        # same way. The item-derived opening stock is reported on its own ``stock`` line
+        # below, so the trial balance still reconciles.
+        if perpetual and a.account_type == "Stock":
             continue
         cls = _class_of(a.root_type)
         by_class[cls] = by_class.get(cls, 0.0) + _signed(
@@ -353,6 +364,22 @@ def compare(source: dict, erp: dict) -> dict:
     }
 
 
+def is_perpetual(company: str) -> bool:
+    """Whether ``company`` uses perpetual inventory (ERPNext's default). Blank/unknown
+    -> False, so a caller without a chosen company (e.g. a pre-selection preview) keeps
+    the pre-perpetual behaviour of counting stock. A set company whose flag can't be read
+    -> True, matching OpeningBalanceImporter's fail-safe (stock kept out of the JE)."""
+    if not company:
+        return False
+    try:
+        import erpnext
+        return bool(erpnext.is_perpetual_inventory_enabled(company))
+    except Exception:
+        return True
+
+
 def build_reconciliation(company: str, abbr: str, coa, masters) -> dict:
     """Compose the source trial balance, read the ERPNext side, and compare. Read-only."""
-    return compare(source_totals(coa, masters), erpnext_totals(company, abbr))
+    return compare(
+        source_totals(coa, masters, perpetual=is_perpetual(company)),
+        erpnext_totals(company, abbr))

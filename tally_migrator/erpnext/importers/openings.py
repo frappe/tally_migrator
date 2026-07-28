@@ -107,6 +107,20 @@ class OpeningBalanceImporter:
         self.company = company
         self.abbr = abbr
 
+    @property
+    def _perpetual(self) -> bool:
+        """True when the target company uses perpetual inventory (ERPNext's default),
+        resolved once per run. Fail-safe True: if the flag can't be read we assume
+        perpetual and keep stock openings out of the JE (see _account_lines), because
+        posting one under perpetual would fail the whole batch."""
+        if not hasattr(self, "_perp"):
+            try:
+                import erpnext
+                self._perp = bool(erpnext.is_perpetual_inventory_enabled(self.company))
+            except Exception:
+                self._perp = True
+        return self._perp
+
     def run(self, accounts: list, customers: list, suppliers: list,
             posting_date: str) -> ImportResult:
         result = ImportResult("Journal Entry")
@@ -276,6 +290,25 @@ class OpeningBalanceImporter:
                     "This is an income or expense account, which ERPNext does not allow "
                     f"to carry an opening balance, so {abs(node.opening_balance):,.2f} was "
                     "not posted. It is included in the Temporary Opening total instead.")
+                continue
+            # Under PERPETUAL inventory (ERPNext's default) a journal-entry line to a
+            # stock account is rejected on submit ("... can only be updated via Stock
+            # Transactions"), which would fail the WHOLE root-type batch and lose every
+            # opening balance in it. Opening stock is posted the perpetual-correct way
+            # instead - from the items, via the Opening Stock reconciliation
+            # (StockOpeningImporter) - so drop the ledger's stock opening here and disclose
+            # it: it folds into the Temporary Opening residual, exactly like the income/
+            # expense case above (reconciliation.source_totals folds it there too). Only
+            # under perpetual: a non-perpetual company allows the JE line and needs it (its
+            # stock reconciliation posts no GL), so there it stays.
+            if self._perpetual and getattr(node, "account_type", "") == "Stock":
+                result.add_warning(
+                    node.name,
+                    "This is a stock account. Under perpetual inventory ERPNext does not "
+                    "allow an opening balance to be posted to it through a journal entry - "
+                    "opening stock is posted from your items instead - so "
+                    f"{abs(node.opening_balance):,.2f} was not posted here. It is included "
+                    "in the Temporary Opening total instead.")
                 continue
             account = company_scoped(node.name, self.abbr)
             is_group = frappe.db.get_value("Account", account, "is_group")

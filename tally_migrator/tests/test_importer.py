@@ -2168,3 +2168,44 @@ class TestPartyPanSanitisation(unittest.TestCase):
         doc = imp.build_doc({"_name": "_TMTest Good",
                              "INCOMETAXNumber": "AAACT2727Q"})
         self.assertEqual(doc["pan"], "AAACT2727Q")
+
+
+class TestStockOpeningExcludedUnderPerpetual(unittest.TestCase):
+    """Under perpetual inventory ERPNext rejects a journal-entry line to a stock account
+    ("... can only be updated via Stock Transactions"), which would fail the whole Asset
+    opening batch. OpeningBalanceImporter must keep stock-account openings OUT of the JE
+    (folding them into Temporary Opening, disclosed), while a non-perpetual company keeps
+    them. Proven live against ERPNext; frozen here as a unit test."""
+
+    def _nodes(self):
+        from tally_migrator.tally.extractors import AccountNode
+        mk = lambda name, atype: AccountNode(
+            name=name, parent="", is_group=False, root_type="Asset",
+            account_type=atype, is_reserved=False, opening_balance=1000.0, opening_dr_cr="Dr")
+        return [mk("_TMTest Bank", "Bank"), mk("_TMTest Stock In Hand", "Stock")]
+
+    def _lines(self, perpetual):
+        from unittest import mock
+        from tally_migrator.erpnext.importers.openings import OpeningBalanceImporter
+        from tally_migrator.erpnext.importers.base import ImportResult
+        imp = OpeningBalanceImporter("_TMTest Co", "TMT")
+        imp._perp = perpetual   # bypass the live is_perpetual_inventory_enabled read
+        result = ImportResult("Journal Entry")
+        # Every referenced account "exists" and is a ledger (is_group=0), so line-building
+        # proceeds; the stock skip happens before this lookup.
+        with mock.patch("frappe.db.get_value", return_value=0):
+            lines = imp._account_lines(self._nodes(), result)
+        return [l["account"] for l in lines], result
+
+    def test_stock_ledger_excluded_and_warned_when_perpetual(self):
+        accounts, result = self._lines(perpetual=True)
+        self.assertTrue(any("_TMTest Bank" in a for a in accounts))
+        self.assertFalse(any("Stock In Hand" in a for a in accounts),
+                         "stock ledger must be kept out of the opening JE under perpetual")
+        self.assertTrue(any("stock account" in w["reason"].lower() for w in result.warnings),
+                        "the excluded stock opening must be disclosed as a warning")
+
+    def test_stock_ledger_kept_when_not_perpetual(self):
+        accounts, _ = self._lines(perpetual=False)
+        self.assertTrue(any("Stock In Hand" in a for a in accounts),
+                        "a non-perpetual company allows and needs the JE stock line")
