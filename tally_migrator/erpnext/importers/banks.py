@@ -92,16 +92,17 @@ def _ensure_bank(bank_name: str, result: "ImportResult | None" = None, *,
 def _insert_bank_account(*, account_name: str, bank: str, account_no: str,
                          ifsc: str, result: "ImportResult", warn_name: str,
                          party_type: str = "", party: str = "",
-                         gl_account: str = "", is_company: bool = False,
+                         gl_account: str = "", company: str = "",
+                         is_company: bool = False,
                          count_created: bool = False) -> str:
     """Insert one Bank Account doc, shared by the party and company bank paths.
 
     Both paths build the same doc (account name + bank + account no + IFSC) and
     differ only in how it's linked: a party account points at a Customer/Supplier
     (``party_type``/``party``), a company account at the GL account and sets
-    ``is_company_account`` (``gl_account``/``is_company``). Non-fatal - a failure
-    is logged, recorded as a warning, rolled back, and "" returned so a Bank
-    Account quirk never aborts the party/account that was just created.
+    ``is_company_account`` + ``company`` (``gl_account``/``company``/``is_company``).
+    Non-fatal - a failure is logged, recorded as a warning, rolled back, and "" returned
+    so a Bank Account quirk never aborts the party/account that was just created.
     """
     try:
         # Savepoint-isolated (see _ensure_bank): a failure rolls back only this Bank
@@ -119,6 +120,16 @@ def _insert_bank_account(*, account_name: str, bank: str, account_no: str,
             if is_company:
                 ba.account = gl_account
                 ba.is_company_account = 1
+                # ERPNext requires company on a company Bank Account
+                # (BankAccount.validate_is_company_account throws otherwise), and never
+                # cross-checks it against the GL account's company. Set it explicitly to
+                # the migration's target company - the same company the GL account was
+                # created under - instead of relying on frappe.new_doc's ambient default
+                # (the global/user default), which is blank on a site with no default set
+                # (hard failure) or the wrong company on a multi-company site (silent
+                # mis-attribution to whichever company happens to be the default).
+                if company:
+                    ba.company = company
             else:
                 ba.party_type = party_type
                 ba.party = party

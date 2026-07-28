@@ -69,6 +69,57 @@ class TestBankHelpersCommitOnlyForCompany(unittest.TestCase):
         commit.assert_not_called()
 
 
+class TestCompanyBankAccountSetsCompany(unittest.TestCase):
+    """A company Bank Account must carry ``company`` explicitly: ERPNext requires it on a
+    company account and never cross-checks it against the GL account, so leaning on
+    frappe.new_doc's ambient default is a bug (blank on a no-default site -> hard failure;
+    the wrong company on a multi-company site -> silent mis-attribution). A party account
+    must NOT get a company (a party's bank account is not company-bound). The pre-existing
+    mocked tests could not see this - a MagicMock swallows every attribute - so this fake
+    records exactly which fields the helper assigns."""
+
+    class _RecordingDoc:
+        def __init__(self):
+            object.__setattr__(self, "assigned", {})
+            object.__setattr__(self, "name", "BA-0001")
+
+        def __setattr__(self, key, value):
+            if key not in ("assigned", "name"):
+                self.assigned[key] = value
+            object.__setattr__(self, key, value)
+
+        def insert(self, **kwargs):
+            pass
+
+    def _assigned_fields(self, *, is_company, company="_TMTest Target Co"):
+        doc = self._RecordingDoc()
+        res = ImportResult("Account")
+        with mock.patch.object(banks, "atomic", _noop_atomic), \
+                mock.patch.object(banks, "frappe") as fr:
+            fr.new_doc.return_value = doc
+            fr.db.exists.return_value = False   # bank account name is free
+            banks._insert_bank_account(
+                account_name="Acme", bank="HDFC Bank", account_no="123", ifsc="",
+                result=res, warn_name="Acme",
+                gl_account="Bank - AC" if is_company else "",
+                company=company if is_company else "",
+                party_type="" if is_company else "Customer",
+                party="" if is_company else "Acme",
+                is_company=is_company, count_created=is_company)
+        return doc.assigned
+
+    def test_company_path_sets_company_and_flag(self):
+        assigned = self._assigned_fields(is_company=True, company="_TMTest Target Co")
+        self.assertEqual(assigned.get("company"), "_TMTest Target Co")
+        self.assertEqual(assigned.get("is_company_account"), 1)
+        self.assertEqual(assigned.get("account"), "Bank - AC")
+
+    def test_party_path_does_not_set_company(self):
+        assigned = self._assigned_fields(is_company=False)
+        self.assertNotIn("company", assigned)
+        self.assertEqual(assigned.get("party_type"), "Customer")
+
+
 class TestUniqueBankAccountName(unittest.TestCase):
     """Tally repeats one holder name across several bank ledgers of a company; since
     ERPNext names a Bank Account 'account_name - bank', they would collide and all but
