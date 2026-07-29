@@ -154,12 +154,19 @@ class LedgerResolver:
 
         Returns a set of NORMALISED names (see norm_group). Seeded with the roots
         themselves - so a ledger sitting directly under a root still matches even when
-        the root group is not emitted as its own node - then grown by any group whose
-        parent is already in the set. Matching on the normalised form makes the whole
+        the root group is not emitted as its own node - plus any group the user renamed
+        away from a root but which still carries that root as its rename-proof
+        RESERVEDNAME (Sundry Debtors/Creditors are reserved groups, so a renamed one
+        must still classify its parties). The set is then grown by any group whose
+        parent is already in it. Matching on the normalised form makes the whole
         chain case/whitespace-insensitive; because Tally is internally consistent within
         one export (a ledger's PARENT equals its group's NAME byte-for-byte), the deeper
         hops still line up."""
-        result, changed = set(roots_norm), True
+        result = set(roots_norm)
+        for name, reserved in self._reservedname_of.items():
+            if reserved and norm_group(reserved) in roots_norm:
+                result.add(norm_group(name))
+        changed = True
         while changed:
             changed = False
             for name, parent in self._parent_of.items():

@@ -194,6 +194,21 @@ class TestReservedNameFallback(unittest.TestCase):
         # (ordinary), so the ledger classifies as an ordinary liability - not Tax.
         self.assertEqual(r.resolve("Some Ledger").account_type, "")
 
+    def test_renamed_party_roots_still_classify_parties(self):
+        # Sundry Debtors / Sundry Creditors are reserved groups too. Renamed, their
+        # RESERVEDNAME survives, so their ledgers (including nested ones) must still
+        # come across as Customers / Suppliers, not ordinary accounts.
+        groups = [
+            {"_name": "My Customers", "Parent": "Primary", "ReservedName": "Sundry Debtors"},
+            {"_name": "Retail", "Parent": "My Customers", "ReservedName": ""},
+            {"_name": "Trade Payables", "Parent": "Primary", "ReservedName": "Sundry Creditors"},
+        ]
+        ledgers = [_l("Acme", "My Customers"), _l("Bob", "Retail"), _l("VendorX", "Trade Payables")]
+        r = LedgerResolver(groups, ledgers)
+        self.assertEqual(r.kind_of("Acme"), CUSTOMER)
+        self.assertEqual(r.kind_of("Bob"), CUSTOMER)          # nested under renamed root
+        self.assertEqual(r.kind_of("VendorX"), SUPPLIER)
+
 
 def _gf(name, parent, is_revenue, is_deemed_positive):
     """A group carrying Tally's own nature flags (ISREVENUE / ISDEEMEDPOSITIVE)."""
