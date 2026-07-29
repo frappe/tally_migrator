@@ -130,6 +130,71 @@ class TestResolver(unittest.TestCase):
         self.assertEqual(self.r.kind_of("Acme Corp"), CUSTOMER)
 
 
+class TestReservedNameFallback(unittest.TestCase):
+    """A renamed reserved group keeps its rename-proof RESERVEDNAME attribute. The
+    resolver must fall back to it so descendant ledgers still classify - proven
+    against the real "Duties & Taxes" -> "Duties & Taxes Hello" Tally export.
+
+    Shape from the export: the renamed group's PARENT is Current Liabilities, its
+    display NAME is the new name, and RESERVEDNAME is still "Duties & Taxes". A
+    ledger sits directly under it, and another under a *custom* sub-group of it.
+    """
+
+    def _groups(self):
+        return [
+            {"_name": "Current Liabilities", "Parent": "Primary", "ReservedName": "Current Liabilities"},
+            # Reserved D&T renamed by the user; RESERVEDNAME survives.
+            {"_name": "Duties & Taxes Hello", "Parent": "Current Liabilities",
+             "ReservedName": "Duties & Taxes"},
+            {"_name": "GST Sub", "Parent": "Duties & Taxes Hello", "ReservedName": ""},
+            # A genuinely custom liability group - RESERVEDNAME empty, must stay ordinary.
+            {"_name": "Statutory", "Parent": "Current Liabilities", "ReservedName": ""},
+        ]
+
+    def _ledgers(self):
+        return [
+            _l("CGST Output", "Duties & Taxes Hello"),
+            _l("CGST Nested", "GST Sub"),
+            _l("Ordinary Payable", "Statutory"),
+        ]
+
+    def test_renamed_reserved_group_still_classifies_as_tax(self):
+        r = LedgerResolver(self._groups(), self._ledgers())
+        for name in ("CGST Output", "CGST Nested"):
+            t = r.resolve(name)
+            self.assertEqual(t.account_type, "Tax", name)
+            self.assertEqual(t.root_type, "Liability", name)
+
+    def test_group_nature_of_renamed_group_is_reserved_source(self):
+        r = LedgerResolver(self._groups(), self._ledgers())
+        nat = r.group_nature("Duties & Taxes Hello")
+        self.assertEqual(nat["account_type"], "Tax")
+        self.assertEqual(nat["source"], "reserved")
+
+    def test_custom_group_without_reserved_name_stays_ordinary(self):
+        # The false-positive control: a real custom group must NOT be pulled into Tax.
+        r = LedgerResolver(self._groups(), self._ledgers())
+        t = r.resolve("Ordinary Payable")
+        self.assertEqual(t.account_type, "")
+
+    def test_display_name_still_wins_when_present(self):
+        # Unrenamed reserved group (display NAME already classifies): behaviour
+        # unchanged, reserved-name fallback never consulted.
+        groups = [{"_name": "Duties & Taxes", "Parent": "Current Liabilities",
+                   "ReservedName": "Duties & Taxes"}]
+        r = LedgerResolver(groups, [_l("CGST", "Duties & Taxes")])
+        self.assertEqual(r.resolve("CGST").account_type, "Tax")
+
+    def test_missing_reserved_name_key_degrades_to_current_behaviour(self):
+        # Groups without the ReservedName key at all (older callers / live source):
+        # no crash, no fallback - exactly today's display-name-only behaviour.
+        groups = [{"_name": "Renamed DT", "Parent": "Current Liabilities"}]
+        r = LedgerResolver(groups, [_l("Some Ledger", "Renamed DT")])
+        # "Renamed DT" is unknown and its parent Current Liabilities is reserved
+        # (ordinary), so the ledger classifies as an ordinary liability - not Tax.
+        self.assertEqual(r.resolve("Some Ledger").account_type, "")
+
+
 def _gf(name, parent, is_revenue, is_deemed_positive):
     """A group carrying Tally's own nature flags (ISREVENUE / ISDEEMEDPOSITIVE)."""
     return {"_name": name, "Parent": parent,
