@@ -657,11 +657,18 @@ class FileTallySource:
         """First candidate that yields a non-empty value wins.
 
         A candidate is either a tag-path string (``"EMAIL"`` or
-        ``"ADDRESS.LIST/ADDRESS"``) or ``{"path": ..., "join": ", "}`` to join
-        repeated nodes (e.g. multi-line addresses). Single-valued paths return the
-        last matched node's text - for revision lists like ``STANDARDPRICELIST``
-        that is the most recent value."""
+        ``"ADDRESS.LIST/ADDRESS"``), ``{"path": ..., "join": ", "}`` to join
+        repeated nodes (e.g. multi-line addresses), or ``{"attr": "RESERVEDNAME"}``
+        to read an XML *attribute* on the record element itself (Tally stamps a few
+        identities - NAME, RESERVEDNAME - as attributes, not child tags). Single-
+        valued paths return the last matched node's text - for revision lists like
+        ``STANDARDPRICELIST`` that is the most recent value."""
         for cand in candidates:
+            if isinstance(cand, dict) and "attr" in cand:
+                value = (elem.get(cand["attr"]) or "").strip()
+                if value:
+                    return value
+                continue
             path = cand["path"] if isinstance(cand, dict) else cand
             join = cand.get("join") if isinstance(cand, dict) else None
             texts = cls._collect_texts(elem, path)

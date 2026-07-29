@@ -833,6 +833,11 @@ Migrator handles a real-world wrinkle in Tally data.
 - **Reserved groups** (standard, named Tally groups) are not recreated in reuse mode;
   their ERPNext equivalents are used as parents. In mirror mode, every group is
   recreated.
+- **Renamed standard groups.** If you renamed one of Tally's standard groups (for
+  example "Duties & Taxes" to "GST Dues"), its ledgers are still classified correctly.
+  Tally keeps the original identity of a standard group even after a rename, and the
+  app reads that, so a renamed tax group's ledgers still come across as tax accounts
+  rather than being downgraded to ordinary ones.
 - **Account ordering.** Groups are created parent-before-child, and any circular
   parent loop is broken rather than crashing (with a pre-flight warning).
 - **Bank ledgers.** A Tally bank ledger carrying the company's own account number and
