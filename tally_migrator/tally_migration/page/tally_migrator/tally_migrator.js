@@ -1270,7 +1270,7 @@ class TallyMigratorPage {
 			.tally-migrator .tm-table th { border-top: 0; padding: var(--padding-xs) var(--padding-sm); }
 			.tally-migrator .tm-table td { padding: var(--padding-xs) var(--padding-sm); }
 			.tally-migrator .tm-table .tm-num { text-align: right; white-space: nowrap; }
-			.tally-migrator .tm-scroll { max-height: 340px; overflow-y: auto; }
+			.tally-migrator .tm-scroll { max-height: 340px; overflow-y: auto; overflow-x: auto; }
 			.tally-migrator .tm-nowrap { white-space: nowrap; }
 
 			/* ── Disclosure (collapsible) header ────────────────────────────────── */
@@ -2668,6 +2668,14 @@ class TallyMigratorPage {
 	}
 
 	restart() {
+		// Stop tracking any run and detach the realtime/heartbeat handlers before we wipe
+		// state - otherwise a poll or heartbeat from the just-finished run could paint the
+		// fresh upload step, and (see below) a stale createdUoms could leak into the next
+		// run's revert manifest.
+		this.stopHeartbeat();
+		if (this._onProgress) frappe.realtime.off("tally_migration_progress", this._onProgress);
+		this._trackingLog = null;
+		this._resumeStep = null;
 		this.fileUrl = null;
 		this.fileName = null;
 		this._restore = null;
@@ -2676,6 +2684,10 @@ class TallyMigratorPage {
 		this.uomIssues = [];
 		this.allUoms = [];
 		this.uomOverrides = {};
+		// UOMs the pre-flight created for the PREVIOUS file. If not cleared, they are sent
+		// with the next file's run and folded into its revert manifest, so undoing the next
+		// migration could delete units that belong to this one.
+		this.createdUoms = [];
 		this.qualityReport = null;
 		this.coverageReport = null;
 		this.accountMapping = null;
