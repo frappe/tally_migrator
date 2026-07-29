@@ -246,15 +246,6 @@ class _SanitizingReader:
             if self._first and text[:1] == "﻿":
                 text = text[1:]
             self._first = False
-            if _DTD_DECL.search(self._dtd_tail + text):
-                frappe.throw(
-                    "Uploaded file contains an XML DOCTYPE or entity declaration, which "
-                    "a genuine Tally Masters export never does. It was rejected as "
-                    "unsafe. Re-export the masters from Tally (XML format) and try again."
-                )
-            # Keep a rolling window of recent chars (not just this chunk's tail) so a
-            # DTD token split across several tiny reads is still seen whole next time.
-            self._dtd_tail = (self._dtd_tail + text)[-16:]
             if not final:
                 # Hold back a trailing partial char reference ("&#12" with no ";") so
                 # the next chunk completes it - only when the '&' is near the end, so a
@@ -267,6 +258,24 @@ class _SanitizingReader:
             else:
                 self._carry = ""
             out = _ILLEGAL_CHARS.sub("", _CHAR_REF.sub(_drop_illegal_ref, text))
+            # DTD/entity guard runs on the SANITISED output, exactly like the whole-
+            # document path (sanitize_tally_xml -> reject_unsafe_xml). Checking the raw
+            # decoded text instead let an illegal char hidden inside the token slip a
+            # declaration past the regex, which sanitisation then un-hid for the parser
+            # (e.g. "<!DOCT&#4;YPE" / "<!DOCT\x04YPE" -> "<!DOCTYPE"). With defusedxml
+            # absent the stdlib parser expands entities, so that bypass is a real
+            # entity-expansion ("billion laughs") DoS - checking post-sanitisation closes
+            # it regardless of which parser is active.
+            if _DTD_DECL.search(self._dtd_tail + out):
+                frappe.throw(
+                    "Uploaded file contains an XML DOCTYPE or entity declaration, which "
+                    "a genuine Tally Masters export never does. It was rejected as "
+                    "unsafe. Re-export the masters from Tally (XML format) and try again."
+                )
+            # Keep a rolling window of recent SANITISED chars (not just this chunk's
+            # tail) so a DTD token split across several tiny reads is still seen whole
+            # next time - the token is contiguous in the concatenation of the outputs.
+            self._dtd_tail = (self._dtd_tail + out)[-16:]
             if out or final:
                 return out
 
