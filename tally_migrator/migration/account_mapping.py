@@ -24,7 +24,7 @@ inferred flag comes from the resolver's own fallback signal, not a tag list.
 from __future__ import annotations
 
 from tally_migrator.tally.extractors import (
-    TallyExtractor, GROUP_FIELDS, LEDGER_FIELDS, LEDGER_TAGS,
+    TallyExtractor, GROUP_FIELDS, GROUP_TAGS, LEDGER_FIELDS, LEDGER_TAGS,
 )
 from tally_migrator.tally.resolver import LedgerResolver
 
@@ -51,7 +51,7 @@ def account_mapping(source, company: str = "") -> dict:
     masters = extractor.extract_all()
     bills = extractor.extract_bill_allocations()
 
-    groups = source.get_collection("Group", GROUP_FIELDS)
+    groups = source.get_collection("Group", GROUP_FIELDS, GROUP_TAGS)
     ledgers = source.get_collection("Ledger", LEDGER_FIELDS, LEDGER_TAGS)
     resolver = LedgerResolver(groups, ledgers)
 

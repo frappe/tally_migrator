@@ -43,7 +43,13 @@ GODOWN_FIELDS     = ["Name", "Parent", "Address"]
 # IsRevenue / IsDeemedPositive are Tally's own group nature flags (tags ISREVENUE /
 # ISDEEMEDPOSITIVE); the resolver derives a root_type from them for custom groups
 # with no reserved ancestor (see LedgerResolver.group_nature).
-GROUP_FIELDS      = ["Name", "Parent", "IsRevenue", "IsDeemedPositive"]
+# ReservedName is Tally's built-in identity for a reserved primary group, stamped as
+# an XML *attribute* (RESERVEDNAME) and left untouched when the user renames the
+# group's display name. It is the rename-proof key the resolver falls back to so a
+# renamed reserved group (e.g. "Duties & Taxes" -> "GST Dues") still classifies.
+GROUP_FIELDS      = ["Name", "Parent", "IsRevenue", "IsDeemedPositive", "ReservedName"]
+# RESERVEDNAME is an attribute, not a child tag, so it needs an explicit attr candidate.
+GROUP_TAGS        = {"ReservedName": [{"attr": "RESERVEDNAME"}]}
 COSTCENTRE_FIELDS = ["Name", "Parent"]
 STOCKGROUP_FIELDS = ["Name", "Parent"]
 UNIT_FIELDS       = [
@@ -241,7 +247,7 @@ class TallyExtractor:
         self.client = client
 
     def extract_all(self) -> ExtractedMasters:
-        groups  = self.client.get_collection("Group", GROUP_FIELDS)
+        groups  = self.client.get_collection("Group", GROUP_FIELDS, GROUP_TAGS)
         ledgers = self.client.get_collection("Ledger", LEDGER_FIELDS, LEDGER_TAGS)
 
         # One resolver classifies every ledger (customer / supplier / account) by
@@ -417,7 +423,7 @@ class TallyExtractor:
         Ledgers under Sundry Debtors/Creditors are excluded - they migrate as
         Customers/Suppliers (handled separately), not as ledger Accounts.
         """
-        groups       = self.client.get_collection("Group", GROUP_FIELDS)
+        groups       = self.client.get_collection("Group", GROUP_FIELDS, GROUP_TAGS)
         ledgers      = self.client.get_collection("Ledger", LEDGER_FIELDS, LEDGER_TAGS)
         cost_centres = self.client.get_collection("Cost Centre", COSTCENTRE_FIELDS)
         return self._build_coa(groups, ledgers, cost_centres)

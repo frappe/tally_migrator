@@ -12,6 +12,7 @@ from tally_migrator.tally.file_source import (
 )
 from tally_migrator.tally.extractors import (
     TallyExtractor, LEDGER_FIELDS, LEDGER_TAGS, ITEM_FIELDS, ITEM_TAGS,
+    GROUP_FIELDS, GROUP_TAGS,
 )
 
 
@@ -130,6 +131,37 @@ REAL_TALLY_XML = """<ENVELOPE>
     </TALLYMESSAGE>
   </REQUESTDATA></IMPORTDATA></BODY>
 </ENVELOPE>"""
+
+
+class TestReservedNameAttribute(unittest.TestCase):
+    """RESERVEDNAME is an XML *attribute* on <GROUP> (not a child tag), so it is read
+    via the ``{"attr": ...}`` candidate wired through GROUP_TAGS. A renamed reserved
+    group keeps it; a custom group exports it empty."""
+
+    XML = """<ENVELOPE><BODY><IMPORTDATA><REQUESTDATA>
+      <TALLYMESSAGE><GROUP NAME="Duties &amp; Taxes Hello" RESERVEDNAME="Duties &amp; Taxes">
+        <PARENT>Current Liabilities</PARENT></GROUP></TALLYMESSAGE>
+      <TALLYMESSAGE><GROUP NAME="My Custom Group" RESERVEDNAME="">
+        <PARENT>Current Liabilities</PARENT></GROUP></TALLYMESSAGE>
+    </REQUESTDATA></IMPORTDATA></BODY></ENVELOPE>"""
+
+    def setUp(self):
+        self.groups = FileTallySource(self.XML).get_collection(
+            "Group", GROUP_FIELDS, GROUP_TAGS)
+        self.by_name = {g["_name"]: g for g in self.groups}
+
+    def test_reserved_name_attribute_is_read(self):
+        self.assertEqual(self.by_name["Duties & Taxes Hello"]["ReservedName"], "Duties & Taxes")
+
+    def test_custom_group_reserved_name_is_empty(self):
+        self.assertEqual(self.by_name["My Custom Group"]["ReservedName"], "")
+
+    def test_attr_candidate_does_not_read_a_same_named_child(self):
+        # The attr candidate reads the element attribute, not any child tag - so a
+        # field with no such attribute stays empty rather than picking up stray text.
+        groups = FileTallySource(self.XML).get_collection(
+            "Group", ["ReservedName"], {"ReservedName": [{"attr": "NOSUCHATTR"}]})
+        self.assertEqual(groups[0]["ReservedName"], "")
 
 
 class TestRealTallyTags(unittest.TestCase):

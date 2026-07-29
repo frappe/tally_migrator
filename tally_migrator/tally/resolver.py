@@ -78,6 +78,13 @@ class LedgerResolver:
             )
             for g in groups
         }
+        # Tally's rename-proof identity for a reserved primary group (the RESERVEDNAME
+        # attribute). Non-empty only for built-in groups; a user renaming the display
+        # name leaves this untouched, so it is the fallback key that keeps a renamed
+        # reserved group (e.g. "Duties & Taxes" -> "GST Dues") classifying correctly.
+        self._reservedname_of = {
+            g["_name"]: (g.get("ReservedName") or "").strip() for g in groups
+        }
         # Sets of NORMALISED group names under each party root (see norm_group), so a
         # differently-cased Sundry Debtors/Creditors root still classifies its parties.
         self._debtor_groups = self._descendants(DEBTOR_ROOTS_NORM)
@@ -103,11 +110,19 @@ class LedgerResolver:
         ``derived`` (inferred from the group's own ISREVENUE/ISDEEMEDPOSITIVE flags),
         or ``unknown`` (neither available - defaults to Asset, flagged for review)."""
         # 1. nearest reserved ancestor - a named standard group, high confidence.
+        # Match the display name first (covers the common, unrenamed case and every
+        # display-name alias), then fall back to the group's rename-proof RESERVEDNAME
+        # so a renamed reserved group still resolves. The reserved name is non-empty
+        # only for genuine built-in groups, so this never misclassifies a custom group.
         seen: set[str] = set()
         cur = group_name
         while cur and cur not in seen:
             seen.add(cur)
             cls = classify_group(cur)
+            if not cls:
+                reserved = self._reservedname_of.get(cur, "")
+                if reserved:
+                    cls = classify_group(reserved)
             if cls:
                 return {**cls, "source": "reserved"}
             cur = self._parent_of.get(cur, "")
@@ -139,12 +154,19 @@ class LedgerResolver:
 
         Returns a set of NORMALISED names (see norm_group). Seeded with the roots
         themselves - so a ledger sitting directly under a root still matches even when
-        the root group is not emitted as its own node - then grown by any group whose
-        parent is already in the set. Matching on the normalised form makes the whole
+        the root group is not emitted as its own node - plus any group the user renamed
+        away from a root but which still carries that root as its rename-proof
+        RESERVEDNAME (Sundry Debtors/Creditors are reserved groups, so a renamed one
+        must still classify its parties). The set is then grown by any group whose
+        parent is already in it. Matching on the normalised form makes the whole
         chain case/whitespace-insensitive; because Tally is internally consistent within
         one export (a ledger's PARENT equals its group's NAME byte-for-byte), the deeper
         hops still line up."""
-        result, changed = set(roots_norm), True
+        result = set(roots_norm)
+        for name, reserved in self._reservedname_of.items():
+            if reserved and norm_group(reserved) in roots_norm:
+                result.add(norm_group(name))
+        changed = True
         while changed:
             changed = False
             for name, parent in self._parent_of.items():
