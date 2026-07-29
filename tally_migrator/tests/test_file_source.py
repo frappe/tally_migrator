@@ -750,5 +750,31 @@ class TestExtractBillAllocations(unittest.TestCase):
             TallyExtractor(_Flat()).extract_bill_allocations(), [])
 
 
+class TestGetCollectionCacheKey(unittest.TestCase):
+    """The parse cache must key on the tag map, not just (obj_type, fields): the same
+    read with a different tag map resolves different tags, so it must not return a
+    prior call's mapping."""
+
+    _XML = (
+        "<ENVELOPE><BODY><IMPORTDATA><REQUESTDATA>"
+        "<TALLYMESSAGE><LEDGER NAME='Acme'><BAR>from-bar</BAR><BAZ>from-baz</BAZ>"
+        "</LEDGER></TALLYMESSAGE>"
+        "</REQUESTDATA></IMPORTDATA></BODY></ENVELOPE>"
+    )
+
+    def test_different_tag_map_is_not_served_stale(self):
+        src = FileTallySource(self._XML)
+        first = src.get_collection("Ledger", ["Foo"], {"Foo": ["BAR"]})
+        second = src.get_collection("Ledger", ["Foo"], {"Foo": ["BAZ"]})
+        self.assertEqual(first[0]["Foo"], "from-bar")
+        self.assertEqual(second[0]["Foo"], "from-baz")   # not the cached "from-bar"
+
+    def test_same_tag_map_still_cached(self):
+        src = FileTallySource(self._XML)
+        a = src.get_collection("Ledger", ["Foo"], {"Foo": ["BAR"]})
+        b = src.get_collection("Ledger", ["Foo"], {"Foo": ["BAR"]})
+        self.assertEqual(a, b)
+
+
 if __name__ == "__main__":
     unittest.main()

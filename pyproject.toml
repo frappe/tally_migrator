@@ -5,8 +5,13 @@ authors = [{ name = "Frappe Technologies Pvt. Ltd.", email = "developers@frappe.
 description = "Migrate masters and transactions from Tally to ERPNext"
 requires-python = ">=3.10"
 readme = "README.md"
-# frappe and erpnext are bench apps, NOT PyPI packages — never list them here.
-dependencies = []
+# frappe and erpnext are bench apps, NOT PyPI packages - never list them here.
+# defusedxml hardens the uploaded-XML parser against entity-expansion ("billion
+# laughs") attacks: the streaming parser prefers its safe iterparse when present
+# (see tally/file_source.py _select_iterparse). The in-app DTD/entity guard is the
+# primary defence and works without it, so this is defense-in-depth - but declaring
+# it means a real deployment always has the parser-level protection too.
+dependencies = ["defusedxml>=0.7"]
 
 [build-system]
 requires = ["setuptools>=61.0", "wheel"]
