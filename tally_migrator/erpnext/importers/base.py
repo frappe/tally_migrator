@@ -390,8 +390,17 @@ class BaseImporter:
         guard to mark the in-flight record and to recognise a confirmed-hung one on
         resume. Stable across runs because it derives from the source data (re-parsed
         identically), never from DB state. Overridable; defaults to the Tally ledger
-        name, which every masters record carries."""
-        return str(record.get("name") or record.get(self.key_field) or "")
+        name, which every masters record carries under ``_name``.
+
+        ``_name`` is the key ``FileTallySource.get_collection`` sets to the Tally name;
+        ``self.key_field`` is the ERPNext column (``customer_name`` / ``item_code`` / …)
+        and is NOT present on the source dict, so it must never be the primary identity -
+        relying on it (or a non-existent lowercase ``name``) yields "" for every record,
+        which collapses every record of a phase onto one confirmed-hung key and makes a
+        single genuine hang skip the whole phase on resume. ``_name`` first fixes that;
+        the later fallbacks stay only for oddly-shaped records a subclass might feed."""
+        return str(record.get("_name") or record.get("name")
+                   or record.get(self.key_field) or "")
 
     # ── Utilities ─────────────────────────────────────────────────────────────
     @staticmethod

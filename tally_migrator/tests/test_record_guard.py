@@ -230,6 +230,64 @@ class TestBaseRunWiring(unittest.TestCase):
         self.assertIn("B", [e["name"] for e in result.errors])
 
 
+class _RealShapedImporter(BaseImporter):
+    """Importer whose ``key_field`` is an ERPNext column (like the real Customer /
+    Item importers), fed records shaped like ``FileTallySource.get_collection`` output
+    (``_name`` + Tally field names, no lowercase ``name``, no ``key_field``)."""
+    doctype = "Customer"
+    key_field = "customer_name"     # ERPNext column - absent from a source record
+
+    def __init__(self):
+        super().__init__("Co", "C")
+        self.processed = []
+
+    def _prefetch_existing(self):
+        return None
+
+    def build_doc(self, record):
+        return {"customer_name": record["_name"]}
+
+    def _upsert(self, result, data):
+        self.processed.append(data["customer_name"])
+        result.add_created(data["customer_name"])
+        return data["customer_name"], True
+
+
+class TestRecordIdentity(unittest.TestCase):
+    """Regression: the hang guard must identify each record by its Tally ``_name``.
+
+    A record from ``get_collection`` is ``{"_name": <tally name>, "Name": ..., ...}`` -
+    there is no lowercase ``name`` key, and ``key_field`` is the ERPNext column, which the
+    source dict never carries. If ``_record_ident`` misses ``_name`` it returns "" for
+    every record, so a single confirmed hang collapses onto the ``(doctype, "")`` key and
+    skips the WHOLE phase on resume. These lock the identity to ``_name``.
+    """
+
+    def tearDown(self):
+        rg.deactivate()
+
+    def _rec(self, name):
+        # Mirrors FileTallySource.get_collection: _name + Tally field names only.
+        return {"_name": name, "Name": name, "Parent": "Sundry Debtors",
+                "OpeningBalance": "-100"}
+
+    def test_ident_is_the_tally_name_not_empty(self):
+        imp = _RealShapedImporter()
+        self.assertEqual(imp._record_ident(self._rec("Dhatu Industries")),
+                         "Dhatu Industries")
+
+    def test_confirmed_hang_skips_only_that_record_not_the_whole_phase(self):
+        imp = _RealShapedImporter()
+        # Only "Beta" is confirmed-hung; "Alpha"/"Gamma" must still import.
+        rg.activate(rg.RecordGuard(
+            "L", confirmed={("Customer", "Beta")}, timeout_s=999))
+        result = imp.run([self._rec("Alpha"), self._rec("Beta"), self._rec("Gamma")])
+        self.assertEqual(imp.processed, ["Alpha", "Gamma"])   # phase NOT wiped out
+        self.assertEqual(result.created, 2)
+        self.assertEqual(result.failed, 1)                    # only Beta failed
+        self.assertIn("Beta", [e["name"] for e in result.errors])
+
+
 class TestResumeSweep(unittest.TestCase):
     def _row(self):
         return {"name": "TML-R", "job_id": "j", "company": "Co"}
