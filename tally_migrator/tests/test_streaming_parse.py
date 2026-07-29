@@ -61,6 +61,42 @@ class TestStreamingEqualsLegacy(unittest.TestCase):
             with self.assertRaises(Exception):
                 FileTallySource(("﻿" + evil).encode("utf-16-le"))
 
+    def test_streaming_rejects_dtd_obfuscated_by_illegal_char_ref(self):
+        # The DTD token is hidden behind an illegal numeric char ref (&#4;). Before the
+        # guard ran on the SANITISED output, this slipped a live DOCTYPE/ENTITY past the
+        # regex, which sanitisation then un-hid for the stdlib parser - an entity-
+        # expansion ("billion laughs") vector. The guard must now reject it.
+        evil = "<!DOCT&#4;YPE x [<!ENT&#4;ITY a 'b'>]>" + DOC
+        with self.assertRaises(Exception):
+            FileTallySource(("﻿" + evil).encode("utf-16-le"))
+
+    def test_streaming_rejects_dtd_obfuscated_by_raw_control_char(self):
+        # Same evasion via a raw illegal control byte (\x04) inside the token.
+        evil = "<!DOCT\x04YPE x [<!ENT\x04ITY a 'b'>]>" + DOC
+        with self.assertRaises(Exception):
+            FileTallySource(("﻿" + evil).encode("utf-16-le"))
+
+    def test_streaming_rejects_obfuscated_dtd_split_across_tiny_chunks(self):
+        # The hardest case: obfuscated token AND shattered across chunk boundaries, so the
+        # carry (partial char-ref), the sanitisation, and the rolling window must all
+        # cooperate. 3 raw bytes/read splits every token.
+        evil = "<!DOCT&#4;YPE x [<!ENT&#4;ITY a 'b'>]>" + DOC
+        with mock.patch.object(file_source._SanitizingReader, "_CHUNK", 3):
+            with self.assertRaises(Exception):
+                FileTallySource(("﻿" + evil).encode("utf-16-le"))
+
+    def test_obfuscated_bomb_does_not_reach_the_parser(self):
+        # End-to-end: a nested-entity bomb whose tokens are ref-obfuscated must be
+        # rejected up front, never expanded. Small fan-out keeps the test cheap even if
+        # the guard ever regressed (it would raise a parser error, not OOM the runner).
+        ents = " ".join(
+            [f"<!ENTITY a{i} '{'&a' + str(i - 1) + ';' * 0}{('&a%d;' % (i - 1)) * 5}'>"
+             for i in range(1, 5)])
+        bomb = ("<!DOCTYPE r [ <!ENTITY a0 'AAAA'> " + ents + " ]><r>&a4;</r>")
+        bomb = bomb.replace("<!DOCTYPE", "<!DOCT&#4;YPE").replace("<!ENTITY", "<!ENT&#4;ITY")
+        with self.assertRaises(Exception):
+            FileTallySource(("﻿" + bomb).encode("utf-16-le"))
+
     def test_utf8_bom_bytes_stream(self):
         src = FileTallySource(("﻿" + DOC).encode("utf-8"))
         self.assertEqual(collections(src), collections(FileTallySource(DOC)))
