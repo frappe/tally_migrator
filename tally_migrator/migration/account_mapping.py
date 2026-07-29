@@ -60,11 +60,12 @@ def account_mapping(source, company: str = "") -> dict:
     by_root: dict[str, list[dict]] = {r: [] for r in _ROOT_ORDER}
     inferred: list[dict] = []
     for a in ledger_accounts:
-        # source: "reserved" = mapped by a named standard group (high confidence);
+        # nature_source: "reserved" = mapped by a named standard group (high confidence);
         # "derived" = inferred from the group's own Tally nature flags; "unknown" =
         # neither, so the type is unresolved and shown as "--" for the user to set.
-        source = resolver.group_nature(a.parent).get("source")
-        is_inferred = source != "reserved"
+        # (Named distinctly from the ``source`` parameter above, which it must not shadow.)
+        nature_source = resolver.group_nature(a.parent).get("source")
+        is_inferred = nature_source != "reserved"
         row = {
             "name": a.name,
             "root_type": a.root_type,
@@ -73,7 +74,7 @@ def account_mapping(source, company: str = "") -> dict:
             "amount": round(a.opening_balance, 2),
             "dr_cr": a.opening_dr_cr,
             "inferred": is_inferred,
-            "uncertain": source == "unknown",
+            "uncertain": nature_source == "unknown",
         }
         by_root.setdefault(a.root_type, []).append(row)
         if is_inferred:
@@ -199,7 +200,6 @@ def _party_openings(masters, bills) -> dict:
                 })
                 continue
 
-            bills_signed = 0.0
             bills_signed = 0.0
             p_invoices = p_advances = 0
             for b in party_bills:

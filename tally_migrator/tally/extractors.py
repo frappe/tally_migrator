@@ -1,3 +1,4 @@
+import datetime
 import unicodedata
 import re
 from dataclasses import dataclass, field
@@ -722,6 +723,12 @@ class TallyExtractor:
         if not re.fullmatch(r"\d{8}", s):
             return ""
         y, m, d = s[:4], s[4:6], s[6:8]
-        if not ("01" <= m <= "12" and "01" <= d <= "31"):
+        # Validate a real calendar date rather than just digit ranges, so an impossible
+        # value (e.g. "20200231" -> 31 Feb) is rejected here and the importer falls back
+        # to the migration posting date, instead of handing ERPNext a date it will reject
+        # per-record on insert.
+        try:
+            datetime.date(int(y), int(m), int(d))
+        except ValueError:
             return ""
         return f"{y}-{m}-{d}"

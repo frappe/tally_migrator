@@ -1528,7 +1528,8 @@ class StockOpeningImporter:
                 "Warehouse", {"name": ss, "is_group": 0, "company": self.company}):
             return ss
         candidate = company_scoped(DEFAULT_WAREHOUSE, self.abbr)
-        if frappe.db.exists("Warehouse", {"name": candidate, "is_group": 0}):
+        if frappe.db.exists(
+                "Warehouse", {"name": candidate, "is_group": 0, "company": self.company}):
             return candidate
         rows = frappe.get_all(
             "Warehouse", filters={"company": self.company, "is_group": 0},

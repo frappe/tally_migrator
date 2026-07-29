@@ -63,6 +63,25 @@ class TestDeletionOrder(unittest.TestCase):
         self.assertLess(order.index("Item Price"), order.index("Item"))
         self.assertLess(order.index("Pricing Rule"), order.index("Item"))
 
+    def test_batches_ordered_between_items_and_openings(self):
+        # Batches (pipeline idx 81) are created after Items and before the Opening Stock
+        # reconciliation that posts into them; reversed deletion must remove the recon
+        # first and the Batch before the Item it belongs to.
+        created = {
+            "Items": [{"name": "Widget", "doctype": "Item"}],
+            "Batches": [{"name": "B-1", "doctype": "Batch"}],
+            "Opening Stock": [{"name": "SR-1", "doctype": "Stock Reconciliation"}],
+        }
+        order = [r["doctype"] for r in rollback._deletion_order(created)]
+        self.assertLess(order.index("Stock Reconciliation"), order.index("Batch"))
+        self.assertLess(order.index("Batch"), order.index("Item"))
+
+    def test_batches_legacy_bare_string_resolves(self):
+        # A legacy bare-string Batches entry must resolve to the Batch doctype now that
+        # the label is mapped (previously it was dropped as unresolvable).
+        rows = rollback._deletion_order({"Batches": ["B-1", "B-2"]})
+        self.assertTrue(all(r["doctype"] == "Batch" for r in rows))
+
     def test_unknown_label_is_deleted_first(self):
         created = {
             "Accounts": [{"name": "Cash", "doctype": "Account"}],
@@ -342,6 +361,25 @@ class TestRevertGuards(unittest.TestCase):
              mock.patch.object(rollback.frappe, "enqueue", lambda *a, **k: None):
             rollback.revert_migration("TML-1", "Frappe Tech")
             self.assertTrue(new_revert.insert.called)   # proceeded to queue a revert
+
+    def test_concurrent_enqueue_is_blocked_by_lock(self):
+        # A first click already holds the per-log enqueue lock; a second concurrent call
+        # must be refused (not create a duplicate revert). This exercises the got_lock=
+        # False branch the other tests never reach (they run with the lock free).
+        log = mock.Mock(company="Frappe Tech", status="Completed",
+                        created_records='{"Items": [{"name": "W", "doctype": "Item"}]}')
+        # Mock(name=...) is the special repr kwarg, not an attribute, so set .name
+        # explicitly - the lock key is f"...:{log.name}", so it must be the real string.
+        log.name = "TML-LOCK"
+        lock_key = "tally_migrator:revert-enqueue:TML-LOCK"
+        rollback.frappe.cache().set(lock_key, "held", nx=True, ex=30)
+        try:
+            with mock.patch.object(rollback.frappe, "get_doc",
+                                   side_effect=self._log_get_doc(log)):
+                with self.assertRaises(frappe.exceptions.ValidationError):
+                    rollback.revert_migration("TML-LOCK", "Frappe Tech")
+        finally:
+            rollback.frappe.cache().delete(lock_key)
 
     def test_stale_in_flight_is_superseded(self):
         # An In Progress revert older than the job timeout is a corpse: mark it Failed

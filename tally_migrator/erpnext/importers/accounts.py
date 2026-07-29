@@ -26,6 +26,7 @@ from tally_migrator.validation.engine import (
 )
 from .base import BaseImporter, ImportResult
 from .banks import _ensure_bank, _insert_bank_account
+from tally_migrator.migration import record_guard
 
 # ── Chart of Accounts importer ───────────────────────────────────────────────
 
@@ -79,11 +80,24 @@ class AccountImporter:
             for idx, node in enumerate(ordered, 1):
                 if on_progress:
                     on_progress(idx, total)
-                parent = self._resolve_parent(node)
-                if not parent:
-                    result.add_error(node.name, "could not resolve a parent account")
+                ident = node.name
+                # Time-box each account so one pathological node (e.g. a slow India-
+                # Compliance tax-account hook) can't freeze the whole run, and skip one
+                # already confirmed-hung so a resume steps past it. This importer is
+                # standalone (not BaseImporter), so the guard is wired explicitly here,
+                # mirroring BaseImporter.run - otherwise the Accounts phase would be the
+                # one phase with no hang protection or auto-resume.
+                if record_guard.should_skip(self.doctype, ident):
+                    result.add_error(
+                        ident, "left out because it repeatedly stalled the migration "
+                        "(timed out twice); re-import this account on its own")
                     continue
-                self._upsert(result, node, parent)
+                with record_guard.guard(self.doctype, ident):
+                    parent = self._resolve_parent(node)
+                    if not parent:
+                        result.add_error(node.name, "could not resolve a parent account")
+                        continue
+                    self._upsert(result, node, parent)
         finally:
             frappe.local.flags.ignore_update_nsm = prior_nsm
             # Rebuild in finally so the committed accounts always end with a valid tree
@@ -308,8 +322,17 @@ class CostCentreImporter:
                 result.add_error(c.name, "no root cost center found in ERPNext")
             return result
         for node in self._ordered(centres):
-            parent = self._erp_name(node.parent) if node.parent in names else root
-            self._upsert(result, node, node.name in parents, parent)
+            ident = node.name
+            # Same per-record hang guard as the account loop above (this importer is also
+            # standalone), so a stalled cost centre is time-boxed and skipped on resume.
+            if record_guard.should_skip(self.doctype, ident):
+                result.add_error(
+                    ident, "left out because it repeatedly stalled the migration "
+                    "(timed out twice); re-import this cost centre on its own")
+                continue
+            with record_guard.guard(self.doctype, ident):
+                parent = self._erp_name(node.parent) if node.parent in names else root
+                self._upsert(result, node, node.name in parents, parent)
         return result
 
     def _erp_name(self, base: str) -> str:

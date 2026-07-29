@@ -131,6 +131,59 @@ def _has_opening(raw) -> bool:
     return TallyExtractor._parse_opening(raw)[0] != 0.0
 
 
+# Subject line per terminal status for the run-finished desk notification. Only the
+# statuses an import run can reach are listed - a revert notifies separately (it is its
+# own doctype with its own realtime event), so "Reverted" is deliberately absent here.
+_RUN_DONE_SUBJECTS = {
+    "Completed": "Your Tally migration finished successfully.",
+    "Completed with Errors": (
+        "Your Tally migration finished, but some records need your attention."),
+    "Failed": "Your Tally migration could not be completed.",
+}
+
+
+def notify_run_finished(log) -> None:
+    """Tell the user who started a BACKGROUND run that it reached a terminal state.
+
+    A large import runs in a background job, so the wizard tab may already be closed by
+    the time it finishes: realtime progress only reaches an open page, so without this a
+    user who stepped away never learns the run ended (or failed). A persistent Notification
+    Log entry (the desk bell) reaches them whenever they next open ERPNext, and deep-links
+    the migration log.
+
+    Only for async runs - identified by a stored ``job_id`` - because a synchronous run
+    returns its result to the still-open wizard inline, so a bell there would be redundant
+    noise. Best-effort: a notification failure must never affect the run's outcome (the
+    whole point is that the run already succeeded or failed on its own terms)."""
+    try:
+        if not (log and log.get("job_id")):
+            return
+        owner = log.get("owner")
+        if not owner or owner in ("Guest", "Administrator"):
+            # No real end-user to notify (Administrator-owned/system runs surface in the
+            # log list; a bell for the super-user adds noise without an audience).
+            return
+        subject = _RUN_DONE_SUBJECTS.get(log.get("status") or "")
+        if not subject:
+            return
+        frappe.get_doc({
+            "doctype": "Notification Log",
+            "for_user": owner,
+            "type": "Alert",
+            "document_type": "Tally Migration Log",
+            "document_name": log.name,
+            "subject": subject,
+        }).insert(ignore_permissions=True)
+        # Commit the notification explicitly. On the FAILURE path (_fail_log) run() then
+        # re-raises, and Frappe's background-job runner rolls back on that exception - so
+        # an uncommitted insert here would be discarded and the "your migration failed"
+        # bell would never appear. Every caller has already committed the run's own
+        # terminal state before calling this, so committing here only flushes this insert.
+        frappe.db.commit()
+    except Exception:
+        frappe.log_error("Tally Migrator", "run-finished notification failed")
+
+
 @dataclass
 class PipelineStep:
     """One entity in the migration pipeline: how to import it and how to report it."""
@@ -741,6 +794,10 @@ class MasterMigrator:
         except Exception as exc:
             frappe.log_error(f"Migration log issues table failed: {exc}", "Tally Migrator")
 
+        # Notify the initiating user if this ran in the background (their tab may be
+        # closed). No-op for a synchronous run (no job_id) - the wizard has the result.
+        notify_run_finished(self.log)
+
     def _track_wizard_uoms(self, manifest: dict) -> None:
         """Fold the pre-flight "create as new" UOMs into the manifest's Units entry so
         revert undoes them.
@@ -840,5 +897,7 @@ class MasterMigrator:
                     pass
                 self.log.save(ignore_permissions=True)
                 frappe.db.commit()
+                # Tell a background run's initiator it failed (their tab may be closed).
+                notify_run_finished(self.log)
         except Exception as inner:
             frappe.log_error(f"Migration log fail-update failed: {inner}", "Tally Migrator")
