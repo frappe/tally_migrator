@@ -161,5 +161,9 @@ def _fail(log, reason: str) -> None:
     frappe.log_error(f"{log.name}: {reason}", "Tally Migrator")
     try:
         log.db_set("status", "Failed", commit=True)
+        # The auto-resume gave up: the run is always a background job here, so notify the
+        # initiating user (their wizard tab is almost certainly closed by now).
+        from tally_migrator.migration.master_migrator import notify_run_finished
+        notify_run_finished(log)
     except Exception:
         pass

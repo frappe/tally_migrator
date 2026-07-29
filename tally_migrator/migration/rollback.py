@@ -59,6 +59,7 @@ _LABEL_DOCTYPE = {
     "Customers": "Customer",
     "Suppliers": "Supplier",
     "Items": "Item",
+    "Batches": "Batch",
     # "Prices" is intentionally omitted: it creates TWO doctypes (Item Price +
     # Pricing Rule), so a single label->doctype fallback can't represent it. New runs
     # store {name, doctype} per entry, so they need no fallback; legacy bare-string
@@ -95,10 +96,12 @@ def _protected_doctypes() -> set:
 _CREATION_ORDER = [
     "Accounts", "Cost Centres", "Warehouses", "Units", "Stock Groups",
     "Customers", "Suppliers", "Items",
-    # Prices (Item Price + Pricing Rule) and BOMs are created after Items (they
-    # reference the item) and before the opening entries - so reversed deletion
-    # removes them before the Items they lean on. Pipeline idx 82/84.
-    "Prices", "BOMs",
+    # Batches, Prices (Item Price + Pricing Rule) and BOMs are all created after Items
+    # (they reference the item) and before the opening entries - so reversed deletion
+    # removes them before the Items they lean on. Batches (idx 81) must also come before
+    # the Opening Stock reconciliation (idx 93) that posts into them, which reversed
+    # order already gives. Pipeline idx 81/82/84.
+    "Batches", "Prices", "BOMs",
     "Opening Balances", "Party Openings", "Opening Stock",
 ]
 
@@ -315,7 +318,11 @@ def _delete_one(row: dict, protected: set) -> str | None:
             cancel_inline = getattr(doc, "_cancel", None) or doc.cancel
             cancel_inline()
             for ledger in _LEDGER_DOCTYPES:
-                frappe.db.delete(ledger, {"voucher_no": name})
+                # Scope by voucher_type too, not voucher_no alone: document ids are only
+                # unique within a doctype, so a Journal Entry and a Sales Invoice could in
+                # principle share a name and one purge would take the other's ledger rows.
+                # All three ledger doctypes carry voucher_type, so this is always safe.
+                frappe.db.delete(ledger, {"voucher_type": doctype, "voucher_no": name})
             # The opening Stock Reconciliation auto-creates a Serial and Batch Bundle
             # per batch-tracked row (we set use_serial_batch_fields on those rows).
             # Cancelling the reconciliation only delinks the Bundle and flags it
@@ -463,6 +470,33 @@ def revert_migration(log_name: str, company_confirmation: str):
     if log.status == "Reverted":
         frappe.throw(_("This migration has already been reverted."))
 
+    # Close the check-then-enqueue race: two near-simultaneous first clicks could both
+    # pass the in-flight check below and each create + enqueue a revert. The deletes are
+    # idempotent so this loses no data, but it doubles the audit rows and the background
+    # jobs. A short SETNX lock per log serialises the enqueue window (the DB in-flight
+    # check remains the guard for a revert that is already running). Cache down -> proceed
+    # on the DB check alone, so a Redis blip never blocks a legitimate undo.
+    lock_key = f"tally_migrator:revert-enqueue:{log.name}"
+    try:
+        got_lock = bool(frappe.cache().set(lock_key, frappe.utils.now(), nx=True, ex=30))
+    except Exception:
+        got_lock = True
+    if not got_lock:
+        frappe.throw(_("An undo for this migration is already being started. Please wait "
+                       "a moment and try again."))
+    try:
+        return _enqueue_revert(log)
+    finally:
+        try:
+            frappe.cache().delete(lock_key)
+        except Exception:
+            pass
+
+
+def _enqueue_revert(log) -> dict:
+    """Validate no live revert exists, create the Queued Tally Migration Revert, and
+    enqueue the background undo. Called under the per-log enqueue lock (see
+    ``revert_migration``)."""
     # One revert at a time per log - block a double-click, pointing at the run
     # already in flight (the same guard ERPNext's TDR uses). But a revert flagged
     # Queued/In Progress past the job timeout cannot still be running (the worker was

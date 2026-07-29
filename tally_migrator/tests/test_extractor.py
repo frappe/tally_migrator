@@ -75,6 +75,23 @@ class TestTallyExtractor(unittest.TestCase):
         names = [c["_name"] for c in masters.customers]
         self.assertNotIn("Capital Ledger", names)
 
+    def test_parse_tally_date_valid(self):
+        self.assertEqual(TallyExtractor._parse_tally_date("20200310"), "2020-03-10")
+        self.assertEqual(TallyExtractor._parse_tally_date("20240229"), "2024-02-29")  # leap day
+
+    def test_parse_tally_date_rejects_impossible(self):
+        # A well-formed 8-digit string that is not a real calendar date must be rejected
+        # (returns ""), so the importer falls back to the posting date instead of handing
+        # ERPNext a date it rejects per-record.
+        self.assertEqual(TallyExtractor._parse_tally_date("20200231"), "")  # 31 Feb
+        self.assertEqual(TallyExtractor._parse_tally_date("20230229"), "")  # non-leap Feb 29
+        self.assertEqual(TallyExtractor._parse_tally_date("20201301"), "")  # month 13
+        self.assertEqual(TallyExtractor._parse_tally_date("20200100"), "")  # day 00
+
+    def test_parse_tally_date_blank_or_malformed(self):
+        for v in ("", "2020-03-10", "202003", "abcdefgh", None):
+            self.assertEqual(TallyExtractor._parse_tally_date(v), "")
+
     def test_items_and_warehouses_fetched(self):
         masters = self.extractor.extract_all()
         self.assertEqual(len(masters.items), 1)

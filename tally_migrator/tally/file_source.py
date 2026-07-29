@@ -403,7 +403,12 @@ class FileTallySource:
             fields already equals the real Tally tag (NAME, PARENT, PINCODE, …).
         The first candidate that yields a value wins.
         """
-        cache_key = (obj_type, tuple(fields))
+        # Include the tag map in the cache key: the same (obj_type, fields) read with a
+        # different tag_map resolves different tags, so keying on fields alone would hand
+        # a second caller the first's mapping. tag_map values can hold dicts (an attr
+        # candidate), so repr - stable for the fixed module-level *_TAGS constants callers
+        # pass - is used instead of an unhashable tuple.
+        cache_key = (obj_type, tuple(fields), repr(tag_map or {}))
         # Hand out a fresh shallow copy of each record on every call. The source is
         # cached across requests (api._SOURCE_CACHE) and a consumer
         # (migration.overrides.apply_record_overrides) patches record dicts IN PLACE;

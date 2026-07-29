@@ -720,6 +720,52 @@ class TestERPNextImporter(unittest.TestCase):
             "the child must nest under the existing ledger's parent")
         self.assertTrue(any("kept as a ledger" in w["reason"] for w in result.warnings))
 
+    def test_confirmed_hung_account_is_skipped_not_the_whole_phase(self):
+        """The Accounts phase is standalone (not BaseImporter), so its per-record hang
+        guard is wired explicitly. A single account confirmed-hung (timed out twice on a
+        prior attempt) must be skipped with a visible error while every other account
+        still imports - never the whole phase (the defect the base importer had)."""
+        require_company()
+        from tally_migrator.erpnext.importers.accounts import AccountImporter
+        from tally_migrator.tally.extractors import AccountNode
+        from tally_migrator.migration import record_guard
+
+        abbr = frappe.get_value("Company", self.company, "abbr")
+        good = f"_TMTest GuardGood - {abbr}"
+        hung = f"_TMTest GuardHung - {abbr}"
+        for nm in (good, hung):
+            if frappe.db.exists("Account", nm):
+                frappe.delete_doc("Account", nm, force=True, ignore_permissions=True)
+
+        imp = AccountImporter(self.company, abbr, mode="reuse")
+        nodes = [
+            AccountNode(name="_TMTest GuardGood", parent="", is_group=False,
+                        root_type="Asset", account_type="", is_reserved=False),
+            AccountNode(name="_TMTest GuardHung", parent="", is_group=False,
+                        root_type="Asset", account_type="", is_reserved=False),
+        ]
+        # Mark GuardHung as already confirmed-hung, exactly as a resume would (keyed on
+        # the importer's doctype + the Tally account name).
+        record_guard.activate(record_guard.RecordGuard(
+            "L-GUARD", confirmed={("Account", "_TMTest GuardHung")}, timeout_s=999))
+        try:
+            result = imp.run(nodes)
+        finally:
+            record_guard.deactivate()
+
+        try:
+            self.assertTrue(frappe.db.exists("Account", good),
+                            "the non-hung account must still import")
+            self.assertFalse(frappe.db.exists("Account", hung),
+                             "the confirmed-hung account must be skipped, not imported")
+            self.assertTrue(
+                any("_TMTest GuardHung" in e["name"] for e in result.errors),
+                "the skipped account must be recorded as a visible error, not dropped")
+        finally:
+            for nm in (good, hung):
+                if frappe.db.exists("Account", nm):
+                    frappe.delete_doc("Account", nm, force=True, ignore_permissions=True)
+
     # ── Deferred nested-set rebuild (Phase 4) ───────────────────────────────────
 
     def test_account_tree_is_correctly_nested_after_deferred_rebuild(self):
