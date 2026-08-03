@@ -189,6 +189,26 @@ class TestValidateMasters(unittest.TestCase):
             _party("X", LedgerState="", GSTRegistrationNumber=_valid_gstin())])
         self.assertNotIn("GST_STATE_MISSING", self._codes(validate_masters(m)))
 
+    def test_ampersand_or_split_state_does_not_false_mismatch_gstin(self):
+        # A ledger state written with "&" or a pre-2020 split name must reconcile
+        # with the GSTIN-derived state, not raise a false GSTIN/state mismatch.
+        for code, ledger in (("26", "Dadra & Nagar Haveli and Daman & Diu"),
+                             ("26", "Daman and Diu"),          # retired split name
+                             ("01", "Jammu & Kashmir")):
+            with self.subTest(ledger=ledger):
+                m = _masters(customers=[_party(
+                    "X", LedgerState=ledger, PinCode="",
+                    GSTRegistrationNumber=_valid_gstin(code + "AAPFU0939F1Z"))])
+                self.assertNotIn(
+                    "GSTIN_STATE_MISMATCH", self._codes(validate_masters(m)))
+
+    def test_genuine_state_mismatch_still_flagged(self):
+        # A real disagreement (Gujarat GSTIN, Maharashtra ledger state) still warns.
+        m = _masters(customers=[_party(
+            "X", LedgerState="Maharashtra", PinCode="",
+            GSTRegistrationNumber=_valid_gstin("24AAPFU0939F1Z"))])
+        self.assertIn("GSTIN_STATE_MISMATCH", self._codes(validate_masters(m)))
+
     def test_missing_hsn_is_warning(self):
         m = _masters(items=[_item("Widget", hsn="")])
         report = validate_masters(m)

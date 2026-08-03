@@ -94,8 +94,14 @@ TALLY_STATE_MAP: dict[str, str] = {
     "Bihar":                       "Bihar",
     "Chandigarh":                  "Chandigarh",
     "Chhattisgarh":                "Chhattisgarh",
-    "Dadra and Nagar Haveli":      "Dadra and Nagar Haveli",
-    "Daman and Diu":               "Daman and Diu",
+    # Dadra & Nagar Haveli and Daman & Diu were merged into a single union
+    # territory in 2020. India Compliance (and current ERPNext) know only the
+    # merged name, so BOTH the pre-2020 split names and the merged name map to it.
+    # The "&" / "and" and case/spacing variants Tally may export are handled by
+    # resolve_tally_state below, so only the canonical "and" keys are needed here.
+    "Dadra and Nagar Haveli and Daman and Diu": "Dadra and Nagar Haveli and Daman and Diu",
+    "Dadra and Nagar Haveli":      "Dadra and Nagar Haveli and Daman and Diu",
+    "Daman and Diu":               "Dadra and Nagar Haveli and Daman and Diu",
     "Delhi":                       "Delhi",
     "Goa":                         "Goa",
     "Gujarat":                     "Gujarat",
@@ -126,6 +132,27 @@ TALLY_STATE_MAP: dict[str, str] = {
     "Uttarakhand":                 "Uttarakhand",
     "West Bengal":                 "West Bengal",
 }
+
+
+def _norm_state_key(name: str) -> str:
+    """Canonical key for matching a Tally state name: "&" treated as "and", plus
+    case- and whitespace-insensitive. So "Jammu & Kashmir", "JAMMU AND KASHMIR" and
+    "Dadra & Nagar Haveli and Daman & Diu" all match their canonical entry."""
+    return re.sub(r"\s+", " ", (name or "").replace("&", "and")).strip().casefold()
+
+
+# TALLY_STATE_MAP keyed by the normalised form, so a lookup tolerates the "&"/"and",
+# case and spacing variants a Tally export can carry for the same state.
+_NORMALISED_STATE_MAP: dict[str, str] = {
+    _norm_state_key(k): v for k, v in TALLY_STATE_MAP.items()
+}
+
+
+def resolve_tally_state(raw: str) -> str:
+    """ERPNext state name for a Tally state, tolerant of "&"/"and", case and spacing.
+    Returns "" when the value is blank or not a recognised Indian state."""
+    return _NORMALISED_STATE_MAP.get(_norm_state_key(raw), "")
+
 
 # ── ERPNext defaults ──────────────────────────────────────────────────────────
 # Customer Group MUST be a non-group (leaf) node - ERPNext rejects assigning a

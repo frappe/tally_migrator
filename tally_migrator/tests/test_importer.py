@@ -1228,6 +1228,22 @@ class TestERPNextImporter(unittest.TestCase):
         self.assertEqual(imp._state_from_pincode("56"), "")
         self.assertEqual(imp._state_from_pincode("560001"), "Karnataka")
 
+    def test_state_from_pincode_blank_when_prefix_is_ambiguous(self):
+        """A 3-digit prefix shared by two states can't identify one, so the pincode
+        fallback returns "" (the party then surfaces on the pre-flight state screen)
+        rather than silently guessing a wrong GST state. An unambiguous prefix still
+        resolves. A registered party is unaffected - its GSTIN resolves the state
+        before this fallback runs."""
+        from tally_migrator.erpnext.importers import CustomerImporter
+        imp = CustomerImporter("_TMTest Co", "TC")
+        # Ambiguous: 396/362 are both Gujarat and DNH&DD; 818 is both Bihar and Jharkhand.
+        for amb in ("396230", "362520", "818001"):
+            with self.subTest(pin=amb):
+                self.assertEqual(imp._state_from_pincode(amb), "")
+        # Unambiguous prefixes still resolve.
+        self.assertEqual(imp._state_from_pincode("400001"), "Maharashtra")
+        self.assertEqual(imp._state_from_pincode("560001"), "Karnataka")
+
     def test_set_primary_links_batches_party_fields(self):
         """The party's three primary_* fields must be written in ONE set_value, not
         three, while the Address/Contact is_primary flags stay their own updates (they

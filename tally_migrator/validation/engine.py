@@ -21,7 +21,7 @@ from dataclasses import dataclass, field
 from difflib import SequenceMatcher
 
 from tally_migrator.naming import safe_item_code
-from tally_migrator.tally.mappings import TALLY_STATE_MAP
+from tally_migrator.tally.mappings import TALLY_STATE_MAP, resolve_tally_state
 
 # ── Issue + report model ──────────────────────────────────────────────────────
 
@@ -114,7 +114,11 @@ GSTIN_STATE_CODES: dict[str, str] = {
     "12": "Arunachal Pradesh", "13": "Nagaland", "14": "Manipur", "15": "Mizoram",
     "16": "Tripura", "17": "Meghalaya", "18": "Assam", "19": "West Bengal",
     "20": "Jharkhand", "21": "Odisha", "22": "Chhattisgarh", "23": "Madhya Pradesh",
-    "24": "Gujarat", "25": "Daman and Diu", "26": "Dadra and Nagar Haveli",
+    "24": "Gujarat",
+    # 25 (Daman and Diu) was retired and 26 became the merged UT in 2020, so both
+    # resolve to the single current state India Compliance recognises.
+    "25": "Dadra and Nagar Haveli and Daman and Diu",
+    "26": "Dadra and Nagar Haveli and Daman and Diu",
     "27": "Maharashtra", "29": "Karnataka", "30": "Goa", "31": "Lakshadweep",
     "32": "Kerala", "33": "Tamil Nadu", "34": "Puducherry",
     "35": "Andaman and Nicobar Islands", "36": "Telangana", "37": "Andhra Pradesh",
@@ -302,7 +306,11 @@ def _validate_party(rec: dict, entity_type: str, report: ValidationReport) -> No
     name = rec["_name"]
     gstin = (rec.get("GSTRegistrationNumber") or "").strip()
     country = (rec.get("CountryName") or "India").strip()
-    state = (rec.get("LedgerState") or "").strip()
+    # Resolve to the canonical ERPNext state (the importer does the same), so a
+    # ledger state written with "&" or a pre-2020 split name - e.g. "Jammu & Kashmir"
+    # or "Dadra & Nagar Haveli and Daman & Diu" - is compared apples-to-apples against
+    # the GSTIN-derived state instead of raising a false GSTIN/state mismatch.
+    state = resolve_tally_state(rec.get("LedgerState"))
     pin = rec.get("PinCode") or ""
 
     gstin_valid = False

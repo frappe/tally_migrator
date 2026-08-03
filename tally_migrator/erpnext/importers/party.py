@@ -13,7 +13,7 @@ from frappe.utils import validate_email_address, validate_phone_number
 
 from tally_migrator.tally.mappings import (
     UOM_MAP,
-    TALLY_STATE_MAP,
+    resolve_tally_state,
     DEFAULT_CUSTOMER_GROUP,
     DEFAULT_SUPPLIER_GROUP,
     DEFAULT_ITEM_GROUP,
@@ -618,7 +618,7 @@ class PartyImporter(BaseImporter):
 
         India Compliance requires a state on an Indian address, so this never returns
         empty for a party that has one - keeping the address rather than dropping it."""
-        own = TALLY_STATE_MAP.get((row.get("state") or "").strip(), "")
+        own = resolve_tally_state(row.get("state"))
         if own:
             return own
         from_pin = self._state_from_pincode((row.get("pincode") or "").strip())
@@ -639,12 +639,23 @@ class PartyImporter(BaseImporter):
         except Exception:
             return ""
         prefix = int(pin[:3])
+        matches = []
         for state, ranges in STATE_PINCODE_MAPPING.items():
             # A value is either a single (lo, hi) range or a tuple of such ranges.
             spans = ranges if isinstance(ranges[0], (tuple, list)) else (ranges,)
-            if any(lo <= prefix <= hi for lo, hi in spans):
-                return state
-        return ""
+            for lo, hi in spans:
+                if lo <= prefix <= hi:
+                    matches.append(state)
+                    break
+        # Only trust a pincode that identifies exactly one state. Some 3-digit
+        # prefixes are shared by two states (e.g. 396 and 362 are both Gujarat and
+        # Dadra & Nagar Haveli and Daman & Diu; the 818-835 band is both Bihar and
+        # Jharkhand), and the whole 6-digit pincode isn't granular enough in this map
+        # to tell them apart. Guessing one would silently set a wrong GST state (which
+        # flips CGST/SGST vs IGST), so leave it blank instead - the party surfaces on
+        # the pre-flight "state to verify" screen for the user to pick. A registered
+        # party is unaffected: its GSTIN resolves the state before this fallback runs.
+        return matches[0] if len(matches) == 1 else ""
 
     def _save_extra_contacts(self, link_name: str, link_type: str, data: dict,
                              result: "ImportResult") -> None:
@@ -901,7 +912,7 @@ class PartyImporter(BaseImporter):
             ic_state = ic_states.get(gstin[:2], "")
             if ic_state:
                 return ic_state
-        state = TALLY_STATE_MAP.get((data.get("LedgerState") or "").strip(), "")
+        state = resolve_tally_state(data.get("LedgerState"))
         if state:
             return state
         # Without IC there is no canonical map, so fall back to the migrator's own
