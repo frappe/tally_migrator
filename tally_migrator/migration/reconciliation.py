@@ -378,8 +378,104 @@ def is_perpetual(company: str) -> bool:
         return True
 
 
+# Why an opening balance did not post to its own account - the two reasons that
+# actually cause the trial balance to differ (as opposed to the harmless folds).
+_DIVERSION_REASON = {
+    "not_created": "the account was not created (its import failed earlier)",
+    "is_group": "the account exists as a group (its Tally ledger had sub-accounts)",
+}
+
+
+def opening_diversion_breakdown(coa, abbr: str, perpetual: bool) -> dict:
+    """Explain what folded into Temporary Opening, split into harmless vs actionable.
+
+    A non-zero Temporary Opening is normal, but when the trial balance does NOT
+    reconcile the cause is almost always an opening that could not post to its own
+    account and fell into Temporary Opening instead. This re-derives, per account,
+    the SAME four-way decision the importer makes in
+    ``OpeningBalanceImporter._account_lines`` - crucially by reading the identical
+    ``is_group`` signal off the Account the importer branched on, so the two cannot
+    disagree - and buckets each diverted opening:
+
+      * **expected** - income/expense openings (ERPNext forbids a P&L opening) and,
+        under perpetual inventory, stock-account openings (posted from items instead).
+        These are mirrored on both sides of the trial balance, so they never cause a
+        mismatch; only their total is reported, as reassurance.
+      * **actionable** - openings whose ERPNext account is missing or is a group.
+        These post on the Tally side but not the ERPNext side, so their total is
+        exactly the visible class gap. Each is listed by name, amount and reason so
+        the user has a fix-list.
+
+    Read-only and best-effort; the caller wraps the whole reconciliation in a guard.
+    """
+    import frappe
+
+    from tally_migrator.naming import company_scoped
+
+    expected_total = 0.0
+    candidates: list[tuple] = []   # (node, company-scoped ERPNext name, amount)
+    for a in coa.accounts:
+        if a.is_group or not a.opening_balance:
+            continue
+        amount = round(abs(a.opening_balance), 2)
+        # Mirrors _account_lines' skip order exactly: P&L first, then perpetual stock,
+        # then the created / group check. Anything that clears all three could post.
+        if a.root_type in ("Income", "Expense"):
+            expected_total += amount
+            continue
+        if perpetual and getattr(a, "account_type", "") == "Stock":
+            expected_total += amount
+            continue
+        candidates.append((a, company_scoped(a.name, abbr), amount))
+
+    # Resolve every candidate's ERPNext is_group in ONE query rather than a lookup per
+    # account: this only runs on a review verdict, but a large healthy COA can still
+    # have many opening accounts to check, and the importer already paid the per-record
+    # cost. Names absent from the result were never created; present ones carry the
+    # same is_group flag the importer branched on, so the two cannot disagree.
+    actionable: list[dict] = []
+    if candidates:
+        is_group_of = {
+            r["name"]: r["is_group"]
+            for r in frappe.get_all(
+                "Account",
+                filters={"name": ["in", [scoped for _, scoped, _ in candidates]]},
+                fields=["name", "is_group"])
+        }
+        for node, scoped, amount in candidates:
+            if scoped not in is_group_of:
+                reason = "not_created"
+            elif is_group_of[scoped]:
+                reason = "is_group"
+            else:
+                reason = ""       # created as a posting account - it posted fine
+            if reason:
+                actionable.append({"name": node.name, "amount": amount,
+                                   "reason": reason, "reason_text": _DIVERSION_REASON[reason]})
+    actionable.sort(key=lambda r: (-r["amount"], r["name"].lower()))
+    return {
+        "expected_total": round(expected_total, 2),
+        "actionable": actionable,
+        "actionable_total": round(sum(r["amount"] for r in actionable), 2),
+    }
+
+
 def build_reconciliation(company: str, abbr: str, coa, masters) -> dict:
-    """Compose the source trial balance, read the ERPNext side, and compare. Read-only."""
-    return compare(
-        source_totals(coa, masters, perpetual=is_perpetual(company)),
+    """Compose the source trial balance, read the ERPNext side, and compare. Read-only.
+
+    When the trial balance needs review, attach the Temporary Opening breakdown so the
+    Log can explain WHICH openings could not post (the usual cause) rather than only
+    showing the residual. Best-effort: a failure to build it never affects the summary.
+    """
+    perpetual = is_perpetual(company)
+    result = compare(
+        source_totals(coa, masters, perpetual=perpetual),
         erpnext_totals(company, abbr))
+    if result.get("verdict") == "review":
+        try:
+            breakdown = opening_diversion_breakdown(coa, abbr, perpetual)
+            if breakdown["actionable"]:
+                result["opening_diversion"] = breakdown
+        except Exception:
+            pass
+    return result
