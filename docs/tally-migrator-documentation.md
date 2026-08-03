@@ -402,15 +402,22 @@ Three summary cards:
   cleanly using Tally's standard, named groups. No guessing was needed.
 - **We had to infer** (blue, "please check") - ledgers that sit under a *custom*
   Tally group, so we worked out their type (asset, liability, income, expense) from
-  the group's own nature. These are the rows worth your eye. A type shown as "--"
-  is one we genuinely could not determine; set it in ERPNext after import, or fix
-  the group in Tally and re-upload.
+  the group's own nature. These are the rows worth your eye. A type shown as
+  "- select -" is one we genuinely could not determine.
 - **Opening balances** - shows **Balanced (Dr = Cr)** when your opening balances net
   to zero on their own, or the amount held in **Temporary Opening** when they do not.
 
 When there are inferred accounts, a table lists each one with the type we assigned
-and its opening balance, largest balance first. When there are none, you get a green
-confirmation that all accounts mapped using Tally's standard groups.
+and its opening balance, largest balance first. Each inferred account's type is a
+**dropdown you can correct**: pick the right root type (Asset, Liability, Equity,
+Income, or Expense) if our guess is wrong, and the preview - including the opening
+balances plug - updates to match before you import. Only the root type is editable;
+the finer account type (Bank, Tax, and so on) is set automatically and not exposed,
+because it drives bank-account creation and GST behaviour and must come from a
+precise signal rather than a manual pick. Your correction is applied to the import
+and recorded in the Migration Log's list of edits. When there are no inferred
+accounts, you get a green confirmation that all accounts mapped using Tally's
+standard groups.
 
 A **"Show all ... mapped accounts"** disclosure expands the full chart of accounts,
 grouped by class, with each ledger's account type, parent group, and opening
