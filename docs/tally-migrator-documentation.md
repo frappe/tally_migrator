@@ -730,7 +730,10 @@ Migrator handles a real-world wrinkle in Tally data.
   an Indian address. For each address, the app uses the most reliable signal it has:
   a valid GSTIN's own state code, then the address's ledger state, then the state
   derived from its PIN code, then the party's state. So a party with a valid address
-  rarely loses it for a missing state.
+  rarely loses it for a missing state. When a PIN code belongs to two states (a few
+  regions share a range, such as Gujarat and Dadra & Nagar Haveli and Daman & Diu), the
+  app does not guess - it leaves the state blank so you can set it, rather than risk a
+  wrong state that would flip CGST/SGST vs IGST.
 - **GSTIN wins when it disagrees with the state.** India Compliance rejects an address
   whose state does not match its GSTIN. When Tally's ledger state contradicts a valid
   GSTIN, the app trusts the GSTIN (its first two digits are the GST state) and sets the

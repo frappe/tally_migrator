@@ -3,7 +3,40 @@ import unittest
 
 from tally_migrator.tally.mappings import (
     UOM_MAP, TALLY_STATE_MAP, DEFAULT_UOM, gst_category_from_type,
+    resolve_tally_state,
 )
+
+_DNHDD = "Dadra and Nagar Haveli and Daman and Diu"
+
+
+class TestResolveTallyState(unittest.TestCase):
+    def test_dnhdd_all_variants_map_to_merged_ut(self):
+        # Modern merged name (both "&" and "and" spellings), plus the two pre-2020
+        # split names, all resolve to the single current union territory.
+        for raw in ("Dadra & Nagar Haveli and Daman & Diu",
+                    "Dadra and Nagar Haveli and Daman and Diu",
+                    "Dadra and Nagar Haveli",
+                    "Daman and Diu"):
+            with self.subTest(raw=raw):
+                self.assertEqual(resolve_tally_state(raw), _DNHDD)
+
+    def test_ampersand_and_case_and_spacing_tolerant(self):
+        self.assertEqual(resolve_tally_state("Jammu & Kashmir"), "Jammu and Kashmir")
+        self.assertEqual(resolve_tally_state("JAMMU AND KASHMIR"), "Jammu and Kashmir")
+        self.assertEqual(resolve_tally_state("  tamil   nadu  "), "Tamil Nadu")
+
+    def test_blank_and_unknown_return_empty(self):
+        for raw in ("", None, "   ", "Nowhereland"):
+            with self.subTest(raw=raw):
+                self.assertEqual(resolve_tally_state(raw), "")
+
+    def test_dropdown_values_offer_merged_ut_not_the_retired_splits(self):
+        # engine.valid_states is built from TALLY_STATE_MAP.values(); after the merge
+        # it must offer the current UT and never the retired split names.
+        values = set(TALLY_STATE_MAP.values())
+        self.assertIn(_DNHDD, values)
+        self.assertNotIn("Daman and Diu", values)
+        self.assertNotIn("Dadra and Nagar Haveli", values)
 
 
 class TestUomMap(unittest.TestCase):
