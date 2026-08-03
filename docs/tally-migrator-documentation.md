@@ -424,6 +424,15 @@ Tally opening that does not balance on its own, plus any income or expense openi
 balances that ERPNext does not allow on an opening entry. You clear it as you finish
 your opening entries.
 
+When the reconciliation needs review, the report also breaks down any part of
+Temporary Opening that came from **accounts that could not post their opening
+balance** - either the account was not created (its import failed earlier) or it
+exists as a group account (its Tally ledger had sub-accounts, and a group account
+cannot carry a balance). Each such account is listed with its amount and the reason,
+as a fix-list: correct those accounts and re-run the migration to clear the
+difference. Amounts from the normal income, expense and stock folds are only totalled,
+not listed, since they are expected and do not cause a mismatch.
+
 #### Customer and supplier opening balances
 
 This is where bill-wise detail shows up. Cards summarise how party balances will

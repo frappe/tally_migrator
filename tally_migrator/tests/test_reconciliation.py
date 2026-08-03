@@ -324,5 +324,137 @@ class TestCumulativeOpeningsFlag(unittest.TestCase):
         self.assertTrue(rec.get("cumulative_openings"))
 
 
+def _acct2(name, root, amount, dr_cr, account_type="", is_group=False):
+    return AccountNode(name=name, parent="", is_group=is_group, root_type=root,
+                       account_type=account_type, is_reserved=False,
+                       opening_balance=amount, opening_dr_cr=dr_cr)
+
+
+class TestOpeningDiversionBreakdown(unittest.TestCase):
+    """opening_diversion_breakdown re-derives, per account, the same four-way fold the
+    importer makes, splitting what landed in Temporary Opening into harmless folds vs
+    accounts that could not post (the fix-list). The is_group lookup is mocked so the
+    logic is exercised offline, exactly the signal the importer branches on."""
+
+    def _run(self, coa, db_is_group, perpetual=True):
+        # db_is_group: account base name -> its ERPNext is_group value
+        #   (None or absent = account not created, 1 = group, 0 = ordinary account).
+        # The breakdown resolves all candidates in ONE frappe.get_all, so the stub
+        # returns a row only for accounts that exist (None/absent are simply omitted,
+        # exactly as a real query would).
+        from tally_migrator.migration import reconciliation as rc
+
+        def fake_get_all(doctype, filters=None, fields=None, **kw):
+            wanted = filters["name"][1]   # ("in", [scoped names])
+            rows = []
+            for scoped in wanted:
+                base = scoped.rsplit(" - ", 1)[0]   # strip the " - ABBR" suffix
+                val = db_is_group.get(base)
+                if val is not None:
+                    rows.append({"name": scoped, "is_group": val})
+            return rows
+
+        fake_frappe = SimpleNamespace(get_all=fake_get_all)
+        with mock.patch.dict("sys.modules", {"frappe": fake_frappe}):
+            return rc.opening_diversion_breakdown(coa, "ABBR", perpetual)
+
+    def test_not_created_and_group_are_actionable(self):
+        coa = _coa([
+            _acct2("Machinery", "Asset", 210000, "Dr"),   # missing in ERPNext
+            _acct2("Sundry Loans", "Liability", 130000, "Cr"),  # exists as group
+            _acct2("Cash", "Asset", 5000, "Dr"),          # posted fine
+        ])
+        b = self._run(coa, {"Machinery": None, "Sundry Loans": 1, "Cash": 0})
+        names = {a["name"]: a["reason"] for a in b["actionable"]}
+        self.assertEqual(names, {"Machinery": "not_created", "Sundry Loans": "is_group"})
+        self.assertEqual(b["actionable_total"], 340000.0)
+        # Sorted by amount desc, so the biggest offender is first.
+        self.assertEqual(b["actionable"][0]["name"], "Machinery")
+        self.assertEqual(b["expected_total"], 0.0)
+
+    def test_income_expense_and_perpetual_stock_are_expected_not_actionable(self):
+        coa = _coa([
+            _acct2("Sales", "Income", 1900, "Cr"),
+            _acct2("Rent", "Expense", 2000, "Dr"),
+            _acct2("Opening Stock", "Asset", 50000, "Dr", account_type="Stock"),
+            _acct2("Machinery", "Asset", 210000, "Dr"),   # the only real problem
+        ])
+        # Even if the DB says the P&L / stock accounts are missing, they must NOT be
+        # actionable: the importer folds them by design, so they are mirrored on both
+        # sides and never cause a mismatch.
+        b = self._run(coa, {"Machinery": None}, perpetual=True)
+        self.assertEqual([a["name"] for a in b["actionable"]], ["Machinery"])
+        self.assertEqual(b["expected_total"], 53900.0)   # 1900 + 2000 + 50000
+
+    def test_stock_is_actionable_under_periodic_inventory(self):
+        # Without perpetual inventory the stock opening IS posted to the JE, so a
+        # missing/group stock account is a genuine problem, not an expected fold.
+        coa = _coa([_acct2("Opening Stock", "Asset", 50000, "Dr", account_type="Stock")])
+        b = self._run(coa, {"Opening Stock": None}, perpetual=False)
+        self.assertEqual([a["name"] for a in b["actionable"]], ["Opening Stock"])
+        self.assertEqual(b["expected_total"], 0.0)
+
+    def test_actionable_total_ties_to_the_class_gap(self):
+        # The actionable total must equal the amount the class row reads short by, so
+        # the fix-list explains the whole visible difference. Machinery (Asset 210000)
+        # is absent, so ERPNext's Asset is short by exactly that.
+        coa = _coa([
+            _acct2("Cash", "Asset", 5000, "Dr"),
+            _acct2("Machinery", "Asset", 210000, "Dr"),
+        ])
+        b = self._run(coa, {"Cash": 0, "Machinery": None})
+        src_asset = _classes(source_totals(coa, _masters()))["Asset"]["amount"]  # 215000
+        posted_asset = src_asset - b["actionable_total"]                          # 5000
+        self.assertEqual(b["actionable_total"], 210000.0)
+        self.assertEqual(posted_asset, 5000.0)
+
+    def test_groups_and_zero_openings_skipped(self):
+        coa = _coa([
+            _acct2("Current Assets", "Asset", 0, "", is_group=True),  # group node
+            _acct2("Petty Cash", "Asset", 0, "Dr"),                   # no opening
+        ])
+        b = self._run(coa, {})
+        self.assertEqual(b["actionable"], [])
+        self.assertEqual(b["actionable_total"], 0.0)
+
+    def test_all_candidate_accounts_resolved_in_a_single_query(self):
+        # The lookup must be batched: one query for every opening account, not one per
+        # account (which on a large reviewed COA would be thousands of round-trips).
+        from tally_migrator.migration import reconciliation as rc
+        coa = _coa([_acct2(f"Ledger {i}", "Asset", 100 + i, "Dr") for i in range(50)])
+        calls = {"n": 0}
+
+        def counting_get_all(doctype, filters=None, fields=None, **kw):
+            calls["n"] += 1
+            # Every requested name resolves to a posting account (is_group 0).
+            return [{"name": s, "is_group": 0} for s in filters["name"][1]]
+
+        fake_frappe = SimpleNamespace(get_all=counting_get_all)
+        with mock.patch.dict("sys.modules", {"frappe": fake_frappe}):
+            rc.opening_diversion_breakdown(coa, "ABBR", True)
+        self.assertEqual(calls["n"], 1)
+
+    def test_build_reconciliation_attaches_only_on_review_with_actionable(self):
+        # reconciled verdict -> no breakdown; review with an actionable account -> attach.
+        from tally_migrator.migration import reconciliation as rc
+        coa = _coa([_acct2("Machinery", "Asset", 210000, "Dr")])
+
+        def fake_totals(company, abbr):
+            return {"available": True, "classes": {}, "receivables": None,
+                    "payables": None, "stock": {"amount": 0.0, "dr_cr": ""},
+                    "temporary_opening": {"amount": 0.0, "dr_cr": ""}}
+
+        # Machinery is absent from ERPNext (get_all returns no row) -> not_created.
+        fake_frappe = SimpleNamespace(get_all=lambda *a, **k: [])
+        with mock.patch.object(rc, "erpnext_totals", fake_totals), \
+             mock.patch.object(rc, "is_perpetual", lambda c: True), \
+             mock.patch.dict("sys.modules", {"frappe": fake_frappe}):
+            res = rc.build_reconciliation("Co", "ABBR", coa, _masters())
+        # ERPNext Asset is empty but Tally has 210000 -> mismatch -> review + attached.
+        self.assertEqual(res["verdict"], "review")
+        self.assertIn("opening_diversion", res)
+        self.assertEqual(res["opening_diversion"]["actionable"][0]["name"], "Machinery")
+
+
 if __name__ == "__main__":
     unittest.main()

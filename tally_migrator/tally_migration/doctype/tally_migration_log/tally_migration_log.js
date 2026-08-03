@@ -681,6 +681,35 @@ function render_reconciliation(frm) {
 		? `<div class="text-muted small" style="margin-top:4px;">Opening value not migrated as stock: ${fmt(nonStock.value)} across ${nonStock.items} service / non-stock item(s) - ERPNext cannot hold stock for these; record their value as a ledger balance if needed.</div>`
 		: "";
 
+	// When the trial balance needs review, the backend attaches the accounts whose
+	// opening could not post to their own account and fell into Temporary Opening -
+	// the usual cause of the difference. Turn the bare residual into a fix-list.
+	const div = r.opening_diversion;
+	let diversionNote = "";
+	if (div && div.actionable && div.actionable.length) {
+		const items = div.actionable
+			.map(
+				(a) =>
+					`<li style="margin-bottom:2px;"><span style="font-weight:500;">${esc(a.name)}</span> - ${fmt(a.amount)} <span class="text-muted">(${esc(a.reason_text)})</span></li>`
+			)
+			.join("");
+		const n = div.actionable.length;
+		const list = collapsible(
+			n,
+			`Show ${n} account(s)`,
+			`<ul style="margin:6px 0 0 0; padding-left:18px; font-size:12px;">${items}</ul>`
+		);
+		diversionNote = callout(
+			"error",
+			iconRow(
+				"error",
+				`<div><span style="font-weight:500;">${fmt(div.actionable_total)} of the Temporary Opening is ${n} account(s) that could not post.</span> ` +
+					`Fix each account below and re-run the migration to clear the difference.</div>${list}`
+			),
+			"margin-top:8px;"
+		);
+	}
+
 	wrapper.html(section(`
 		<div style="${CARD} max-width:100%;">
 			${callout(v.kind, iconRow(v.kind, v.text), "margin-bottom:8px;")}
@@ -710,6 +739,7 @@ function render_reconciliation(frm) {
 			</table>
 			${stockNote}
 			${nonStockNote}
+			${diversionNote}
 		</div>
 	`));
 }
