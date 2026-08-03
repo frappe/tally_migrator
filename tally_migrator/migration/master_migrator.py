@@ -7,7 +7,8 @@ import frappe
 from tally_migrator.tally.config import TallyConfig
 from tally_migrator.tally.extractors import TallyExtractor, ExtractedMasters
 from tally_migrator.erpnext.importers import ERPNextImporter, ImportResult
-from tally_migrator.migration.overrides import apply_record_overrides, uom_edits
+from tally_migrator.migration.overrides import (
+    apply_record_overrides, apply_account_overrides, uom_edits)
 from tally_migrator.migration import record_guard
 
 
@@ -347,6 +348,10 @@ class MasterMigrator:
             apply_record_overrides(masters, self.record_overrides, self.applied_edits)
             self._record_uom_edits()
             coa = self.extractor.extract_coa()
+            # Account re-classifications the user confirmed on the Preview screen
+            # (root_type only) are applied to the freshly-extracted COA, before it is
+            # imported or reported on. Same audit trail as the record edits above.
+            apply_account_overrides(coa, self.record_overrides, self.applied_edits)
             # Bill-wise party opening detail (BILLALLOCATIONS) - empty when the
             # source can't supply child lists, so party openings then degrade to a
             # single lump opening invoice per party (no bill breakdown).

@@ -213,5 +213,38 @@ class TestAccountMapping(unittest.TestCase):
         self.assertEqual(row["documents"], 2)
 
 
+class TestAccountMappingReflectsOverrides(unittest.TestCase):
+    """The Preview screen must show a user's root_type correction (and its knock-on to
+    the opening plug), so a recompute after an edit doesn't discard it - the contract
+    the wizard's inferred-accounts dropdown relies on."""
+
+    def _override(self, root):
+        return {"Account": {"Weird Ledger": {"root_type": root}}}
+
+    def test_inferred_row_shows_the_overridden_root_type(self):
+        m = account_mapping(_Src(GROUPS, LEDGERS), overrides=self._override("Income"))
+        row = next(r for r in m["inferred"] if r["name"] == "Weird Ledger")
+        self.assertEqual(row["root_type"], "Income")
+        self.assertEqual(row["account_type"], "Income Account")
+
+    def test_overridden_account_moves_to_its_new_root_group_in_the_book(self):
+        m = account_mapping(_Src(GROUPS, LEDGERS), overrides=self._override("Income"))
+        income = next((g for g in m["groups"] if g["root_type"] == "Income"), None)
+        self.assertIsNotNone(income)
+        self.assertIn("Weird Ledger", [r["name"] for r in income["accounts"]])
+
+    def test_reclassifying_to_pl_shifts_the_opening_plug(self):
+        # Weird Ledger carries a 2000 Dr opening. As an Asset it counts in the class
+        # totals; reclassified to Income (a P&L root ERPNext can't open on an opening
+        # entry) it leaves the class totals and folds into the Temporary Opening
+        # residual, so the plug moves by exactly that opening amount. This proves the
+        # edit reaches the plug, not only the classification table.
+        base = account_mapping(_Src(GROUPS, LEDGERS))["opening"]["temporary_opening_plug"]
+        moved = account_mapping(
+            _Src(GROUPS, LEDGERS),
+            overrides=self._override("Income"))["opening"]["temporary_opening_plug"]
+        self.assertEqual(round(abs(moved - base), 2), 2000.0)
+
+
 if __name__ == "__main__":
     unittest.main()

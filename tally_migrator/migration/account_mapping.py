@@ -27,6 +27,8 @@ from tally_migrator.tally.extractors import (
     TallyExtractor, GROUP_FIELDS, GROUP_TAGS, LEDGER_FIELDS, LEDGER_TAGS,
 )
 from tally_migrator.tally.resolver import LedgerResolver
+from tally_migrator.migration.overrides import (
+    apply_record_overrides, apply_account_overrides)
 
 # ERPNext's canonical root-type order - how an accountant reads a trial balance.
 _ROOT_ORDER = ["Asset", "Liability", "Equity", "Income", "Expense"]
@@ -39,16 +41,21 @@ _PLUG_EPSILON = 0.01
 _PARTY_PLUG_THRESHOLD = 1.0
 
 
-def account_mapping(source, company: str = "") -> dict:
+def account_mapping(source, company: str = "", overrides: dict | None = None) -> dict:
     """Build the accounts-mapping preview for an uploaded Tally masters file.
 
     ``company`` (the chosen ERPNext target, when known) lets the opening plug reflect the
     company's inventory mode, so the Review-screen plug matches the post-import
     reconciliation. Blank when no company is chosen yet - the plug then counts stock, as
-    before."""
+    before.
+
+    ``overrides`` are the pre-flight edits made so far (same JSON the import uses), so the
+    inferred-accounts table and the opening plug reflect the user's own re-classifications
+    (root_type) exactly as they will import - otherwise a recompute would show the account
+    back under its original guess and appear to discard the edit."""
     extractor = TallyExtractor(source)
-    coa = extractor.extract_coa()
-    masters = extractor.extract_all()
+    coa = apply_account_overrides(extractor.extract_coa(), overrides)
+    masters = apply_record_overrides(extractor.extract_all(), overrides)
     bills = extractor.extract_bill_allocations()
 
     groups = source.get_collection("Group", GROUP_FIELDS, GROUP_TAGS)

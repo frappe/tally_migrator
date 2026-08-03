@@ -1376,6 +1376,11 @@ class TallyMigratorPage {
 	static get STAT_BG() {
 		return { green: "green", blue: "blue", gray: "gray" };
 	}
+	// The five ERPNext root types a user may choose when correcting an inferred
+	// account's classification on the Preview step. Order matches a trial balance.
+	static get ROOT_TYPES() {
+		return ["Asset", "Liability", "Equity", "Income", "Expense"];
+	}
 	// `tone` is a tm-pill colour keyword (green / blue / gray). For back-compat a raw
 	// CSS colour value still works via an inline fallback.
 	static pill(text, tone) {
@@ -1663,6 +1668,29 @@ class TallyMigratorPage {
 		this.saveDraft();          // persist each inline fix as it's made
 	}
 
+	// The Preview step's inferred-accounts dropdown: record (or clear) a root_type
+	// override for one account, persist it, then recompute so the whole Review - the
+	// table AND the opening-balances plug card - reflects the new classification, the
+	// same recompute the Check step uses. Clearing back to "- select -" removes the
+	// override so the account reverts to our inferred guess.
+	captureAccountEdit(el) {
+		const $el = $(el);
+		const name = $el.data("name");
+		const val = $el.val();
+		const bucket = (this.recordOverrides["Account"] = this.recordOverrides["Account"] || {});
+		const forName = (bucket[name] = bucket[name] || {});
+		if (val) {
+			forName.root_type = val;
+		} else {
+			delete forName.root_type;
+			if (!Object.keys(forName).length) delete bucket[name];
+		}
+		if (!Object.keys(bucket).length) delete this.recordOverrides["Account"];
+		this.saveDraft();
+		this._rerenderReviewAfterRecheck = true;
+		this.recheck();
+	}
+
 	// Re-validate with the in-memory edits applied - fixes are confirmed by the same
 	// engine, so resolved issues drop off and any remaining ones stay visible.
 	recheck() {
@@ -1707,6 +1735,13 @@ class TallyMigratorPage {
 				this.renderDataQuality();
 				this.renderCoverage();
 				this._updateCheckContinue();
+				// When the recheck was triggered by an account re-classification on the
+				// Preview step, re-render that step too so the inferred table and the
+				// opening-balances plug reflect the new classification immediately.
+				if (this._rerenderReviewAfterRecheck) {
+					this._rerenderReviewAfterRecheck = false;
+					if (this.hasAccounts()) this.renderAccountMapping();
+				}
 			},
 			error: () => {
 				frappe.dom.unfreeze();
@@ -1899,6 +1934,29 @@ class TallyMigratorPage {
 				? `<span class="text-muted">--</span>`
 				: esc(r.root_type) + (r.account_type ? ` · ${esc(r.account_type)}` : "");
 
+		// The inferred rows are editable: the user can correct our guess of the root
+		// type (the big Asset/Liability/Equity/Income/Expense bucket) before importing.
+		// The finer account_type is intentionally NOT editable - it drives bank-account
+		// creation and GST behaviour and must come from a precise signal, not a pick.
+		const currentRoot = (name) => {
+			const b = (this.recordOverrides["Account"] || {})[name] || {};
+			return b.root_type || "";
+		};
+		const classSelect = (r) => {
+			const cur = currentRoot(r.name) || (r.uncertain ? "" : r.root_type);
+			const opts = ['<option value="">- select -</option>']
+				.concat(
+					TallyMigratorPage.ROOT_TYPES.map(
+						(t) => `<option value="${t}" ${t === cur ? "selected" : ""}>${t}</option>`
+					)
+				)
+				.join("");
+			const tag = r.account_type && cur && !r.uncertain && cur === r.root_type
+				? ` <span class="text-muted">· ${esc(r.account_type)}</span>`
+				: "";
+			return `<select class="acct-class-edit form-control input-xs" data-name="${esc(r.name)}" style="display:inline-block; width:auto; min-width:120px;">${opts}</select>${tag}`;
+		};
+
 		// ── Summary cards ──────────────────────────────────────────────────────
 		// Same card language as Step 3: regular-black number, status carried by a
 		// soft background pill (green = good, amber = worth a look, grey = none).
@@ -1950,14 +2008,14 @@ class TallyMigratorPage {
 					(r) => `
 					<tr>
 						<td><strong>${esc(r.name)}</strong></td>
-						<td class="text-muted">${classifiedAs(r)}</td>
+						<td>${classSelect(r)}</td>
 						<td class="tm-num">${ob(r)}</td>
 					</tr>`
 				)
 				.join("");
 			$("#review-exceptions").html(
 				TallyMigratorPage.callout("info", `
-					${TallyMigratorPage.iconRow("info", `<strong>${fmt(inferred)} account${inferred === 1 ? "" : "s"} we inferred - please confirm.</strong> These ledgers sit under a custom Tally group, so we inferred each type from the group's own nature (income/expense/asset/liability). A type shown as "--" is one we couldn't determine. Confirm these, or fix the group in Tally and re-upload.`)}
+					${TallyMigratorPage.iconRow("info", `<strong>${fmt(inferred)} account${inferred === 1 ? "" : "s"} we inferred - please confirm or correct.</strong> These ledgers sit under a custom Tally group, so we inferred each type from the group's own nature (income/expense/asset/liability). A type shown as "- select -" is one we couldn't determine. Pick the correct type here, or fix the group in Tally and re-upload.`)}
 					<div class="tm-card" style="margin-top:var(--margin-sm);">
 						<table class="table table-condensed tm-table" style="table-layout:fixed;">
 							${REVIEW_COLGROUP}
@@ -1972,6 +2030,9 @@ class TallyMigratorPage {
 						</table>
 					</div>
 				`)
+			);
+			$("#review-exceptions .acct-class-edit").on("change", (e) =>
+				this.captureAccountEdit(e.currentTarget)
 			);
 		} else {
 			$("#review-exceptions").html(

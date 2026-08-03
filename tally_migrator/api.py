@@ -14,7 +14,8 @@ from tally_migrator.erpnext.uom_resolver import UomResolver
 from tally_migrator.validation.engine import (
     validate_extraction, group_report, records_by_key, erpnext_states,
 )
-from tally_migrator.migration.overrides import apply_record_overrides
+from tally_migrator.migration.overrides import (
+    apply_record_overrides, apply_account_overrides)
 from tally_migrator.migration.coverage import coverage_report
 from tally_migrator.migration.account_mapping import account_mapping
 from tally_migrator.migration.readiness import check_readiness
@@ -239,13 +240,15 @@ def _compute_preflight(file_url, record_overrides, erpnext_company, posting_date
     extractor = TallyExtractor(source)
     masters = apply_record_overrides(extractor.extract_all(), overrides)
     # COA is extracted too so hierarchy checks (cycles) can cover accounts and cost
-    # centres, not just the inventory masters carried on ``masters``.
-    coa = extractor.extract_coa()
+    # centres, not just the inventory masters carried on ``masters``. Account
+    # re-classifications (root_type) are applied so validation sees the same COA the
+    # import will, matching how account_mapping below reflects the edits.
+    coa = apply_account_overrides(extractor.extract_coa(), overrides)
     payload = group_report(
         validate_extraction(masters=masters, coa=coa), records_by_key(masters))
     payload["states"] = erpnext_states()
     payload["coverage"] = coverage_report(source)
-    payload["account_mapping"] = account_mapping(source, erpnext_company)
+    payload["account_mapping"] = account_mapping(source, erpnext_company, overrides)
     if erpnext_company:
         payload["readiness"] = check_readiness(erpnext_company, posting_date)
     items = source.get_collection("Stock Item", ITEM_FIELDS, ITEM_TAGS)
