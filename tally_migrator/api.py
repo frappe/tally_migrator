@@ -429,7 +429,7 @@ def run_masters_migration_from_file(file_url: str, erpnext_company: str = "", uo
     source = _source_from_file(file_url)[1]
     config = _build_masters_config(
         file_url, file_doc.file_name, erpnext_company, source,
-        validation_report, coa_mode, posting_date)
+        validation_report, coa_mode, posting_date, records)
     return _run_and_summarize(config, source, uom, records, created)
 
 
@@ -452,6 +452,11 @@ def rerun_from_log(log_name: str):
         )
 
     _, source = _source_from_file(log.source_file)
+    # Replay the user's original pre-flight choices, or the re-run silently reverts
+    # custom UOMs to defaults and drops every inline GST/state/HSN/classification fix
+    # that made the first run viable.
+    uom = json.loads(log.uom_overrides) if log.get("uom_overrides") else {}
+    records = json.loads(log.record_overrides) if log.get("record_overrides") else {}
     config = TallyConfig(
         erpnext_company=log.company,
         tally_company=log.tally_company,
@@ -459,17 +464,13 @@ def rerun_from_log(log_name: str):
         validation_report=log.validation_report or "",
         # Recomputed from the (unchanged) source so the new log's coverage is current.
         coverage_report=frappe.as_json(coverage_report(source)),
-        mapping_report=frappe.as_json(account_mapping(source, log.company)),
+        # Fold the replayed edits in, so the stored mapping matches what re-runs.
+        mapping_report=frappe.as_json(account_mapping(source, log.company, records)),
         # Repeat the original run's options rather than silently reverting to
         # defaults (reuse / fiscal-year start).
         coa_mode=log.coa_mode or "reuse",
         posting_date=str(log.posting_date or ""),
     )
-    # Replay the user's original pre-flight choices, or the re-run silently reverts
-    # custom UOMs to defaults and drops every inline GST/state/HSN fix that made the
-    # first run viable.
-    uom = json.loads(log.uom_overrides) if log.get("uom_overrides") else {}
-    records = json.loads(log.record_overrides) if log.get("record_overrides") else {}
     return _run_and_summarize(config, source, uom, records)
 
 
@@ -954,8 +955,14 @@ def _assert_within_size_limit(num_bytes: int) -> None:
 
 
 def _build_masters_config(file_url, file_name, erpnext_company, source,
-                          validation_report, coa_mode, posting_date) -> TallyConfig:
-    """Assemble the TallyConfig for a masters run (shared by sync + background)."""
+                          validation_report, coa_mode, posting_date,
+                          record_overrides: dict | None = None) -> TallyConfig:
+    """Assemble the TallyConfig for a masters run (shared by sync + background).
+
+    ``record_overrides`` (the pre-flight edits) are folded into the stored mapping
+    report so the Log's accounts-mapping snapshot shows the same classification that
+    was imported - including any root_type a user corrected on Preview - rather than
+    the original inferred guess."""
     return TallyConfig(
         erpnext_company=erpnext_company,
         tally_company=f"File: {file_name or file_url}",
@@ -964,7 +971,8 @@ def _build_masters_config(file_url, file_name, erpnext_company, source,
         # Computed server-side from the actual file so the stored audit record of
         # un-migrated fields is authoritative, not client-supplied.
         coverage_report=frappe.as_json(coverage_report(source)),
-        mapping_report=frappe.as_json(account_mapping(source, erpnext_company)),
+        mapping_report=frappe.as_json(
+            account_mapping(source, erpnext_company, record_overrides)),
         coa_mode=coa_mode if coa_mode in ("reuse", "mirror") else "reuse",
         posting_date=posting_date or "",
     )
@@ -1045,7 +1053,7 @@ def _run_masters_job(file_url, erpnext_company, uom_overrides, validation_report
     file_doc, source = _source_from_file(file_url)
     config = _build_masters_config(
         file_url, file_doc.file_name, erpnext_company, source,
-        validation_report, coa_mode, posting_date)
+        validation_report, coa_mode, posting_date, records)
     log = frappe.get_doc("Tally Migration Log", log_name)
     # Backfill the source-derived reports the (deferred) web request left empty, so an
     # enqueued run's log shows the same coverage/mapping a synchronous run would. Only

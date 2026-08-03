@@ -966,6 +966,9 @@ class TallyMigratorPage {
 
 	_onPreflightFailed(msg) {
 		this._checkLoading = false;
+		// A failed recheck must clear this one-shot flag, or a later successful recheck
+		// (e.g. a plain data-quality re-check) would stray-render the Preview step.
+		this._rerenderReviewAfterRecheck = false;
 		this.qualityError = msg || __("The file could not be validated.");
 		this.qualityReport = null;
 		$("#check-loading").hide();
