@@ -826,6 +826,12 @@ Migrator handles a real-world wrinkle in Tally data.
   because GST invoices for it will not be compliant until you add one. If India
   Compliance rejects a specific HSN as invalid, the item is retried with the HSN
   cleared so it still lands, and you are told to set a correct one.
+- **HSN defined on a shared GST Classification.** Many Tally books set an HSN/SAC once
+  on a "GST Classification" master and point several items at it, instead of typing it
+  on each item. Those items are read as having the classification's HSN, so they import
+  with the correct code rather than blank. An item's own HSN, when it has one, always
+  takes precedence; slab-rate classifications are handled the same way (only the HSN is
+  taken from them). An item genuinely without any HSN still imports blank and is warned.
 - **Batch and expiry.** An item marked batch-wise in Tally gets batch tracking turned
   on; if it is also perishable, expiry tracking is enabled too.
 - **Opening stock value.** Every item with opening stock is imported with its quantity

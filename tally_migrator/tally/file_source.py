@@ -22,6 +22,10 @@ _ZIP_MAGIC = b"PK\x03\x04"
 MASTER_RECORD_TAGS = (
     "GROUP", "LEDGER", "STOCKITEM", "GODOWN",
     "COSTCENTRE", "STOCKGROUP", "UNIT", "CURRENCY",
+    # GST Classification masters carry a shared HSN/SAC that stock items point at
+    # (HSNDETAILS.LIST/HSNCLASSIFICATIONNAME); indexed so the extractor can resolve an
+    # item's HSN from its classification. Few per book, so retaining them costs ~nothing.
+    "GSTCLASSIFICATION",
 )
 
 
