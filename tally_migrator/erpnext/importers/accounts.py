@@ -30,6 +30,13 @@ from tally_migrator.migration import record_guard
 
 # ── Chart of Accounts importer ───────────────────────────────────────────────
 
+# Root types that, when absent from the target chart, fall back to another root's
+# group so the account still imports instead of failing for want of a parent. Equity
+# has no dedicated root in ERPNext's standard chart - capital sits on the Liabilities
+# (funding) side - so it falls back there. See AccountImporter._root_group.
+_ROOT_TYPE_FALLBACK = {"Equity": "Liability"}
+
+
 class AccountImporter:
     """Creates the Chart of Accounts (groups + ledger accounts).
 
@@ -193,6 +200,24 @@ class AccountImporter:
         return resolved
 
     def _root_group(self, root_type: str) -> str | None:
+        resolved = self._root_group_for(root_type)
+        if resolved:
+            return resolved
+        # ERPNext's standard chart has no dedicated Equity root: proprietor/partner
+        # capital and reserves nest on the funding (Liabilities) side - the shipped
+        # "Capital Account" group is itself root_type Liability under "Source of Funds
+        # (Liabilities)". So an Equity account that has to fall back to its root - a
+        # custom equity group under Primary, or (in mirror mode) the recreated reserved
+        # Capital Account group - would otherwise find no root, fail to import, and
+        # silently divert its opening balance to Temporary Opening. Fall back to the
+        # Liability root for Equity. Never applied when an Equity root does exist (a
+        # custom chart that ships one), so those charts are unaffected.
+        fallback = _ROOT_TYPE_FALLBACK.get(root_type)
+        return self._root_group_for(fallback) if fallback else None
+
+    def _root_group_for(self, root_type: str) -> str | None:
+        if not root_type:
+            return None
         base = ERPNEXT_ROOT_GROUPS.get(root_type)
         if base:
             candidate = self._erp_name(base)
