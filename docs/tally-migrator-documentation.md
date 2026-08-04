@@ -858,6 +858,11 @@ Migrator handles a real-world wrinkle in Tally data.
 - **Reserved groups** (standard, named Tally groups) are not recreated in reuse mode;
   their ERPNext equivalents are used as parents. In mirror mode, every group is
   recreated.
+- **Capital and reserves (equity).** ERPNext's standard chart has no separate equity
+  root, so proprietor / partner capital and reserves are placed on the funding side,
+  under **Source of Funds (Liabilities)** - the same place ERPNext keeps its own
+  "Capital Account". They import with their opening balances intact; only their spot in
+  the tree differs from Tally's.
 - **Renamed standard groups.** If you renamed one of Tally's standard groups (for
   example "Duties & Taxes" to "GST Dues"), its ledgers are still classified correctly.
   Tally keeps the original identity of a standard group even after a rename, and the
