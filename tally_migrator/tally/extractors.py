@@ -6,6 +6,13 @@ from .mappings import TALLY_ROOT_PARENT, classify_group, is_system_ledger
 from .resolver import ACCOUNT, CUSTOMER, SUPPLIER, LedgerResolver
 
 
+def _norm_hsn_class_name(name: str) -> str:
+    """Match key for a GST Classification name: whitespace collapsed and casefolded,
+    so an item's reference matches the master's name despite trivial spacing/case
+    drift (Tally is normally byte-consistent, but this costs nothing and is safe)."""
+    return re.sub(r"\s+", " ", (name or "")).strip().casefold()
+
+
 # ── Field lists sent to Tally via TDL FETCH ───────────────────────────────────
 
 LEDGER_FIELDS = [
@@ -29,6 +36,11 @@ ITEM_FIELDS = [
     "Name", "Parent", "BaseUnits", "StandardCost", "StandardPrice",
     "OpeningBalance", "OpeningRate", "OpeningValue", "Description",
     "HSNCode", "GSTTaxability", "TypeOfSupply",
+    # HSN can be defined once on a shared GST Classification master and referenced by
+    # the item (HSNDETAILS.LIST/HSNCLASSIFICATIONNAME, with SRCOFHSNDETAILS = "Use GST
+    # Classification"). These two carry that link so _attach_item_hsn_from_classification
+    # can fill the item's HSN from the master when the item has none of its own.
+    "HSNClassificationName", "SrcOfHsnDetails",
     # Inventory valuation method (→ Item.valuation_method) and the flat item-level
     # GST flag (→ India-Compliance is_non_gst). Both have real ERPNext targets.
     "ValuationMethod", "GstApplicable",
@@ -117,6 +129,10 @@ ITEM_TAGS = {
     # is nested per duty-head and usually inherited via SRCOFGSTDETAILS, so the
     # item-level value is 0/unreliable; ERPNext models rate as a tax template.)
     "HSNCode":       ["HSNDETAILS.LIST/HSNCODE", "HSNCODE"],
+    # The classification an item points at, and Tally's HSN source flag - both nested
+    # in the item's HSNDETAILS.LIST alongside HSNCODE (verified against a real export).
+    "HSNClassificationName": ["HSNDETAILS.LIST/HSNCLASSIFICATIONNAME"],
+    "SrcOfHsnDetails":       ["HSNDETAILS.LIST/SRCOFHSNDETAILS"],
     "GSTTaxability": ["GSTDETAILS.LIST/TAXABILITY"],
     "TypeOfSupply":  ["GSTDETAILS.LIST/SUPPLYTYPE", "TYPEOFSUPPLY", "GSTTYPEOFSUPPLY"],
     # Tally exposes the costing/market valuation under either tag; "Avg. Cost"/
@@ -274,6 +290,9 @@ class TallyExtractor:
             units        = self._dedup_by_name(
                 self.client.get_collection("Unit", UNIT_FIELDS, UNIT_TAGS)),
         )
+        # Fill an item's HSN from the shared GST Classification it points at, when it
+        # has none of its own. No-op when the book defines no such masters (common).
+        self._attach_item_hsn_from_classification(masters.items)
         # Attach each item's combined GST rate (IGST), read per duty head from the
         # nested rate list. No-op for a live client that can't supply it.
         self._attach_item_gst_rates(masters.items)
@@ -340,6 +359,59 @@ class TallyExtractor:
         godowns = self.client.item_godown_openings()
         for it in items:
             it.setdefault("GodownOpenings", godowns.get(it.get("_name", ""), []))
+
+    def _gst_classification_hsn(self) -> dict:
+        """``{normalised classification name -> HSN/SAC code}`` from the GST
+        Classification masters.
+
+        The classification stores its HSN at ``HSNDETAILS.LIST/HSNCODE`` - the very
+        path an item's own HSN uses - so the same reader applies. The name is matched
+        case- and whitespace-insensitively (see ``_norm_hsn_class_name``). Returns an
+        empty map when the book has no such masters, or the source can't supply them
+        (a live client). Best-effort: it never raises into extraction."""
+        try:
+            rows = self.client.get_collection(
+                "GST Classification", ["HSNCode"],
+                {"HSNCode": ["HSNDETAILS.LIST/HSNCODE", "HSNCODE"]})
+        except Exception:
+            return {}
+        out: dict[str, str] = {}
+        for r in rows:
+            hsn = (r.get("HSNCode") or "").strip()
+            if hsn:
+                out[_norm_hsn_class_name(r.get("_name", ""))] = hsn
+        return out
+
+    def _attach_item_hsn_from_classification(self, items: list[dict]) -> None:
+        """Fill an item's HSN from the shared GST Classification it points at, when the
+        item carries no HSN of its own.
+
+        Tally lets a book define an HSN once on a GST Classification master and have
+        many items reference it by name (``HSNDETAILS.LIST/HSNCLASSIFICATIONNAME``, with
+        ``SRCOFHSNDETAILS = "Use GST Classification"``); without this those items would
+        import with a blank HSN. Rules, in order:
+
+          * the item's OWN HSN always wins (never overridden);
+          * a blank own-HSN whose ``SRCOFHSNDETAILS`` is explicitly "Specify Details
+            Here" is left blank - the user chose to type their own and left it empty,
+            so a stale classification name must not be pulled in;
+          * otherwise, if the item names a classification, use that classification's
+            HSN - staying blank when the master is absent or itself carries no HSN.
+
+        No-op (and no per-item work) when the book has no GST Classification masters -
+        the common case - so a normal import pays nothing for this."""
+        cmap = self._gst_classification_hsn()
+        if not cmap:
+            return
+        for it in items:
+            if (it.get("HSNCode") or "").strip():
+                continue
+            if (it.get("SrcOfHsnDetails") or "").strip().casefold() == "specify details here":
+                continue
+            name = _norm_hsn_class_name(it.get("HSNClassificationName") or "")
+            hsn = cmap.get(name) if name else None
+            if hsn:
+                it["HSNCode"] = hsn
 
     @staticmethod
     def _dedup_by_name(records: list[dict]) -> list[dict]:
