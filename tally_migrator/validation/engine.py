@@ -211,21 +211,29 @@ def pin_state_conflict(pin: str, state: str) -> str | None:
 
 # Legal-form / connector noise, stripped from the name before the *exact* dedupe
 # tier. Keep this set conservative: whatever is dropped here makes two names collapse
-# to the same key, so anything but true entity-form noise (Pvt/Ltd/Enterprise...) would
-# manufacture false "exact duplicate" matches. Singular and plural are both listed so a
-# ledger written either way normalizes the same.
+# to the same key, so only unambiguous legal forms (Pvt/Ltd/LLP/Inc/Corp...) and
+# connectors belong here. Business-type descriptors (Enterprise, Industry, Traders...)
+# are deliberately NOT here: as a *leading* word they would strip down to a shared core
+# and manufacture false exact-duplicates - "Enterprise Solutions" and "The Solutions Co"
+# would both collapse to "solutions". The plural "enterprises"/"industries" are the one
+# exception, kept only because the fuzzy tier relies on them to group an abbreviation
+# like "Reliance Ind." with "Reliance Industries"; their singular forms live in
+# _GENERIC_TOKENS (fuzzy-only) instead.
 _SUFFIXES = {
     "pvt", "private", "ltd", "limited", "llp", "inc", "co", "company",
     "corporation", "corp", "and", "the", "&",
-    "industries", "industry", "enterprises", "enterprise",
+    "industries", "enterprises",
 }
 
-# Generic trade descriptors shared by unrelated firms ("X Traders", "Y Traders"). These
-# are NOT stripped for exact matching (that would over-collapse - "Kumar Traders" and
-# "Kumar Agency" are different businesses). They are removed only when isolating a name's
-# *distinctive* part for the fuzzy look-alike tier, so a shared generic word can no longer
-# inflate the similarity ratio between two otherwise-different names.
+# Generic trade / business-type descriptors shared by unrelated firms ("X Traders",
+# "Y Traders"). These are NOT stripped for exact matching (that would over-collapse -
+# "Kumar Traders" and "Kumar Agency" are different businesses). They are removed only
+# when isolating a name's *distinctive* part for the fuzzy look-alike tier, so a shared
+# generic word can no longer inflate the similarity ratio between two otherwise-different
+# names. Includes the singular entity forms whose plurals sit in _SUFFIXES, so both read
+# as generic when computing the distinctive core.
 _GENERIC_TOKENS = _SUFFIXES | {
+    "industry", "enterprise",
     "traders", "trader", "trading", "agency", "agencies", "store", "stores",
     "sons", "brothers", "bros", "associates", "associate", "group",
     "marketing", "sales", "distributors", "distributor",

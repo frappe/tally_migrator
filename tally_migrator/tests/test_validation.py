@@ -175,10 +175,13 @@ class TestDedupFalsePositives(unittest.TestCase):
         self.assertEqual(self._names("ABC Traders", "XYZ Traders"), [])
         self.assertEqual(self._names("Sunrise Agency", "Sunset Agency"), [])
 
-    def test_singular_and_plural_entity_forms_still_group(self):
-        # Enterprise/Enterprises and Industry/Industries are the same firm.
-        self.assertEqual(len(self._names("Shah Enterprise", "Shah Enterprises")), 1)
-        self.assertEqual(len(self._names("Patel Industry", "Patel Industries")), 1)
+    def test_leading_entity_word_does_not_collapse_unrelated_firms(self):
+        # A business-type word as a *leading* token must not strip a name down to a
+        # shared core and manufacture an exact duplicate (regression: the exact tier
+        # once stripped singular "enterprise"/"industry", grouping these).
+        self.assertEqual(self._names("Enterprise Solutions", "The Solutions Co"), [])
+        self.assertEqual(self._names("Industry Motors", "Motors"), [])
+        self.assertEqual(self._names("Enterprise Traders", "Traders Co"), [])
 
     def test_typo_inside_the_distinctive_core_still_groups(self):
         # The distinctive-core check uses a ratio, not exact tokens, so a typo in
