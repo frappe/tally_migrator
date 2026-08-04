@@ -162,6 +162,51 @@ class TestDedup(unittest.TestCase):
         self.assertEqual(find_duplicate_groups(parties), [])
 
 
+class TestDedupFalsePositives(unittest.TestCase):
+    """Different firms that merely share a generic trade word must not group,
+    while genuine variants and typos still do (#1)."""
+
+    def _names(self, *names):
+        return find_duplicate_groups([_party(n) for n in names])
+
+    def test_shared_generic_word_does_not_group_different_firms(self):
+        # "... Traders" alone once inflated the whole-string ratio past 0.80.
+        self.assertEqual(self._names("Ramesh Traders", "Ganesh Traders"), [])
+        self.assertEqual(self._names("ABC Traders", "XYZ Traders"), [])
+        self.assertEqual(self._names("Sunrise Agency", "Sunset Agency"), [])
+
+    def test_singular_and_plural_entity_forms_still_group(self):
+        # Enterprise/Enterprises and Industry/Industries are the same firm.
+        self.assertEqual(len(self._names("Shah Enterprise", "Shah Enterprises")), 1)
+        self.assertEqual(len(self._names("Patel Industry", "Patel Industries")), 1)
+
+    def test_typo_inside_the_distinctive_core_still_groups(self):
+        # The distinctive-core check uses a ratio, not exact tokens, so a typo in
+        # the identifying word is still caught.
+        self.assertEqual(len(self._names("Kumar Traders", "Kumr Traders")), 1)
+
+    def test_same_core_with_extra_words_still_groups(self):
+        # Genuine variant: same distinctive core, differing only by entity form.
+        self.assertEqual(len(self._names("Kumar Traders", "Kumar Traders Pvt Ltd")), 1)
+
+    def test_all_generic_name_is_not_fuzzy_matched(self):
+        # Names whose distinctive core is empty have no anchor to match on.
+        self.assertEqual(self._names("Traders Agency", "Trading Agencies"), [])
+
+    def test_shared_distinctive_word_but_different_trade_stays_separate(self):
+        # These share a distinctive token ("national", "new india", "sri ram") so the
+        # distinctive-core ratio is 1.0 - but the whole-string ratio fails because the
+        # trade words differ. Requiring BOTH legs (not just core overlap) keeps them apart.
+        self.assertEqual(self._names("National Traders", "National Agency"), [])
+        self.assertEqual(self._names("New India Traders", "New India Agency"), [])
+        self.assertEqual(self._names("Sri Ram Traders", "Sri Ram Agency"), [])
+
+    def test_identical_all_generic_names_still_group_by_exact_tier(self):
+        # An empty distinctive core skips only the fuzzy tier; two parties with the
+        # exact same (all-generic) name are still an exact duplicate.
+        self.assertEqual(len(self._names("Traders", "Traders")), 1)
+
+
 # ── Master-level rules ────────────────────────────────────────────────────────
 
 class TestValidateMasters(unittest.TestCase):

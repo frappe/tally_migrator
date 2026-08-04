@@ -209,17 +209,49 @@ def pin_state_conflict(pin: str, state: str) -> str | None:
 
 # ── Party de-duplication (normalized name + GSTIN + phone) ────────────────────
 
+# Legal-form / connector noise, stripped from the name before the *exact* dedupe
+# tier. Keep this set conservative: whatever is dropped here makes two names collapse
+# to the same key, so anything but true entity-form noise (Pvt/Ltd/Enterprise...) would
+# manufacture false "exact duplicate" matches. Singular and plural are both listed so a
+# ledger written either way normalizes the same.
 _SUFFIXES = {
     "pvt", "private", "ltd", "limited", "llp", "inc", "co", "company",
-    "corporation", "corp", "and", "the", "&", "industries", "enterprises",
+    "corporation", "corp", "and", "the", "&",
+    "industries", "industry", "enterprises", "enterprise",
 }
+
+# Generic trade descriptors shared by unrelated firms ("X Traders", "Y Traders"). These
+# are NOT stripped for exact matching (that would over-collapse - "Kumar Traders" and
+# "Kumar Agency" are different businesses). They are removed only when isolating a name's
+# *distinctive* part for the fuzzy look-alike tier, so a shared generic word can no longer
+# inflate the similarity ratio between two otherwise-different names.
+_GENERIC_TOKENS = _SUFFIXES | {
+    "traders", "trader", "trading", "agency", "agencies", "store", "stores",
+    "sons", "brothers", "bros", "associates", "associate", "group",
+    "marketing", "sales", "distributors", "distributor",
+    "exports", "imports", "international", "works",
+}
+
+
+def _strip_tokens(name: str, drop: set) -> str:
+    """Lowercase, drop punctuation and any token in ``drop``, collapse whitespace."""
+    s = re.sub(r"[^a-z0-9 ]", " ", (name or "").lower())
+    return " ".join(t for t in s.split() if t and t not in drop)
 
 
 def normalize_party_name(name: str) -> str:
     """Lowercase, strip punctuation and common company suffixes, collapse spaces."""
-    s = re.sub(r"[^a-z0-9 ]", " ", (name or "").lower())
-    tokens = [t for t in s.split() if t and t not in _SUFFIXES]
-    return " ".join(tokens)
+    return _strip_tokens(name, _SUFFIXES)
+
+
+def _distinctive_name(name: str) -> str:
+    """The name with generic trade words also removed - its identifying core.
+
+    Used only by the fuzzy tier: comparing distinctive cores (not whole strings)
+    stops a shared generic word ("Traders", "Agency") from inflating the similarity
+    of two unrelated firms, while still tolerating typos within the core itself.
+    """
+    return _strip_tokens(name, _GENERIC_TOKENS)
 
 
 def _phone_digits(rec: dict) -> str:
@@ -244,9 +276,12 @@ def find_duplicate_groups(parties: list[dict], threshold: float = 0.80,
       OR same 10-digit phone. Grouped by hashing each key into buckets (blanks
       skipped, so empty-normalised names never clump together) - linear, runs at any
       file size.
-    - **Look-alike** (only when party count <= ``fuzzy_max``): fuzzy name ratio >=
-      ``threshold``, an O(n^2) pairwise pass. Skipped on very large files, where it is
-      both far too slow and dominated by false positives.
+    - **Look-alike** (only when party count <= ``fuzzy_max``): an O(n^2) pairwise pass
+      that groups two names when they clear ``threshold`` on both the whole normalized
+      name and its distinctive core (the name minus generic trade words). Requiring the
+      core to match too keeps unrelated firms that merely share a generic word ("X
+      Traders" / "Y Traders") apart. Skipped on very large files, where it is both far
+      too slow and dominated by false positives.
 
     Returns groups of size >= 2 (singletons are not duplicates).
     """
@@ -279,14 +314,22 @@ def find_duplicate_groups(parties: list[dict], threshold: float = 0.80,
                 first[k] = i
 
     # Look-alike tier: quadratic, so only for small enough party sets. Already-grouped
-    # pairs are skipped, and empty normalised names are never fuzzy-matched.
+    # pairs are skipped, and empty normalised names are never fuzzy-matched. A pair must
+    # clear the ratio on BOTH the whole name and the distinctive core - the second leg is
+    # what stops "Ramesh Traders" / "Ganesh Traders" (a shared generic word) from matching
+    # while still catching a typo inside the core ("Kumar" / "Kumr").
     if n <= fuzzy_max:
+        dist = [_distinctive_name(p["_name"]) for p in parties]  # only needed here
         for i in range(n):
             for j in range(i + 1, n):
                 if find(i) == find(j):
                     continue
-                if (norm[i] and norm[j]
-                        and SequenceMatcher(None, norm[i], norm[j]).ratio() >= threshold):
+                if not (norm[i] and norm[j] and dist[i] and dist[j]):
+                    continue
+                # Whole-string leg first (cheap short-circuit): the distinctive-core
+                # ratio is only computed for pairs that already look alike overall.
+                if (SequenceMatcher(None, norm[i], norm[j]).ratio() >= threshold
+                        and SequenceMatcher(None, dist[i], dist[j]).ratio() >= threshold):
                     union(i, j)
 
     groups: dict[int, list[str]] = {}
