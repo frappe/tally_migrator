@@ -6,7 +6,7 @@ app_email       = "parth@frappe.io"
 app_license     = "GNU General Public License (v3)"
 app_version     = "1.0.0"
 
-required_apps = ["frappe", "erpnext"]
+required_apps = ["erpnext"]
 
 # ── Lifecycle ─────────────────────────────────────────────────────────────────
 # The "Tally Migration Manager" role is created in after_install (single source
