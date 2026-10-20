@@ -2402,7 +2402,7 @@ class TestBomSecondaryItemsIntegration(unittest.TestCase):
         frappe.db.commit()
 
     def test_secondary_items_created_with_type_and_allocation(self):
-        from tally_migrator.erpnext.importers.bom import BomImporter
+        from tally_migrator.erpnext.importers.bom import BomImporter, secondary_type_field
         abbr = frappe.get_cached_value("Company", self.company, "abbr")
         items = [{"_name": "_TMBom FG", "Boms": [{
             "name": "_TMBom FG BOM", "basic_qty": "1 Nos", "components": [
@@ -2424,11 +2424,12 @@ class TestBomSecondaryItemsIntegration(unittest.TestCase):
         # Raw materials only in `items`, secondaries only in `secondary_items`.
         self.assertEqual({r.item_code for r in bom.items}, {"_TMBom RM1", "_TMBom RM2"})
         by_item = {s.item_code: s for s in bom.secondary_items}
-        self.assertEqual(by_item["_TMBom Co"].type, "Co-Product")
+        tf = secondary_type_field()   # "type" on v15/v16, "secondary_item_type" on v17
+        self.assertEqual(by_item["_TMBom Co"].get(tf), "Co-Product")
         self.assertEqual(by_item["_TMBom Co"].cost_allocation_per, 20.0)
-        self.assertEqual(by_item["_TMBom By"].type, "By-Product")
+        self.assertEqual(by_item["_TMBom By"].get(tf), "By-Product")
         self.assertEqual(by_item["_TMBom By"].cost_allocation_per, 5.0)
-        self.assertEqual(by_item["_TMBom Scrap"].type, "Scrap")
+        self.assertEqual(by_item["_TMBom Scrap"].get(tf), "Scrap")
         self.assertEqual(by_item["_TMBom Scrap"].cost_allocation_per, 2.0)
         # ERPNext reduced the finished good's own allocation so the total is 100%.
         self.assertEqual(bom.cost_allocation_per, 73.0)
