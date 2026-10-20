@@ -6,11 +6,20 @@ from tally_migrator.naming import safe_item_code
 from .base import BaseImporter, ImportResult
 
 # Tally BOM "Type of Item" (NATUREOFITEM, normalised by _norm_nature) -> ERPNext
-# BOM Secondary Item.type. Verified against a real TallyPrime export: the raw values are
+# BOM Secondary Item type (field ``type`` on v15/v16, ``secondary_item_type`` on v17 - see
+# secondary_type_field). Verified against a real TallyPrime export: the raw values are
 # exactly "Component" / "Co-Product" / "By-Product" / "Scrap", and ERPNext's type options
 # ("Co-Product" / "By-Product" / "Scrap" / "Additional Finished Good") match the first
 # three verbatim. "Component" is not here - those rows are the BOM's raw materials.
 _SECONDARY_TYPE = {"coproduct": "Co-Product", "byproduct": "By-Product", "scrap": "Scrap"}
+
+
+def secondary_type_field() -> str:
+    """The BOM Secondary Item field that holds the row type. ERPNext v15/v16 call it
+    ``type``; v17 renamed it to ``secondary_item_type``. Setting a field the doctype
+    does not have is silently ignored, so the type would be lost - pick the real one."""
+    meta = frappe.get_meta("BOM Secondary Item")
+    return "secondary_item_type" if meta.has_field("secondary_item_type") else "type"
 
 
 class BomImporter:
@@ -99,7 +108,11 @@ class BomImporter:
             # are supplied; ERPNext fills uom, conversion_factor, and the derived costs, and
             # reduces the finished good's cost_allocation_per so the total is 100% (verified
             # live against ERPNext's BOM.set_fg_cost_allocation / validate_total_cost_allocation).
-            doc["secondary_items"] = secondary_rows
+            type_field = secondary_type_field()
+            doc["secondary_items"] = [
+                {**{k: v for k, v in r.items() if k != "type"}, type_field: r["type"]}
+                for r in secondary_rows
+            ]
         if uom and frappe.db.exists("UOM", uom):
             doc["uom"] = uom
         try:
