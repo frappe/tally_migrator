@@ -1520,7 +1520,10 @@ class StockOpeningImporter:
         Prefer Stock Settings' default, then the migrated default warehouse, then
         any leaf warehouse for the company.
         """
-        ss = frappe.db.get_single_value("Stock Settings", "default_warehouse")
+        # Newer ERPNext v16 has no Stock Settings > Default Warehouse (and Frappe refuses an
+        # unknown field), so read it only where it exists.
+        ss = (frappe.db.get_single_value("Stock Settings", "default_warehouse")
+              if frappe.get_meta("Stock Settings").has_field("default_warehouse") else None)
         # Stock Settings' default is global, so on a multi-company site it can point
         # at another company's warehouse - scope it to ours or the Stock Reconciliation
         # is rejected ("Warehouse X does not belong to company Y").
